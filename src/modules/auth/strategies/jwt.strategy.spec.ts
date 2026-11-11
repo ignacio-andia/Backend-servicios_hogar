@@ -41,11 +41,12 @@ describe('JwtStrategy', () => {
   });
 
   it('devuelve el usuario leído de la base de datos', async () => {
-    findById.mockResolvedValue(user(UserStatus.ACTIVO));
+    const activeUser = user(UserStatus.ACTIVO);
+    findById.mockResolvedValue(activeUser);
 
     await expect(
       strategy.validate({ sub: USER_ID, email: 'otro@example.com' }),
-    ).resolves.toEqual(user(UserStatus.ACTIVO));
+    ).resolves.toBe(activeUser);
     expect(findById).toHaveBeenCalledWith(USER_ID);
   });
 

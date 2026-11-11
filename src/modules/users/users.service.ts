@@ -131,6 +131,25 @@ export class UsersService {
     return (await this.findById(userId)).roles;
   }
 
+  /**
+   * Otorga el rol TRABAJADOR cuando la propia cuenta registra su perfil de
+   * trabajador (decision del equipo). Es una operacion del sistema, no una
+   * eleccion libre de roles: solo puede asignar TRABAJADOR, nunca un rol
+   * privilegiado, y no implica aprobacion (eso lo decide el perfil, RF-03).
+   * Recibe la transaccion del llamador para que el rol y el perfil se creen
+   * juntos o no se cree ninguno. Es idempotente.
+   */
+  async grantWorkerRole(
+    userId: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    await db.userRole.upsert({
+      where: { userId_role: { userId, role: RoleName.TRABAJADOR } },
+      create: { userId, role: RoleName.TRABAJADOR },
+      update: {},
+    });
+  }
+
   /** Restringido a administradores; nadie puede modificar sus propios roles. */
   async assignRole(
     actorId: string,

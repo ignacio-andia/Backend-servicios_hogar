@@ -295,6 +295,23 @@ describe('UsersService', () => {
     });
   });
 
+  describe('grantWorkerRole', () => {
+    it('solo otorga TRABAJADOR, de forma idempotente y con la transaccion recibida', async () => {
+      const tx = { userRole: { upsert: vi.fn() } };
+
+      await service.grantWorkerRole(CLIENT_ID, tx as never);
+
+      expect(tx.userRole.upsert).toHaveBeenCalledWith({
+        where: {
+          userId_role: { userId: CLIENT_ID, role: RoleName.TRABAJADOR },
+        },
+        create: { userId: CLIENT_ID, role: RoleName.TRABAJADOR },
+        update: {},
+      });
+      expect(prisma.userRole.upsert).not.toHaveBeenCalled();
+    });
+  });
+
   describe('gestión de roles', () => {
     it('solo un administrador puede asignar roles', async () => {
       prisma.user.findUnique.mockResolvedValue(

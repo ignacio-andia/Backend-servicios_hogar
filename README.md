@@ -4,7 +4,7 @@
 
 Backend de la plataforma web que conecta a personas que necesitan servicios técnicos del hogar (plomería, electricidad, albañilería, reparación de electrodomésticos, etc.) con trabajadores que ofrecen esos servicios.
 
-Está desarrollado con **NestJS**, **TypeScript**, **PostgreSQL** y **Prisma ORM**, y sigue una arquitectura de **monolito modular**: una sola aplicación organizada en módulos funcionales independientes (por ahora `auth` y `users`).
+Está desarrollado con **NestJS**, **TypeScript**, **PostgreSQL** y **Prisma ORM**, y sigue una arquitectura de **monolito modular**: una sola aplicación organizada en módulos funcionales independientes (por ahora `auth`, `users`, `catalogs`, `audit` y `worker-profile`).
 
 ---
 
@@ -160,6 +160,8 @@ GRANT ALL ON SCHEMA public TO servicios_hogar_user;
 
 > Desde PostgreSQL 15, el esquema `public` pertenece a `pg_database_owner`, es decir, al dueño de la base de datos. Como `servicios_hogar_user` es el dueño, ya puede crear tablas; los `GRANT` lo dejan explícito.
 
+> Las migraciones instalan la extensión **`citext`**, que hace que los nombres de categorías y zonas sean únicos sin distinguir mayúsculas. Viene incluida en PostgreSQL (instalador de Windows e imágenes oficiales). Como es una extensión *trusted*, el dueño de la base de datos puede instalarla sin ser superusuario. Por eso es importante que la base de datos pertenezca a `servicios_hogar_user` y que todo use el esquema `public`.
+
 **Solo si vas a crear migraciones nuevas** (ver la sección H), dale además permiso para crear bases de datos. Prisma lo necesita para su *shadow database* temporal:
 
 ```sql
@@ -224,6 +226,8 @@ Formato: `postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/BASE_DE_DATOS`
 | `JWT_SECRET` | Sí | Clave para firmar los tokens JWT. **Mínimo 32 caracteres**: el backend no arranca si falta o es más corta. Cada integrante genera la suya y nunca se comparte. |
 | `JWT_EXPIRES_IN` | No (por defecto `1h`) | Duración de los tokens: segundos (`3600`) o duración con unidad (`15m`, `1h`, `7d`). |
 | `PORT` | No (por defecto `3000`) | Puerto HTTP del backend. |
+| `FILE_STORAGE_DIR` | No (por defecto `storage/private`) | Carpeta privada donde se guardan los documentos de los trabajadores. No puede estar dentro de `src/`, `public/` ni `dist/`; `/storage` ya está en `.gitignore`. |
+| `WORKER_DOCUMENT_MAX_MB` | No (por defecto `5`) | Tamaño máximo de cada documento, en MB (como máximo 20). |
 
 Para generar un `JWT_SECRET` aleatorio, ejecuta esto y copia el resultado en `.env`:
 
@@ -273,6 +277,17 @@ npx prisma migrate deploy
 
 Este comando aplica, en orden, las migraciones versionadas de `prisma/migrations/` que falten en tu base de datos. **No borra datos ni reinicia la base de datos**, y es el comando correcto para una copia recién clonada y después de cada `git pull` que traiga migraciones nuevas.
 
+| Migración | Contenido |
+|---|---|
+| `20261110000000_create_users_and_roles` | Usuarios y roles |
+| `20261111000000_create_catalogs_and_audit_log` | Categorías, zonas, bitácora y las categorías iniciales |
+| `20261111100000_case_insensitive_catalog_names` | Extensión `citext`: nombres únicos sin distinguir mayúsculas, con un máximo de 100 caracteres |
+| `20261111100100_rename_appliances_category` | Renombra la categoría inicial a «Electrodomésticos» y conserva su id |
+| `20261111100200_audit_log_append_only` | Trigger que impide modificar, borrar o vaciar la bitácora |
+| `20261112000000_create_worker_profiles` | Perfil del trabajador, especialidades, horarios, documentos, historial de estados y solicitudes de cambio de zona, con `CHECK`, un índice único parcial y un trigger de solo inserción |
+
+> Algunas migraciones tienen SQL escrito a mano (conversión a `citext`, `CHECK` y triggers) porque Prisma no los genera. **No las regeneres ni las edites**: Prisma propone `DROP COLUMN`/`ADD COLUMN` para el cambio a `citext`, y eso borraría los nombres existentes.
+
 ### 3. Comprobar la conexión y el estado de las migraciones
 
 ```bash
@@ -283,7 +298,7 @@ Se conecta a PostgreSQL con tu `DATABASE_URL`. El resultado esperado es `Databas
 
 ### 4. Datos iniciales (seed)
 
-Por ahora **no existe un seed** (`prisma/seed.ts`): la base de datos empieza vacía. Las cuentas se crean con el endpoint de registro (sección J).
+No existe un seed aparte (`prisma/seed.ts`). La migración `20261111000000_create_catalogs_and_audit_log` carga las cuatro categorías de servicio iniciales del documento de requerimientos (Plomería, Electricidad, Albañilería y Electrodomésticos) sin duplicarlas. Las **zonas** empiezan vacías: las registra un administrador (sección J). Las cuentas se crean con el endpoint de registro.
 
 Para probar los endpoints de administración en tu máquina, puedes dar el rol de administrador a una cuenta ya registrada. **Esto es solo para desarrollo local:**
 
@@ -357,6 +372,67 @@ Base: `http://localhost:3000/api`. Los endpoints protegidos requieren la cabecer
 | `PATCH` | `/api/users/:id` | Sí | Actualiza `firstName`, `lastName` o `phone`. El propio usuario o un administrador. |
 | `PATCH` | `/api/users/:id/status` | Sí | Cambia el estado (`ACTIVO`, `INACTIVO`, `SUSPENDIDO`). Un usuario solo puede pasar su propia cuenta a `INACTIVO`; un administrador puede asignar cualquier estado. |
 
+### Catálogos: categorías de servicio (RF-48) y zonas (RF-49)
+
+Las rutas son iguales para categorías y zonas: cambia `categories` por `zones`. Nunca se borran registros: se desactivan, y cada creación, edición o desactivación queda en la bitácora (`admin_audit_logs`).
+
+| Método | Ruta | JWT | Descripción y permisos |
+|---|---|---|---|
+| `GET` | `/api/catalogs/categories` | No | Lista pública, **solo activas**, ordenada por nombre: `[{ id, name, description }]`. |
+| `GET` | `/api/catalogs/categories/:id` | No | Una categoría activa. Responde `404` si no existe o está inactiva. |
+| `GET` | `/api/catalogs/admin/categories?isActive=true\|false` | Sí | Catálogo completo, activas e inactivas (el filtro es opcional). **Solo administradores.** |
+| `GET` | `/api/catalogs/admin/categories/:id` | Sí | Una categoría con su estado y fechas. **Solo administradores.** |
+| `POST` | `/api/catalogs/categories` | Sí | Crea una categoría activa. Body: `{ "name", "description"? }`. **Solo administradores.** |
+| `PATCH` | `/api/catalogs/categories/:id` | Sí | Edita `name` y/o `description` (`null` borra la descripción). **Solo administradores.** |
+| `PATCH` | `/api/catalogs/categories/:id/deactivate` | Sí | Desactiva sin borrar. Responde `409` si ya estaba inactiva. **Solo administradores.** |
+
+- **Validación:** el nombre es obligatorio, tiene de 2 a 100 caracteres y es único sin distinguir mayúsculas, incluso frente a registros inactivos (`409`). PostgreSQL lo garantiza con un índice único sobre una columna `citext`, también ante solicitudes simultáneas. La descripción es opcional, de hasta 500 caracteres. Cualquier otro campo responde `400`.
+- **Errores:** `401` sin sesión, `403` sin rol administrador, `400` para un ID que no es UUID o datos inválidos, `404` si el registro no existe.
+
+### Bitácora de administración (RF-53)
+
+| Método | Ruta | JWT | Descripción y permisos |
+|---|---|---|---|
+| `GET` | `/api/audit-logs` | Sí | Consulta paginada, de lo más reciente a lo más antiguo. **Solo administradores.** |
+
+- **Filtros opcionales:**
+  - `entityType`: `CATEGORIA_SERVICIO` o `ZONA`.
+  - `action`: `CREACION`, `EDICION` o `DESACTIVACION`.
+  - `actorId`: UUID del administrador.
+  - `entityId`: UUID del registro afectado.
+  - `from` y `to`: fechas ISO 8601. Una fecha sin hora se interpreta en UTC, y en `to` incluye todo ese día.
+  - `page` y `limit`: `limit` admite un máximo de 100.
+- **Respuesta:** `{ data: [{ id, action, entityType, entityId, details, createdAt, actor: { id, firstName, lastName, email } }], meta: { page, limit, total, totalPages } }`.
+- **Inmutabilidad:** no hay endpoints para editar ni borrar. Además, PostgreSQL rechaza `UPDATE`, `DELETE` y `TRUNCATE` sobre `admin_audit_logs` mediante un trigger.
+
+### Perfil del trabajador (RF-06, RF-07, RF-08, RF-09 y RF-13)
+
+Todas las rutas `me` actúan sobre el perfil del usuario del JWT y exigen el rol **TRABAJADOR**; nunca reciben un id de perfil.
+
+**Cómo se obtiene el rol TRABAJADOR:** una cuenta de cliente lo recibe al crear su perfil de trabajador, en la misma transacción (si la creación falla, no se otorga). Conserva además el rol CLIENTE (RF-02). Tener el rol **no** habilita las funciones de trabajador: para eso el perfil debe estar `APROBADO` (RF-03).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `POST` | `/api/worker-profile` | Crea el perfil propio en estado `BORRADOR` y otorga el rol TRABAJADOR. Lo pueden usar cuentas con rol CLIENTE o TRABAJADOR. Body: `{ yearsOfExperience, description?, zoneId, categoryIds[], schedules?[] }`. Responde `409` si la cuenta ya tiene un perfil. |
+| `GET` | `/api/worker-profile/me` | Perfil con zona (`isActive`, `zoneRequiresChange`), especialidades, horarios, `pendingRequirements`, `canEdit` y `canSubmit`. |
+| `PATCH` | `/api/worker-profile/me` | Edita `yearsOfExperience` y `description` en `BORRADOR` u `OBSERVADO`. `zoneId` solo se acepta en `BORRADOR`; después responde `403`. |
+| `PUT` | `/api/worker-profile/me/specialties` | Reemplaza las especialidades: `{ categoryIds[] }`, solo con categorías activas. |
+| `PUT` | `/api/worker-profile/me/schedules` | Reemplaza los horarios: `{ schedules: [{ dayOfWeek, startTime: "HH:mm", endTime: "HH:mm", isActive? }] }`. Admite varios intervalos por día, sin superposiciones. |
+| `POST` | `/api/worker-profile/me/submit` | Envía o reenvía a revisión desde `BORRADOR` u `OBSERVADO`: pasa a `PENDIENTE`. Si falta algo responde `400` con la lista. |
+| `GET` | `/api/worker-profile/me/status` | Estado vigente, observación (`statusReason`) e historial de cambios. |
+| `GET` | `/api/worker-profile/me/eligibility` | Indica si la cuenta puede usar funciones de trabajador (solo con perfil `APROBADO`). |
+| `POST` | `/api/worker-profile/me/documents` | `multipart/form-data` con `type` (`IDENTIDAD`, `ANTECEDENTES`, `CERTIFICADO` o `REFERENCIA`) y `file` (PDF, JPG o PNG). |
+| `POST` | `/api/worker-profile/me/documents/:documentId/replace` | Sube una versión nueva; la anterior queda en el historial. |
+| `GET` | `/api/worker-profile/me/documents` | Documentos propios, vigentes y reemplazados. |
+| `GET` | `/api/worker-profile/me/documents/:documentId/download` | Descarga autorizada de un documento propio. Un documento ajeno responde `404`. |
+| `POST` | `/api/worker-profile/me/zone-change-requests` | Solicita cambiar de zona: `{ toZoneId, reason }`. Solo se admite una solicitud pendiente a la vez (`409`). |
+| `GET` | `/api/worker-profile/me/zone-change-requests` | Historial de solicitudes y decisiones. |
+| `GET` | `/api/worker-profile/admin/inactive-zone-profiles?zoneId=` | Perfiles cuya zona fue desactivada. **Solo administradores.** |
+
+- **Estados:** `BORRADOR` → `PENDIENTE` → (`APROBADO` / `OBSERVADO` / `RECHAZADO`); `APROBADO` ↔ `SUSPENDIDO`. El trabajador solo puede enviar su perfil; los demás cambios los hará el módulo de verificación con `WorkerProfileService.changeStatusByAdmin`.
+- **Documentos:** el formato se detecta por el contenido del archivo, no por su extensión. Un archivo demasiado grande responde `413` y un formato no permitido, `400`. Los archivos se guardan en `FILE_STORAGE_DIR` con nombres aleatorios y nunca se exponen sus rutas.
+- **Para otros módulos:** `WorkerProfileService.assertWorkerApproved(userId)`, `findApprovedWorkers({ categoryId, zoneId })`, `findProfilesWithInactiveZone(zoneId?)`, `decideZoneChangeRequest(...)` y el guard `ApprovedWorkerGuard`. Para usarlos, el módulo debe importar `WorkerProfileModule`.
+
 Ejemplo de registro:
 
 ```json
@@ -386,9 +462,13 @@ src/
 ├── common/                # Código compartido entre módulos (configuración global, decoradores)
 ├── generated/prisma/      # Cliente Prisma generado: no editar ni subir al repositorio
 ├── modules/               # Módulos funcionales
-│   ├── auth/              # Registro, login, JWT (Passport), JwtAuthGuard, @CurrentUser
-│   └── users/             # Cuentas, datos personales, estado y roles
+│   ├── audit/             # Bitácora de acciones administrativas: registro y consulta (solo administradores)
+│   ├── auth/              # Registro, login, JWT (Passport), JwtAuthGuard, RolesGuard, @Auth, @CurrentUser
+│   ├── catalogs/          # Categorías de servicio y zonas de Cochabamba
+│   ├── users/             # Cuentas, datos personales, estado y roles
+│   └── worker-profile/    # Perfil del trabajador, documentos, estados y zona fija
 ├── prisma/                # PrismaModule y PrismaService (cliente compartido con adapter-pg)
+├── storage/               # StorageModule: almacenamiento privado de archivos (FileStorage)
 ├── app.module.ts          # Módulo raíz: registra ConfigModule y los módulos funcionales
 └── main.ts                # Punto de entrada: prefijo /api, validación global, puerto
 
@@ -468,6 +548,17 @@ npx prisma migrate deploy
 ### `P3014: Prisma Migrate could not create the shadow database`
 
 Aparece al ejecutar `prisma migrate dev`. Al usuario le falta el permiso `CREATEDB` (sección E, paso 4). Para configurar el proyecto no hace falta `migrate dev`: usa `migrate deploy`.
+
+> **Estado actual:** el `servicios_hogar_user` de la máquina donde se desarrollaron los módulos **no tiene `CREATEDB`**. Por eso las migraciones de catálogos y bitácora se generaron con `npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script` y se aplicaron con `migrate deploy`. Para que `migrate dev` funcione, una persona con acceso al usuario `postgres` debe ejecutar `ALTER ROLE servicios_hogar_user CREATEDB;`.
+
+### `extension "citext" is not available` o `permission denied to create extension "citext"`
+
+- `citext` viene en el paquete *contrib* de PostgreSQL. Si no está disponible, reinstala PostgreSQL 18 con el instalador oficial.
+- Si falta el permiso, la base de datos no pertenece a `servicios_hogar_user`. Corrígelo como `postgres` con `ALTER DATABASE servicios_hogar_db OWNER TO servicios_hogar_user;` y vuelve a ejecutar `npx prisma migrate deploy`.
+
+### `La bitácora de administración es de solo inserción`
+
+Es intencional: un trigger impide modificar o borrar registros de `admin_audit_logs` (RF-53) y de `worker_profile_status_history` (RF-08). Para limpiar datos de pruebas, las pruebas e2e activan el ajuste `app.audit_maintenance` solo dentro de su transacción (ver `test/utils/audit-maintenance.ts`). No lo uses en la aplicación.
 
 ### El backend no arranca por la configuración JWT
 

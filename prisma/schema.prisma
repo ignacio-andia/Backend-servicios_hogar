@@ -35,8 +35,12 @@ model User {
   createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  roles         UserRole[] @relation("UserRoles")
-  assignedRoles UserRole[] @relation("RoleAssignments")
+  roles                UserRole[]                   @relation("UserRoles")
+  assignedRoles        UserRole[]                   @relation("RoleAssignments")
+  auditLogs            AdminAuditLog[]
+  workerProfile        WorkerProfile?
+  profileStatusChanges WorkerProfileStatusHistory[]
+  zoneChangeDecisions  ZoneChangeRequest[]
 
   @@index([status])
   @@map("users")
@@ -54,4 +58,228 @@ model UserRole {
   @@id([userId, role])
   @@index([role])
   @@map("user_roles")
+}
+
+/// Catálogo de categorías de servicio (RF-48). Nunca se borra: se desactiva.
+/// Los modelos que la referencien (perfiles, pedidos) deben usar onDelete: Restrict.
+model ServiceCategory {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique @db.Citext
+  description String?  @db.VarChar(500)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workerSpecialties WorkerSpecialty[]
+
+  @@index([isActive])
+  @@map("service_categories")
+}
+
+/// Catálogo de zonas de atención de Cochabamba (RF-49). Nunca se borra: se desactiva.
+/// Los modelos que la referencien (perfiles, pedidos) deben usar onDelete: Restrict.
+model Zone {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @unique @db.Citext
+  description String?  @db.VarChar(500)
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workerProfiles         WorkerProfile[]
+  zoneChangeRequestsFrom ZoneChangeRequest[] @relation("ZoneChangeFrom")
+  zoneChangeRequestsTo   ZoneChangeRequest[] @relation("ZoneChangeTo")
+
+  @@index([isActive])
+  @@map("zones")
+}
+
+enum AuditAction {
+  CREACION
+  EDICION
+  DESACTIVACION
+  CAMBIO_ESTADO
+  APROBACION
+  RECHAZO
+}
+
+enum AuditEntityType {
+  CATEGORIA_SERVICIO
+  ZONA
+  PERFIL_TRABAJADOR
+  SOLICITUD_CAMBIO_ZONA
+}
+
+/// Bitácora de acciones administrativas (RF-53): quién, qué y cuándo.
+/// Solo se inserta; la aplicación no expone edición ni borrado.
+model AdminAuditLog {
+  id         String          @id @default(uuid()) @db.Uuid
+  actorId    String          @map("actor_id") @db.Uuid
+  action     AuditAction
+  entityType AuditEntityType @map("entity_type")
+  entityId   String          @map("entity_id") @db.Uuid
+  details    Json?
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+  @@map("admin_audit_logs")
+}
+
+/// Estados del perfil (RF-08). BORRADOR: creado y aún no enviado a revisión.
+enum WorkerProfileStatus {
+  BORRADOR
+  PENDIENTE
+  OBSERVADO
+  APROBADO
+  RECHAZADO
+  SUSPENDIDO
+}
+
+enum WeekDay {
+  LUNES
+  MARTES
+  MIERCOLES
+  JUEVES
+  VIERNES
+  SABADO
+  DOMINGO
+}
+
+/// Tipos de documentación de respaldo (RF-07). Ninguno es obligatorio por ahora.
+enum WorkerDocumentType {
+  IDENTIDAD
+  ANTECEDENTES
+  CERTIFICADO
+  REFERENCIA
+}
+
+enum ZoneChangeRequestStatus {
+  PENDIENTE
+  APROBADA
+  RECHAZADA
+}
+
+/// Perfil del trabajador (RF-06). Nombre, correo y teléfono pertenecen a User.
+/// La zona es fija (RF-13): tras el primer envío solo cambia por solicitud aprobada.
+model WorkerProfile {
+  id                String              @id @default(uuid()) @db.Uuid
+  userId            String              @unique @map("user_id") @db.Uuid
+  yearsOfExperience Int                 @map("years_of_experience") @db.SmallInt
+  description       String?             @db.VarChar(1000)
+  zoneId            String              @map("zone_id") @db.Uuid
+  status            WorkerProfileStatus @default(BORRADOR)
+  submittedAt       DateTime?           @map("submitted_at") @db.Timestamptz(3)
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user               User                         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  zone               Zone                         @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  specialties        WorkerSpecialty[]
+  schedules          WorkerSchedule[]
+  documents          WorkerDocument[]
+  statusHistory      WorkerProfileStatusHistory[]
+  zoneChangeRequests ZoneChangeRequest[]
+
+  @@index([status, zoneId])
+  @@index([zoneId])
+  @@map("worker_profiles")
+}
+
+/// Especialidades del trabajador: categorías del catálogo (RF-48).
+model WorkerSpecialty {
+  profileId  String   @map("profile_id") @db.Uuid
+  categoryId String   @map("category_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  profile  WorkerProfile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  category ServiceCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@id([profileId, categoryId])
+  @@index([categoryId])
+  @@map("worker_specialties")
+}
+
+/// Horario de atención semanal (no son reservas de trabajos). Minutos desde las 00:00.
+model WorkerSchedule {
+  id           String   @id @default(uuid()) @db.Uuid
+  profileId    String   @map("profile_id") @db.Uuid
+  dayOfWeek    WeekDay  @map("day_of_week")
+  startMinutes Int      @map("start_minutes") @db.SmallInt
+  endMinutes   Int      @map("end_minutes") @db.SmallInt
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  profile WorkerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId, dayOfWeek])
+  @@map("worker_schedules")
+}
+
+/// Documento de respaldo (RF-07). El archivo vive en un almacenamiento privado;
+/// aquí solo se guardan sus metadatos. Un reemplazo conserva el anterior.
+model WorkerDocument {
+  id           String             @id @default(uuid()) @db.Uuid
+  profileId    String             @map("profile_id") @db.Uuid
+  type         WorkerDocumentType
+  originalName String             @map("original_name") @db.VarChar(255)
+  mimeType     String             @map("mime_type") @db.VarChar(100)
+  sizeBytes    Int                @map("size_bytes")
+  sha256       String             @db.Char(64)
+  storageKey   String             @unique @map("storage_key") @db.VarChar(255)
+  uploadedAt   DateTime           @default(now()) @map("uploaded_at") @db.Timestamptz(3)
+  replacedAt   DateTime?          @map("replaced_at") @db.Timestamptz(3)
+  replacedById String?            @unique @map("replaced_by_id") @db.Uuid
+
+  profile    WorkerProfile   @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  replacedBy WorkerDocument? @relation("DocumentReplacement", fields: [replacedById], references: [id], onDelete: SetNull)
+  replaces   WorkerDocument? @relation("DocumentReplacement")
+
+  @@index([profileId, type])
+  @@map("worker_documents")
+}
+
+/// Historial de estados del perfil (RF-08). Solo inserción: un trigger impide editarlo o borrarlo.
+model WorkerProfileStatusHistory {
+  id          String               @id @default(uuid()) @db.Uuid
+  profileId   String               @map("profile_id") @db.Uuid
+  fromStatus  WorkerProfileStatus? @map("from_status")
+  toStatus    WorkerProfileStatus  @map("to_status")
+  changedById String               @map("changed_by_id") @db.Uuid
+  reason      String?              @db.VarChar(1000)
+  createdAt   DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  profile   WorkerProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  changedBy User          @relation(fields: [changedById], references: [id], onDelete: Restrict)
+
+  @@index([profileId, createdAt])
+  @@map("worker_profile_status_history")
+}
+
+/// Solicitud de cambio de zona (RF-13). Solo puede haber una PENDIENTE por perfil
+/// (índice único parcial definido en la migración).
+model ZoneChangeRequest {
+  id              String                  @id @default(uuid()) @db.Uuid
+  profileId       String                  @map("profile_id") @db.Uuid
+  fromZoneId      String                  @map("from_zone_id") @db.Uuid
+  toZoneId        String                  @map("to_zone_id") @db.Uuid
+  reason          String                  @db.VarChar(500)
+  status          ZoneChangeRequestStatus @default(PENDIENTE)
+  createdAt       DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  decidedAt       DateTime?               @map("decided_at") @db.Timestamptz(3)
+  decidedById     String?                 @map("decided_by_id") @db.Uuid
+  decisionComment String?                 @map("decision_comment") @db.VarChar(500)
+
+  profile   WorkerProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
+  fromZone  Zone          @relation("ZoneChangeFrom", fields: [fromZoneId], references: [id], onDelete: Restrict)
+  toZone    Zone          @relation("ZoneChangeTo", fields: [toZoneId], references: [id], onDelete: Restrict)
+  decidedBy User?         @relation(fields: [decidedById], references: [id], onDelete: Restrict)
+
+  @@index([profileId, createdAt])
+  @@index([status])
+  @@map("zone_change_requests")
 }
