@@ -12,6 +12,10 @@ export class PrismaService
     super({
       adapter: new PrismaPg({
         connectionString: configService.getOrThrow<string>('DATABASE_URL'),
+        // El adaptador envia las fechas en UTC sin zona y lee timestamptz sin
+        // el desfase: con la sesion en UTC se guardan bien y now() coincide
+        // con la app, sin depender de la zona horaria del servidor.
+        options: '-c TimeZone=UTC',
       }),
     });
   }

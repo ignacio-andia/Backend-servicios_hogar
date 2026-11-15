@@ -14,10 +14,7 @@ import {
   WorkerProfileStatus,
   ZoneChangeRequestStatus,
 } from '../../generated/prisma/client.js';
-import type {
-  WeekDay,
-  ZoneChangeRequest,
-} from '../../generated/prisma/client.js';
+import type { WeekDay } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import {
@@ -27,10 +24,10 @@ import {
 } from '../catalogs/catalogs.service.js';
 import { PublicUser, UsersService } from '../users/users.service.js';
 import { CreateWorkerProfileDto } from './dto/create-worker-profile.dto.js';
-import { CreateZoneChangeRequestDto } from './dto/create-zone-change-request.dto.js';
 import { UpdateSchedulesDto } from './dto/update-schedules.dto.js';
 import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
 import { UpdateWorkerProfileDto } from './dto/update-worker-profile.dto.js';
+import { WorkerActiveWorkRegistry } from './active-work.registry.js';
 import { normalizeSchedules, toTime } from './schedules.js';
 import {
   ADMIN_TRANSITIONS,
@@ -39,8 +36,17 @@ import {
   STATUSES_REQUIRING_REASON,
   SUBMITTABLE_STATUSES,
   ZONE_DIRECTLY_EDITABLE_STATUS,
-  ZONE_REQUEST_BLOCKED_STATUSES,
 } from './worker-profile.rules.js';
+import {
+  assertActiveAdmin,
+  CatalogRef,
+  isPrismaError,
+  normalizeText,
+  PRISMA_UNIQUE_VIOLATION,
+  toRef,
+} from './worker-profile.utils.js';
+
+export type { CatalogRef };
 
 type Db = Prisma.TransactionClient;
 
@@ -70,12 +76,6 @@ const PROFILE_SELECT = {
 type ProfileRecord = Prisma.WorkerProfileGetPayload<{
   select: typeof PROFILE_SELECT;
 }>;
-
-export interface CatalogRef {
-  id: string;
-  name: string;
-  isActive: boolean;
-}
 
 export interface ScheduleView {
   id: string;
@@ -149,28 +149,10 @@ export interface AffectedProfile {
   hasPendingZoneChangeRequest: boolean;
 }
 
-export interface ZoneChangeRequestView {
-  id: string;
-  status: ZoneChangeRequestStatus;
-  reason: string;
-  fromZone: CatalogRef;
-  toZone: CatalogRef;
-  createdAt: Date;
-  decidedAt: Date | null;
-  decisionComment: string | null;
-}
-
 export interface AdminStatusChange {
   status: WorkerProfileStatus;
   reason?: string;
 }
-
-export interface ZoneChangeDecision {
-  decision: 'APROBADA' | 'RECHAZADA';
-  comment?: string;
-}
-
-const PRISMA_UNIQUE_VIOLATION = 'P2002';
 
 // Cuentas que pueden registrar un perfil de trabajador (y recibir el rol).
 const WORKER_PROFILE_CREATOR_ROLES: readonly RoleName[] = [
@@ -180,8 +162,9 @@ const WORKER_PROFILE_CREATOR_ROLES: readonly RoleName[] = [
 
 /**
  * Perfil del trabajador: registro (RF-06), estados e historial (RF-08),
- * elegibilidad (RF-09) y zona fija con solicitudes de cambio (RF-13).
- * Los documentos (RF-07) estan en WorkerDocumentsService.
+ * elegibilidad (RF-09) y zona fija (RF-13). Los documentos (RF-07) estan en
+ * WorkerDocumentsService y las solicitudes de cambio de zona en
+ * ZoneChangeRequestsService.
  */
 @Injectable()
 export class WorkerProfileService {
@@ -190,6 +173,7 @@ export class WorkerProfileService {
     private readonly users: UsersService,
     private readonly catalogs: CatalogsService,
     private readonly audit: AuditService,
+    private readonly activeWork: WorkerActiveWorkRegistry,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -407,61 +391,6 @@ export class WorkerProfileService {
   }
 
   // ---------------------------------------------------------------------
-  // RF-13: solicitudes de cambio de zona
-  // ---------------------------------------------------------------------
-
-  async requestZoneChange(
-    userId: string,
-    dto: CreateZoneChangeRequestDto,
-  ): Promise<ZoneChangeRequestView> {
-    const profile = await this.getOwnRecord(this.prisma, userId);
-    if (profile.status === ZONE_DIRECTLY_EDITABLE_STATUS) {
-      throw new ConflictException(
-        'Su perfil aún no fue enviado a revisión: puede elegir la zona directamente al editar el perfil.',
-      );
-    }
-    if (ZONE_REQUEST_BLOCKED_STATUSES.includes(profile.status)) {
-      throw new ConflictException(
-        `No se puede solicitar un cambio de zona con el perfil en estado ${profile.status}`,
-      );
-    }
-    if (dto.toZoneId === profile.zoneId) {
-      throw new BadRequestException('La zona solicitada es su zona actual');
-    }
-    await this.catalogs.assertActive(CatalogKind.ZONE, dto.toZoneId);
-
-    try {
-      const request = await this.prisma.zoneChangeRequest.create({
-        data: {
-          profileId: profile.id,
-          fromZoneId: profile.zoneId,
-          toZoneId: dto.toZoneId,
-          reason: dto.reason,
-        },
-      });
-      return (await this.toZoneRequestViews([request]))[0];
-    } catch (error) {
-      if (isPrismaError(error, PRISMA_UNIQUE_VIOLATION)) {
-        throw new ConflictException(
-          'Ya tiene una solicitud de cambio de zona pendiente',
-        );
-      }
-      throw error;
-    }
-  }
-
-  async listOwnZoneChangeRequests(
-    userId: string,
-  ): Promise<ZoneChangeRequestView[]> {
-    const profile = await this.getOwnRecord(this.prisma, userId);
-    const requests = await this.prisma.zoneChangeRequest.findMany({
-      where: { profileId: profile.id },
-      orderBy: { createdAt: 'desc' },
-    });
-    return this.toZoneRequestViews(requests);
-  }
-
-  // ---------------------------------------------------------------------
   // RF-09: elegibilidad, para pedidos, ofertas y busquedas futuras
   // ---------------------------------------------------------------------
 
@@ -510,16 +439,54 @@ export class WorkerProfileService {
   async assertWorkerApproved(userId: string): Promise<ApprovedWorker> {
     const eligibility = await this.getEligibility(userId);
     if (!eligibility.eligible) {
-      throw new ForbiddenException(
-        eligibility.reason
-          ? `${eligibility.message} Motivo: ${eligibility.reason}`
-          : eligibility.message,
-      );
+      throw notApprovedError(eligibility);
     }
     const profile = await this.prisma.workerProfile.findUniqueOrThrow({
       where: { userId },
       select: PROFILE_SELECT,
     });
+    return toApprovedWorker(profile);
+  }
+
+  /**
+   * Version transaccional de assertWorkerApproved para operaciones que crean
+   * o cambian trabajo del trabajador (ofertas, asignacion de pedidos). Dentro
+   * de la transaccion `tx` del llamador bloquea la fila del perfil y lo
+   * vuelve a leer con ese bloqueo: zona, especialidades y aprobacion no
+   * cambian hasta que la transaccion termine. Los datos del guard
+   * (ApprovedWorkerGuard) se leyeron antes y no sirven para decidir aqui.
+   *
+   * Orden de bloqueos del proyecto: primero el trabajador (este metodo),
+   * despues el pedido. Lanza 403 con el mismo mensaje que assertWorkerApproved.
+   */
+  async lockApprovedWorker(
+    tx: Prisma.TransactionClient,
+    userId: string,
+  ): Promise<ApprovedWorker> {
+    await this.activeWork.lockWorker(tx, userId);
+    const profile = await tx.workerProfile.findUnique({
+      where: { userId },
+      select: {
+        ...PROFILE_SELECT,
+        user: {
+          select: { status: true, roles: { select: { role: true } } },
+        },
+      },
+    });
+    const approved =
+      profile !== null &&
+      profile.status === WorkerProfileStatus.APROBADO &&
+      profile.user.status === UserStatus.ACTIVO &&
+      profile.user.roles.some((item) => item.role === RoleName.TRABAJADOR);
+    if (!approved) {
+      // Solo para armar el mensaje; la decision ya se tomo con el bloqueo.
+      const eligibility = await this.getEligibility(userId);
+      throw notApprovedError(
+        eligibility.eligible
+          ? notEligible(null, 'La cuenta no está habilitada como trabajador.')
+          : eligibility,
+      );
+    }
     return toApprovedWorker(profile);
   }
 
@@ -606,7 +573,7 @@ export class WorkerProfileService {
     profileId: string,
     { status, reason }: AdminStatusChange,
   ): Promise<WorkerProfileView> {
-    await this.assertAdmin(adminId);
+    await assertActiveAdmin(this.users, adminId);
     const profile = await this.prisma.workerProfile.findUnique({
       where: { id: profileId },
       select: PROFILE_SELECT,
@@ -624,6 +591,12 @@ export class WorkerProfileService {
       throw new BadRequestException(
         `Debe indicar el motivo para el estado ${status}`,
       );
+    }
+    if (
+      profile.status === WorkerProfileStatus.PENDIENTE &&
+      status === WorkerProfileStatus.APROBADO
+    ) {
+      await this.assertMeetsApprovalRequirements(profile);
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -654,87 +627,6 @@ export class WorkerProfileService {
         select: PROFILE_SELECT,
       }),
     );
-  }
-
-  /**
-   * Decision administrativa sobre una solicitud de cambio de zona. Si se
-   * aprueba, la nueva zona reemplaza a la anterior; si se rechaza, el perfil
-   * conserva su zona. Lo usara el modulo de verificacion.
-   */
-  async decideZoneChangeRequest(
-    adminId: string,
-    requestId: string,
-    { decision, comment }: ZoneChangeDecision,
-  ): Promise<ZoneChangeRequestView> {
-    await this.assertAdmin(adminId);
-    const request = await this.prisma.zoneChangeRequest.findUnique({
-      where: { id: requestId },
-      include: { profile: { select: { zoneId: true } } },
-    });
-    if (!request) {
-      throw new NotFoundException('La solicitud de cambio de zona no existe');
-    }
-    if (request.status !== ZoneChangeRequestStatus.PENDIENTE) {
-      throw new ConflictException('La solicitud ya fue resuelta');
-    }
-    const cleanComment = normalizeText(comment);
-    const approved = decision === ZoneChangeRequestStatus.APROBADA;
-    if (!approved && !cleanComment) {
-      throw new BadRequestException('Debe indicar el motivo del rechazo');
-    }
-    if (approved) {
-      await this.catalogs.assertActive(CatalogKind.ZONE, request.toZoneId);
-      if (request.profile.zoneId !== request.fromZoneId) {
-        throw new ConflictException(
-          'La zona del perfil cambió desde que se creó la solicitud',
-        );
-      }
-    }
-
-    const decided = await this.prisma.$transaction(async (tx) => {
-      const { count } = await tx.zoneChangeRequest.updateMany({
-        where: { id: requestId, status: ZoneChangeRequestStatus.PENDIENTE },
-        data: {
-          status: decision,
-          decidedAt: new Date(),
-          decidedById: adminId,
-          decisionComment: cleanComment,
-        },
-      });
-      if (count === 0) {
-        throw new ConflictException('La solicitud ya fue resuelta');
-      }
-      if (approved) {
-        const moved = await tx.workerProfile.updateMany({
-          where: { id: request.profileId, zoneId: request.fromZoneId },
-          data: { zoneId: request.toZoneId },
-        });
-        if (moved.count === 0) {
-          throw new ConflictException(
-            'La zona del perfil cambió desde que se creó la solicitud',
-          );
-        }
-      }
-      await this.audit.record(
-        {
-          actorId: adminId,
-          action: approved ? AuditAction.APROBACION : AuditAction.RECHAZO,
-          entityType: AuditEntityType.SOLICITUD_CAMBIO_ZONA,
-          entityId: requestId,
-          details: {
-            profileId: request.profileId,
-            fromZoneId: request.fromZoneId,
-            toZoneId: request.toZoneId,
-            comment: cleanComment,
-          },
-        },
-        tx,
-      );
-      return tx.zoneChangeRequest.findUniqueOrThrow({
-        where: { id: requestId },
-      });
-    });
-    return (await this.toZoneRequestViews([decided]))[0];
   }
 
   // ---------------------------------------------------------------------
@@ -771,16 +663,24 @@ export class WorkerProfileService {
     }
   }
 
-  private async assertAdmin(adminId: string): Promise<PublicUser> {
-    const admin = await this.users.findById(adminId).catch(() => null);
-    if (
-      !admin ||
-      admin.status !== UserStatus.ACTIVO ||
-      !admin.roles.includes(RoleName.ADMINISTRADOR)
-    ) {
-      throw new ForbiddenException('Operación reservada a administradores');
+  /**
+   * Un perfil PENDIENTE solo se aprueba si sigue cumpliendo lo que se exigio
+   * al enviarlo (zona y especialidades activas, telefono, horario activo):
+   * pudo cambiar despues del envio, por ejemplo si se desactivo su zona.
+   * Decision del equipo: bloquear con 409 y mostrar lo que falta. La
+   * reactivacion SUSPENDIDO -> APROBADO no se valida aqui: un perfil aprobado
+   * conserva su estado aunque se desactive su zona (RF-49).
+   */
+  private async assertMeetsApprovalRequirements(
+    profile: ProfileRecord,
+  ): Promise<void> {
+    const { pendingRequirements } = await this.buildView(profile);
+    if (pendingRequirements.length > 0) {
+      throw new ConflictException([
+        'El perfil no cumple los requisitos para ser aprobado. Obsérvelo para que el trabajador lo corrija.',
+        ...pendingRequirements.map((item) => item.message),
+      ]);
     }
-    return admin;
   }
 
   private async buildView(
@@ -828,26 +728,6 @@ export class WorkerProfileService {
         SUBMITTABLE_STATUSES.includes(profile.status) &&
         pendingRequirements.length === 0,
     };
-  }
-
-  private async toZoneRequestViews(
-    requests: ZoneChangeRequest[],
-  ): Promise<ZoneChangeRequestView[]> {
-    const zones = await this.catalogs.findByIds(
-      CatalogKind.ZONE,
-      requests.flatMap((r) => [r.fromZoneId, r.toZoneId]),
-    );
-    const byId = new Map(zones.map((zone) => [zone.id, toRef(zone)]));
-    return requests.map((request) => ({
-      id: request.id,
-      status: request.status,
-      reason: request.reason,
-      fromZone: byId.get(request.fromZoneId)!,
-      toZone: byId.get(request.toZoneId)!,
-      createdAt: request.createdAt,
-      decidedAt: request.decidedAt,
-      decisionComment: request.decisionComment,
-    }));
   }
 }
 
@@ -922,6 +802,14 @@ function assertEditable(status: WorkerProfileStatus): void {
   }
 }
 
+function notApprovedError(eligibility: WorkerEligibility): ForbiddenException {
+  return new ForbiddenException(
+    eligibility.reason
+      ? `${eligibility.message} Motivo: ${eligibility.reason}`
+      : eligibility.message,
+  );
+}
+
 function notEligible(
   status: WorkerProfileStatus | null,
   message: string,
@@ -939,21 +827,6 @@ function toApprovedWorker(profile: ProfileRecord): ApprovedWorker {
   };
 }
 
-function toRef({ id, name, isActive }: CatalogItem): CatalogRef {
-  return { id, name, isActive };
-}
-
-function normalizeText(value: string | null | undefined): string | null {
-  const text = value?.trim();
-  return text ? text : null;
-}
-
 function duplicateProfile(): ConflictException {
   return new ConflictException('Esta cuenta ya tiene un perfil de trabajador');
-}
-
-function isPrismaError(error: unknown, code: string): boolean {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError && error.code === code
-  );
 }

@@ -12,6 +12,7 @@ import {
   WorkerProfileStatus,
 } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { FileDeletionService } from '../../storage/file-deletion.service.js';
 import { FileStorage } from '../../storage/file-storage.js';
 import {
   documentMaxBytes,
@@ -58,6 +59,7 @@ export class WorkerDocumentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: FileStorage,
+    private readonly fileDeletion: FileDeletionService,
     config: ConfigService,
   ) {
     this.maxSizeBytes = documentMaxBytes(config);
@@ -202,7 +204,10 @@ export class WorkerDocumentsService {
     return document;
   }
 
-  /** Guarda el archivo y, si falla el registro en BD, lo elimina. */
+  /**
+   * Guarda el archivo y, si falla el registro en BD, lo elimina. Si el borrado
+   * tambien falla, la clave queda en la cola compartida y se reintenta.
+   */
   private async storeThen<T>(
     file: ValidatedDocumentFile,
     persist: (storageKey: string) => Promise<T>,
@@ -211,7 +216,10 @@ export class WorkerDocumentsService {
     try {
       return await persist(storageKey);
     } catch (error) {
-      await this.storage.delete(storageKey).catch(() => undefined);
+      await this.fileDeletion.deleteOrQueue(
+        [storageKey],
+        'compensacion-documento',
+      );
       throw error;
     }
   }

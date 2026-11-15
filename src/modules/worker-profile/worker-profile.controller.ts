@@ -25,7 +25,9 @@ import type { UploadedDocumentFile } from './document-file.js';
 import { DocumentTooLargeFilter } from './document-too-large.filter.js';
 import { CreateWorkerProfileDto } from './dto/create-worker-profile.dto.js';
 import { CreateZoneChangeRequestDto } from './dto/create-zone-change-request.dto.js';
+import { DecideZoneChangeRequestDto } from './dto/decide-zone-change-request.dto.js';
 import { ListInactiveZoneProfilesQueryDto } from './dto/list-inactive-zone-profiles-query.dto.js';
+import { ListZoneChangeRequestsQueryDto } from './dto/list-zone-change-requests-query.dto.js';
 import { UpdateSchedulesDto } from './dto/update-schedules.dto.js';
 import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
 import { UpdateWorkerProfileDto } from './dto/update-worker-profile.dto.js';
@@ -37,9 +39,15 @@ import type {
   WorkerEligibility,
   WorkerProfileView,
   WorkerStatusView,
-  ZoneChangeRequestView,
 } from './worker-profile.service.js';
 import { WorkerProfileService } from './worker-profile.service.js';
+import type {
+  AdminZoneChangeRequestView,
+  PaginatedZoneChangeRequests,
+  ZoneChangeRequestView,
+  ZoneStatusView,
+} from './zone-change-requests.service.js';
+import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
 
 /**
  * Perfil del trabajador autenticado. Todas las rutas `me` actuan sobre el
@@ -50,6 +58,7 @@ export class WorkerProfileController {
   constructor(
     private readonly profiles: WorkerProfileService,
     private readonly documents: WorkerDocumentsService,
+    private readonly zoneRequests: ZoneChangeRequestsService,
   ) {}
 
   // RF-06: crear el perfil propio (queda en BORRADOR hasta enviarlo). Una
@@ -169,13 +178,20 @@ export class WorkerProfileController {
   }
 
   // RF-13: la zona es fija; los cambios se piden y los decide un administrador.
+  // Zona actual, solicitud pendiente y si puede pedir un cambio (y por que no).
+  @Get('me/zone')
+  @Auth(RoleName.TRABAJADOR)
+  getZoneStatus(@CurrentUser() user: PublicUser): Promise<ZoneStatusView> {
+    return this.zoneRequests.getOwnZoneStatus(user.id);
+  }
+
   @Post('me/zone-change-requests')
   @Auth(RoleName.TRABAJADOR)
   requestZoneChange(
     @CurrentUser() user: PublicUser,
     @Body() dto: CreateZoneChangeRequestDto,
   ): Promise<ZoneChangeRequestView> {
-    return this.profiles.requestZoneChange(user.id, dto);
+    return this.zoneRequests.requestZoneChange(user.id, dto);
   }
 
   @Get('me/zone-change-requests')
@@ -183,7 +199,34 @@ export class WorkerProfileController {
   listZoneChangeRequests(
     @CurrentUser() user: PublicUser,
   ): Promise<ZoneChangeRequestView[]> {
-    return this.profiles.listOwnZoneChangeRequests(user.id);
+    return this.zoneRequests.listOwn(user.id);
+  }
+
+  // RF-13: revision administrativa de solicitudes de cambio de zona.
+  @Get('admin/zone-change-requests')
+  @Auth(RoleName.ADMINISTRADOR)
+  listZoneChangeRequestsForAdmin(
+    @Query() query: ListZoneChangeRequestsQueryDto,
+  ): Promise<PaginatedZoneChangeRequests> {
+    return this.zoneRequests.listForAdmin(query);
+  }
+
+  @Get('admin/zone-change-requests/:requestId')
+  @Auth(RoleName.ADMINISTRADOR)
+  getZoneChangeRequestForAdmin(
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+  ): Promise<AdminZoneChangeRequestView> {
+    return this.zoneRequests.getForAdmin(requestId);
+  }
+
+  @Patch('admin/zone-change-requests/:requestId')
+  @Auth(RoleName.ADMINISTRADOR)
+  decideZoneChangeRequest(
+    @CurrentUser() admin: PublicUser,
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+    @Body() dto: DecideZoneChangeRequestDto,
+  ): Promise<AdminZoneChangeRequestView> {
+    return this.zoneRequests.decide(admin.id, requestId, dto);
   }
 
   // RF-49: perfiles cuya zona fue desactivada (uso administrativo).

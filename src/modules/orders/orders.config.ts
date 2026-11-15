@@ -1,0 +1,83 @@
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { readPositiveInt } from '../../common/config-values.js';
+import { ABSOLUTE_IMAGE_MAX_MB, ABSOLUTE_MAX_IMAGES } from './orders.rules.js';
+
+/**
+ * Parametros configurables de pedidos (§5.5: no deben quedar escritos en el
+ * codigo). Se leen una vez al arrancar; un valor invalido detiene el arranque.
+ */
+@Injectable()
+export class OrdersConfig {
+  /** Plazo de vencimiento de un pedido publicado (y tras cada edicion). */
+  readonly expirationHours: number;
+  readonly expirationIntervalMinutes: number;
+  /** PENDIENTE DE CONFIRMAR CON EL DOCENTE: cantidad definitiva de fotos. */
+  readonly minImages: number;
+  readonly maxImages: number;
+  readonly imageMaxBytes: number;
+  readonly imageMaxPixels: number;
+  readonly imageMaxDimension: number;
+  readonly imageQuality: number;
+  readonly thumbnailSize: number;
+  readonly duplicateWindowDays: number;
+
+  constructor(config: ConfigService) {
+    this.expirationHours = readPositiveInt(
+      config,
+      'ORDER_EXPIRATION_HOURS',
+      48,
+      {
+        max: 24 * 365,
+      },
+    );
+    this.expirationIntervalMinutes = readPositiveInt(
+      config,
+      'ORDER_EXPIRATION_INTERVAL_MINUTES',
+      15,
+      { max: 1440 },
+    );
+    this.minImages = readPositiveInt(config, 'ORDER_MIN_IMAGES', 1, {
+      max: ABSOLUTE_MAX_IMAGES,
+    });
+    this.maxImages = readPositiveInt(config, 'ORDER_MAX_IMAGES', 3, {
+      max: ABSOLUTE_MAX_IMAGES,
+    });
+    if (this.minImages > this.maxImages) {
+      throw new Error(
+        'ORDER_MIN_IMAGES no puede ser mayor que ORDER_MAX_IMAGES',
+      );
+    }
+    this.imageMaxBytes =
+      readPositiveInt(config, 'ORDER_IMAGE_MAX_MB', 10, {
+        max: ABSOLUTE_IMAGE_MAX_MB,
+      }) *
+      1024 *
+      1024;
+    this.imageMaxPixels = readPositiveInt(
+      config,
+      'ORDER_IMAGE_MAX_PIXELS',
+      50_000_000,
+      { min: 1_000, max: 268_402_689 },
+    );
+    this.imageMaxDimension = readPositiveInt(
+      config,
+      'ORDER_IMAGE_MAX_DIMENSION',
+      1600,
+      { min: 200, max: 8000 },
+    );
+    this.imageQuality = readPositiveInt(config, 'ORDER_IMAGE_QUALITY', 80, {
+      max: 100,
+    });
+    this.thumbnailSize = readPositiveInt(config, 'ORDER_THUMBNAIL_SIZE', 400, {
+      min: 50,
+      max: 2000,
+    });
+    this.duplicateWindowDays = readPositiveInt(
+      config,
+      'ORDER_DUPLICATE_WINDOW_DAYS',
+      7,
+      { max: 365 },
+    );
+  }
+}

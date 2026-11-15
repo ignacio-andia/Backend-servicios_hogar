@@ -41,6 +41,9 @@ model User {
   workerProfile        WorkerProfile?
   profileStatusChanges WorkerProfileStatusHistory[]
   zoneChangeDecisions  ZoneChangeRequest[]
+  ordersAsClient       Order[]                      @relation("OrderClient")
+  ordersAsWorker       Order[]                      @relation("OrderAssignedWorker")
+  orderStatusChanges   OrderStatusHistory[]
 
   @@index([status])
   @@map("users")
@@ -71,6 +74,7 @@ model ServiceCategory {
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   workerSpecialties WorkerSpecialty[]
+  orders            Order[]
 
   @@index([isActive])
   @@map("service_categories")
@@ -87,6 +91,7 @@ model Zone {
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   workerProfiles         WorkerProfile[]
+  orders                 Order[]
   zoneChangeRequestsFrom ZoneChangeRequest[] @relation("ZoneChangeFrom")
   zoneChangeRequestsTo   ZoneChangeRequest[] @relation("ZoneChangeTo")
 
@@ -261,7 +266,9 @@ model WorkerProfileStatusHistory {
 }
 
 /// Solicitud de cambio de zona (RF-13). Solo puede haber una PENDIENTE por perfil
-/// (índice único parcial definido en la migración).
+/// (índice único parcial). El historial no se borra ni se reescribe: un trigger solo
+/// permite resolver una solicitud PENDIENTE y un CHECK exige fecha y administrador
+/// en las resueltas (migración 20261114000000_zone_change_requests_history_guard).
 model ZoneChangeRequest {
   id              String                  @id @default(uuid()) @db.Uuid
   profileId       String                  @map("profile_id") @db.Uuid
@@ -282,4 +289,134 @@ model ZoneChangeRequest {
   @@index([profileId, createdAt])
   @@index([status])
   @@map("zone_change_requests")
+}
+
+/// Estados de un pedido (§5.4). OrdersModule gestiona PUBLICADO, VENCIDO y
+/// CANCELADO antes del acuerdo; el resto lo gestionaran ofertas, pagos,
+/// visitas, agenda y reclamos mediante OrdersService.transition().
+enum OrderStatus {
+  PUBLICADO
+  EN_NEGOCIACION
+  ACORDADO
+  ANTICIPO_REGISTRADO
+  VISITA_REALIZADA
+  PRESUPUESTO_ADICIONAL_PENDIENTE
+  EN_EJECUCION
+  TERMINADO
+  EN_RECLAMO
+  CERRADO
+  SIN_ACUERDO
+  VENCIDO
+  CANCELADO
+}
+
+/// Quien hizo un cambio de estado: un usuario o un proceso automatico.
+enum OrderActorType {
+  USUARIO
+  SISTEMA
+}
+
+/// Pedido del cliente (RF-14 a RF-18). La direccion exacta vive en OrderAddress.
+model Order {
+  id               String      @id @default(uuid()) @db.Uuid
+  clientId         String      @map("client_id") @db.Uuid
+  categoryId       String      @map("category_id") @db.Uuid
+  zoneId           String      @map("zone_id") @db.Uuid
+  description      String      @db.VarChar(2000)
+  budgetAmount     Decimal     @map("budget_amount") @db.Decimal(10, 2)
+  status           OrderStatus @default(PUBLICADO)
+  revision         Int         @default(1)
+  publishedAt      DateTime    @default(now()) @map("published_at") @db.Timestamptz(3)
+  expiresAt        DateTime    @map("expires_at") @db.Timestamptz(3)
+  lastEditedAt     DateTime?   @map("last_edited_at") @db.Timestamptz(3)
+  assignedWorkerId String?     @map("assigned_worker_id") @db.Uuid
+  cancelledAt      DateTime?   @map("cancelled_at") @db.Timestamptz(3)
+  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  client         User                 @relation("OrderClient", fields: [clientId], references: [id], onDelete: Restrict)
+  category       ServiceCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  zone           Zone                 @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  assignedWorker User?                @relation("OrderAssignedWorker", fields: [assignedWorkerId], references: [id], onDelete: Restrict)
+  address        OrderAddress?
+  images         OrderImage[]
+  statusHistory  OrderStatusHistory[]
+
+  @@index([zoneId, categoryId, status, expiresAt])
+  @@index([clientId, createdAt])
+  @@index([status, expiresAt])
+  @@index([clientId, categoryId, status])
+  @@index([assignedWorkerId, status])
+  @@map("orders")
+}
+
+/// Direccion exacta del trabajo: dato privado, separado del pedido para que
+/// ninguna consulta de Order la incluya sin pedirla expresamente (RF-55).
+model OrderAddress {
+  orderId     String  @id @map("order_id") @db.Uuid
+  addressLine String  @map("address_line") @db.VarChar(255)
+  reference   String? @db.VarChar(255)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("order_addresses")
+}
+
+/// Fotografia procesada del pedido (WebP sin metadatos). Al eliminarla o
+/// reemplazarla se borra la fila y sus archivos.
+model OrderImage {
+  id                 String   @id @default(uuid()) @db.Uuid
+  orderId            String   @map("order_id") @db.Uuid
+  position           Int      @db.SmallInt
+  storageKey         String   @unique @map("storage_key") @db.VarChar(255)
+  thumbnailKey       String   @unique @map("thumbnail_key") @db.VarChar(255)
+  mimeType           String   @map("mime_type") @db.VarChar(50)
+  width              Int
+  height             Int
+  sizeBytes          Int      @map("size_bytes")
+  thumbnailSizeBytes Int      @map("thumbnail_size_bytes")
+  sha256             String   @db.Char(64)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, position])
+  @@map("order_images")
+}
+
+/// Historial de estados del pedido. Solo insercion (trigger). El actor es un
+/// usuario (con el rol con que actuo) o un proceso del sistema.
+model OrderStatusHistory {
+  id            String         @id @default(uuid()) @db.Uuid
+  orderId       String         @map("order_id") @db.Uuid
+  fromStatus    OrderStatus?   @map("from_status")
+  toStatus      OrderStatus    @map("to_status")
+  actorType     OrderActorType @map("actor_type")
+  changedById   String?        @map("changed_by_id") @db.Uuid
+  actorRole     RoleName?      @map("actor_role")
+  systemProcess String?        @map("system_process") @db.VarChar(50)
+  reason        String?        @db.VarChar(500)
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order     Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  changedBy User? @relation(fields: [changedById], references: [id], onDelete: Restrict)
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+/// Cola compartida de archivos por borrar del almacenamiento privado
+/// (StorageModule). La BD deja de apuntar al archivo y luego se borra; si el
+/// borrado falla, se reintenta.
+model PendingFileDeletion {
+  id            String   @id @default(uuid()) @db.Uuid
+  storageKey    String   @unique @map("storage_key") @db.VarChar(255)
+  reason        String   @db.VarChar(50)
+  attempts      Int      @default(0)
+  lastError     String?  @map("last_error") @db.VarChar(500)
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([nextAttemptAt])
+  @@map("pending_file_deletions")
 }

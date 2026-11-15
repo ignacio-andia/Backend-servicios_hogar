@@ -42,6 +42,8 @@ Versiones comprobadas con las que el proyecto compila, pasa las pruebas y se eje
 | `bcrypt` | 6.0.0 |
 | `class-validator` | 0.15.1 |
 | `class-transformer` | 0.5.1 |
+| `sharp` (procesamiento de fotos de pedidos) | 0.35.5 |
+| `@nestjs/schedule` (tareas programadas) | 12.0.4 |
 | `vitest` (pruebas) | 4.1.12 |
 
 El proyecto es **ESM** (`"type": "module"` en `package.json`): los imports relativos terminan en `.js` y las pruebas usan Vitest.
@@ -226,8 +228,17 @@ Formato: `postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/BASE_DE_DATOS`
 | `JWT_SECRET` | Sí | Clave para firmar los tokens JWT. **Mínimo 32 caracteres**: el backend no arranca si falta o es más corta. Cada integrante genera la suya y nunca se comparte. |
 | `JWT_EXPIRES_IN` | No (por defecto `1h`) | Duración de los tokens: segundos (`3600`) o duración con unidad (`15m`, `1h`, `7d`). |
 | `PORT` | No (por defecto `3000`) | Puerto HTTP del backend. |
-| `FILE_STORAGE_DIR` | No (por defecto `storage/private`) | Carpeta privada donde se guardan los documentos de los trabajadores. No puede estar dentro de `src/`, `public/` ni `dist/`; `/storage` ya está en `.gitignore`. |
+| `FILE_STORAGE_DIR` | No (por defecto `storage/private`) | Carpeta privada donde se guardan los documentos de los trabajadores y las fotos de los pedidos. No puede estar dentro de `src/`, `public/` ni `dist/`; `/storage` ya está en `.gitignore`. |
 | `WORKER_DOCUMENT_MAX_MB` | No (por defecto `5`) | Tamaño máximo de cada documento, en MB (como máximo 20). |
+| `SCHEDULED_JOBS_ENABLED` | No (por defecto `true`) | `false` apaga las tareas programadas (vencimiento de pedidos y reintentos de borrado). Las pruebas e2e las apagan. |
+| `FILE_DELETION_RETRY_INTERVAL_MINUTES` | No (por defecto `5`) | Cada cuánto se reintentan los archivos que no se pudieron borrar. |
+| `ORDER_EXPIRATION_HOURS` | No (por defecto `48`) | Plazo de vencimiento de un pedido publicado; se reinicia con cada edición. |
+| `ORDER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `15`) | Cada cuánto corre la tarea de vencimiento. |
+| `ORDER_MIN_IMAGES` / `ORDER_MAX_IMAGES` | No (por defecto `1` / `3`) | Fotos por pedido (como máximo 10). |
+| `ORDER_IMAGE_MAX_MB` | No (por defecto `10`) | Peso máximo de cada foto subida, en MB (como máximo 25). |
+| `ORDER_IMAGE_MAX_PIXELS` | No (por defecto `50000000`) | Megapíxeles máximos de la foto original. |
+| `ORDER_IMAGE_MAX_DIMENSION` / `ORDER_IMAGE_QUALITY` / `ORDER_THUMBNAIL_SIZE` | No (por defecto `1600` / `80` / `400`) | Lado mayor, calidad WebP y tamaño de la miniatura de las fotos guardadas. |
+| `ORDER_DUPLICATE_WINDOW_DAYS` | No (por defecto `7`) | Días hacia atrás para el aviso de posible pedido duplicado. |
 
 Para generar un `JWT_SECRET` aleatorio, ejecuta esto y copia el resultado en `.env`:
 
@@ -285,6 +296,7 @@ Este comando aplica, en orden, las migraciones versionadas de `prisma/migrations
 | `20261111100100_rename_appliances_category` | Renombra la categoría inicial a «Electrodomésticos» y conserva su id |
 | `20261111100200_audit_log_append_only` | Trigger que impide modificar, borrar o vaciar la bitácora |
 | `20261112000000_create_worker_profiles` | Perfil del trabajador, especialidades, horarios, documentos, historial de estados y solicitudes de cambio de zona, con `CHECK`, un índice único parcial y un trigger de solo inserción |
+| `20261114000000_zone_change_requests_history_guard` | Protege el historial de solicitudes de cambio de zona: no se borran, una resuelta no se modifica y siempre registra fecha y administrador |
 
 > Algunas migraciones tienen SQL escrito a mano (conversión a `citext`, `CHECK` y triggers) porque Prisma no los genera. **No las regeneres ni las edites**: Prisma propone `DROP COLUMN`/`ADD COLUMN` para el cambio a `citext`, y eso borraría los nombres existentes.
 
@@ -353,7 +365,7 @@ Para comprobar que inició correctamente:
 | `npm run lint` | Revisa el código con oxlint |
 | `npm run format` | Formatea `src/` y `test/` con Prettier |
 | `npm test` | Pruebas unitarias (Vitest) |
-| `npm run test:e2e` | Pruebas end-to-end. **Usan la base de datos de tu `.env`**: crean cuentas de prueba (`@users-e2e.test`, `@auth-e2e.test`) y las borran al terminar. Requieren las migraciones aplicadas. |
+| `npm run test:e2e` | Pruebas end-to-end. **Usan la base de datos de tu `.env`**: crean cuentas de prueba (`@users-e2e.test`, `@auth-e2e.test`, `@orders-e2e.test`, etc.) y las borran al terminar. Las fotos de prueba van a una carpeta temporal. Requieren las migraciones aplicadas. |
 | `npm run test:cov` | Pruebas unitarias con cobertura |
 
 ---
@@ -388,6 +400,7 @@ Las rutas son iguales para categorías y zonas: cambia `categories` por `zones`.
 
 - **Validación:** el nombre es obligatorio, tiene de 2 a 100 caracteres y es único sin distinguir mayúsculas, incluso frente a registros inactivos (`409`). PostgreSQL lo garantiza con un índice único sobre una columna `citext`, también ante solicitudes simultáneas. La descripción es opcional, de hasta 500 caracteres. Cualquier otro campo responde `400`.
 - **Errores:** `401` sin sesión, `403` sin rol administrador, `400` para un ID que no es UUID o datos inválidos, `404` si el registro no existe.
+- **Para otros módulos:** `findByIds`, `assertActive` y sus versiones transaccionales `findByIdsForShare(tx, kind, ids)` y `assertActiveForShare(tx, kind, id)`. Estas leen con `SELECT … FOR SHARE` dentro de la transacción del llamador: mientras siga abierta, nadie puede desactivar ni editar esos registros. Varios lectores no se bloquean entre sí. Los catálogos son el último eslabón del orden de bloqueos (trabajador → pedido → catálogos).
 
 ### Bitácora de administración (RF-53)
 
@@ -425,13 +438,88 @@ Todas las rutas `me` actúan sobre el perfil del usuario del JWT y exigen el rol
 | `POST` | `/api/worker-profile/me/documents/:documentId/replace` | Sube una versión nueva; la anterior queda en el historial. |
 | `GET` | `/api/worker-profile/me/documents` | Documentos propios, vigentes y reemplazados. |
 | `GET` | `/api/worker-profile/me/documents/:documentId/download` | Descarga autorizada de un documento propio. Un documento ajeno responde `404`. |
-| `POST` | `/api/worker-profile/me/zone-change-requests` | Solicita cambiar de zona: `{ toZoneId, reason }`. Solo se admite una solicitud pendiente a la vez (`409`). |
+| `GET` | `/api/worker-profile/me/zone` | Zona actual, solicitud pendiente, `canRequestChange` y `blockers` (motivos por los que no puede pedir el cambio). |
+| `POST` | `/api/worker-profile/me/zone-change-requests` | Solicita cambiar de zona: `{ toZoneId, reason }`. La zona no cambia hasta que un administrador aprueba. Responde `409` si ya hay una pendiente, si tiene pedidos u ofertas activos o si esa verificación todavía no está disponible. |
 | `GET` | `/api/worker-profile/me/zone-change-requests` | Historial de solicitudes y decisiones. |
+| `GET` | `/api/worker-profile/admin/zone-change-requests?status&resolved&workerUserId&page&limit` | **Solo administradores.** Solicitudes con datos del trabajador, zonas involucradas y quién resolvió. `resolved=true` devuelve el historial de resoluciones. |
+| `GET` | `/api/worker-profile/admin/zone-change-requests/:requestId` | **Solo administradores.** Detalle de una solicitud. |
+| `PATCH` | `/api/worker-profile/admin/zone-change-requests/:requestId` | **Solo administradores.** `{ decision: "APROBADA" \| "RECHAZADA", comment? }`. Al aprobar, la nueva zona reemplaza a la anterior; al rechazar, se conserva. Queda en la bitácora. Un administrador no puede resolver su propia solicitud. Si la zona solicitada fue desactivada, aprobar responde `409` (hay que rechazarla). |
 | `GET` | `/api/worker-profile/admin/inactive-zone-profiles?zoneId=` | Perfiles cuya zona fue desactivada. **Solo administradores.** |
 
-- **Estados:** `BORRADOR` → `PENDIENTE` → (`APROBADO` / `OBSERVADO` / `RECHAZADO`); `APROBADO` ↔ `SUSPENDIDO`. El trabajador solo puede enviar su perfil; los demás cambios los hará el módulo de verificación con `WorkerProfileService.changeStatusByAdmin`.
+- **Estados:** `BORRADOR` → `PENDIENTE` → (`APROBADO` / `OBSERVADO` / `RECHAZADO`); `APROBADO` ↔ `SUSPENDIDO`. El trabajador solo puede enviar su perfil; los demás cambios los hará el módulo de verificación con `WorkerProfileService.changeStatusByAdmin`. Un perfil `PENDIENTE` solo se aprueba si sigue cumpliendo los requisitos de envío (zona y especialidades activas, teléfono, horario activo); si no, responde `409` con lo que falta. La reactivación `SUSPENDIDO` → `APROBADO` no exige esos requisitos.
 - **Documentos:** el formato se detecta por el contenido del archivo, no por su extensión. Un archivo demasiado grande responde `413` y un formato no permitido, `400`. Los archivos se guardan en `FILE_STORAGE_DIR` con nombres aleatorios y nunca se exponen sus rutas.
-- **Para otros módulos:** `WorkerProfileService.assertWorkerApproved(userId)`, `findApprovedWorkers({ categoryId, zoneId })`, `findProfilesWithInactiveZone(zoneId?)`, `decideZoneChangeRequest(...)` y el guard `ApprovedWorkerGuard`. Para usarlos, el módulo debe importar `WorkerProfileModule`.
+- **Para otros módulos:** `WorkerProfileService.assertWorkerApproved(userId)`, `lockApprovedWorker(tx, userId)` (dentro de una transacción: bloquea al trabajador y relee su perfil aprobado), `findApprovedWorkers({ categoryId, zoneId })`, `findProfilesWithInactiveZone(zoneId?)`, `ZoneChangeRequestsService.decide(...)` y el guard `ApprovedWorkerGuard`. Para usarlos, el módulo debe importar `WorkerProfileModule`.
+- **Estados que pueden pedir un cambio de zona:** `APROBADO` (CU-13), y `PENDIENTE`, `OBSERVADO` y `SUSPENDIDO` (admitidos desde el módulo 3, pendientes de confirmar). No pueden `BORRADOR` (elige la zona directamente) ni `RECHAZADO`. Lista en `ZONE_REQUEST_ALLOWED_STATUSES`.
+- **Cambio de zona y trabajo activo:** el trabajador no puede pedir un cambio de zona mientras tenga pedidos u ofertas activos. Hoy cuentan los pedidos asignados en `ACORDADO` y estados posteriores, hasta `EN_RECLAMO` (`ACTIVE_ORDER_STATUSES`, pendiente con el docente). Como todavía no hay salida desde `ACORDADO` (RF-34 y cierre pendientes), un trabajador con un acuerdo queda bloqueado para cambiar de zona hasta que esos módulos existan. OrdersModule ya registra la fuente `PEDIDOS`; el módulo de ofertas todavía no existe, así que **la solicitud sigue bloqueada** (`blockers: VERIFICACION_NO_DISPONIBLE`) hasta que registre la fuente `OFERTAS` en `WorkerActiveWorkRegistry`, exportado por `WorkerProfileModule`.
+- **Integración de ofertas:**
+  1. Registrar la consulta `OFERTAS` en `onModuleInit`: `registry.register({ kind: ActiveWorkKind.OFERTAS, countActive: (workerUserId, db) => db.<modelo>.count({ ... }) })`. Debe leer con `db`, la transacción que recibe. La fuente `PEDIDOS` ya la registra OrdersModule. Al registrar la fuente real, la prueba e2e de worker-profile que hoy registra una fuente `OFERTAS` de prueba debe ajustarse.
+  2. **Orden de bloqueos: primero el trabajador, después el pedido.** Al crear una oferta, usar `OrderVisibilityService.assertOpenForOffers(tx, workerUserId, orderId)`, que respeta ese orden. Para asignar, `OrdersService.transition(...)` también lo respeta. Ningún hook de pedido puede llamar a `lockWorker`.
+- **Pendiente del docente:** si el rechazo exige motivo (hoy es opcional), si aprobar un cambio de zona devuelve el perfil a revisión (hoy no) y si al aprobar se vuelve a verificar el trabajo activo (implementado pero desactivado: `recheckActiveWorkOnApproval`). Todo está centralizado en `ZONE_CHANGE_POLICY` y en `ZoneChangeRequestsService.applyApprovedChange`.
+
+### Pedidos (RF-14 a RF-18)
+
+Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un pedido ajeno responde `404`. Las rutas `available` son para trabajadores con perfil **APROBADO**.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `POST` | `/api/orders` | Publica un pedido (`multipart/form-data`): `categoryId`, `zoneId`, `description` (10 a 2000 caracteres), `budgetAmount` (mayor que 0, hasta 2 decimales), `addressLine`, `addressReference?` y de 1 a 3 fotos en el campo `images`. Queda `PUBLICADO` y vence a las 48 h. Devuelve `{ order, warnings }`. |
+| `POST` | `/api/orders/duplicate-check` | Aviso orientativo antes de publicar: `{ categoryId, zoneId, description }` → `{ warnings }`. Nunca bloquea. |
+| `GET` | `/api/orders/me?status&page&limit` | Pedidos propios, del más reciente al más antiguo (`limit` máximo 50). |
+| `GET` | `/api/orders/me/:orderId` | Detalle propio con dirección, fotos, `canEdit` y `canCancel`. |
+| `PATCH` | `/api/orders/me/:orderId` | Edita `description`, `budgetAmount`, `addressLine` y/o `addressReference` (`null` la borra). Categoría y zona no se editan. |
+| `POST` | `/api/orders/me/:orderId/images` | Agrega una foto (campo `image`). `201` con el pedido actualizado; `409` si ya tiene el máximo. |
+| `PUT` | `/api/orders/me/:orderId/images/:imageId` | Reemplaza una foto (campo `image`); la anterior se borra del disco. `200` con el pedido actualizado. |
+| `DELETE` | `/api/orders/me/:orderId/images/:imageId` | Borra una foto del disco. `200` con el pedido actualizado (nueva `revision` y vencimiento); `409` si quedaría por debajo del mínimo (hay que reemplazarla). |
+| `POST` | `/api/orders/me/:orderId/cancel` | Cancela: `{ reason? }` (hasta 500 caracteres). `200` con el pedido. Borra todas las fotos y conserva el pedido y su historial. |
+| `GET` | `/api/orders/me/:orderId/images/:imageId?variant=full\|thumb` | Descarga una foto propia. |
+| `GET` | `/api/orders/available?categoryId&page&limit` | Pedidos visibles para el trabajador: misma zona, categoría entre sus especialidades, `PUBLICADO` sin vencer o `EN_NEGOCIACION`, zona y categoría activas, cuenta del cliente `ACTIVO`, y nunca los suyos como cliente (RN-14). Sin dirección ni datos del cliente. |
+| `GET` | `/api/orders/available/:orderId` | Detalle con la misma regla. Un pedido no visible responde `404`. |
+| `GET` | `/api/orders/available/:orderId/images/:imageId?variant=full\|thumb` | Foto de un pedido visible. |
+
+- **Edición:** solo en `PUBLICADO` o `EN_NEGOCIACION` y antes de vencer.
+  - Toda edición efectiva sube `revision`, actualiza `lastEditedAt` y reinicia el vencimiento a 48 h. Agregar, reemplazar o borrar una foto también cuenta como edición.
+  - Una edición sin cambios reales no reinicia nada.
+  - Con acuerdo (`ACORDADO` en adelante), editar o cancelar responde `409` e indica usar «Cancelar trabajo» (RF-34). Un pedido vencido responde `409`.
+- **Avisos (`warnings`):**
+  - `POSIBLE_DUPLICADO`: pedido activo parecido del mismo cliente, categoría y zona en los últimos 7 días.
+  - `POSIBLE_DATO_PERSONAL`: teléfono o correo en la descripción.
+  - Ninguno de los dos bloquea la operación.
+- **Fotos:**
+  - Se aceptan JPG, PNG y WebP, de hasta 10 MB y 50 megapíxeles. El formato se detecta por el contenido.
+  - Se guardan como WebP sRGB (máximo 1600 px, calidad 80, más una miniatura), sin EXIF, GPS ni perfil ICC, con nombres aleatorios.
+  - Una foto demasiado grande responde `413`.
+- **Vencimiento:**
+  - Una tarea cada 15 minutos marca `VENCIDO` los pedidos `PUBLICADO` cuyo plazo pasó y deja el historial con actor `SISTEMA` (`VENCIMIENTO`).
+  - Cada pedido se vence en su propio `SAVEPOINT` (transacción anidada de Prisma). Si un hook falla, solo ese pedido queda sin vencer; se registra en el log y se reintenta en la siguiente pasada.
+  - Las consultas ya tratan como vencido un pedido atrasado aunque la tarea no haya corrido.
+  - Las fotos de pedidos vencidos se conservan.
+- **Historial:** cada cambio de estado queda en `order_status_history`, protegida contra `UPDATE`, `DELETE` y `TRUNCATE` por un trigger.
+- **Para otros módulos (ofertas, pagos, etc.):**
+  - `OrdersService.transition(tx, request: OrderTransitionRequest)` (`src/modules/orders/order-transition.ts`):
+    - API tipada: las combinaciones inválidas no compilan. `CANCELADO` y `VENCIDO` no son destinos públicos; `ACORDADO` exige `assignWorkerId`; los demás estados con acuerdo conservan el trabajador; los estados sin acuerdo no asignan y pueden liberar (`releaseWorker`).
+    - Un uso inválido forzado con conversiones de tipo lanza `OrderTransitionUsageError`: es un error de programación (500) y no se convierte en 400 ni 409. Las reglas de negocio responden `403`, `404` o `409`.
+    - Valida contra `ORDER_TRANSITIONS`.
+    - Estado, asignación del trabajador e historial se escriben en la transacción del llamador: o se confirma todo o nada.
+    - Bloquea primero al trabajador (y relee su perfil aprobado) y después el pedido.
+  - Transiciones habilitadas para ofertas:
+    - `PUBLICADO → EN_NEGOCIACION`: primera oferta.
+    - `EN_NEGOCIACION → ACORDADO`: exige `assignWorkerId`, un trabajador aprobado distinto del cliente.
+    - `EN_NEGOCIACION → PUBLICADO`: reinicia el plazo de 48 h; con `releaseWorker` libera la asignación.
+    - `SIN_ACUERDO`, el vencimiento de `EN_NEGOCIACION` y la salida desde `ACORDADO` siguen pendientes con el docente.
+  - `OrderVisibilityService.assertOpenForOffers(tx, workerUserId, orderId)`: dentro de la transacción del llamador, bloquea y relee al trabajador, bloquea el pedido, lee zona y categorías con `FOR SHARE` (`CatalogsService`) y aplica la misma regla de visibilidad. Devuelve `{ worker, order }`.
+  - `create()` también vuelve a validar la zona y la categoría dentro de su transacción, con `FOR SHARE`.
+  - **Decisión pendiente del equipo:** qué pasa con las ofertas ya enviadas cuando se desactiva la zona o la categoría, o se suspende al cliente. Hoy solo se impide **ofertar**; no se cambia ninguna oferta existente.
+  - `OrderLifecycleRegistry.register({ name, inTransaction?, afterCommit? })` recibe los eventos `EDITADO`, `CANCELADO` y `VENCIDO`.
+  - OrdersModule registra la fuente `PEDIDOS` en `WorkerActiveWorkRegistry`: pedidos asignados en estados activos.
+- **Pendiente del docente:** todo está centralizado en `src/modules/orders/orders.rules.ts` y `orders.config.ts`.
+  - Si `EN_NEGOCIACION` vence.
+  - Cuándo se llega a `SIN_ACUERDO` y cómo se sale de `ACORDADO` (RF-34).
+  - Qué estados cuentan como activos.
+  - Visibilidad de la dirección exacta.
+  - Si se pueden editar categoría o zona.
+  - Cantidad definitiva de fotos y soporte de HEIC.
+  - Edición en negociación frente a ofertas existentes.
+  - Retención de fotos de pedidos vencidos.
 
 Ejemplo de registro:
 
@@ -455,7 +543,7 @@ La contraseña debe tener **al menos 8 caracteres, una letra y un número**. Las
 ```text
 prisma/
 ├── migrations/            # Migraciones versionadas (Prisma Migrate)
-└── schema.prisma          # Modelos: User, UserRole y enums RoleName, UserStatus
+└── schema.prisma          # Modelos y enums (usuarios, catálogos, perfiles, pedidos, etc.)
 prisma.config.ts           # Configuración de la CLI de Prisma 7 (esquema, migraciones, DATABASE_URL)
 
 src/
@@ -465,10 +553,11 @@ src/
 │   ├── audit/             # Bitácora de acciones administrativas: registro y consulta (solo administradores)
 │   ├── auth/              # Registro, login, JWT (Passport), JwtAuthGuard, RolesGuard, @Auth, @CurrentUser
 │   ├── catalogs/          # Categorías de servicio y zonas de Cochabamba
+│   ├── orders/            # Pedidos: publicación, fotos, visibilidad, edición, cancelación y vencimiento
 │   ├── users/             # Cuentas, datos personales, estado y roles
 │   └── worker-profile/    # Perfil del trabajador, documentos, estados y zona fija
 ├── prisma/                # PrismaModule y PrismaService (cliente compartido con adapter-pg)
-├── storage/               # StorageModule: almacenamiento privado de archivos (FileStorage)
+├── storage/               # StorageModule: archivos privados (FileStorage) y cola de borrado (FileDeletionService)
 ├── app.module.ts          # Módulo raíz: registra ConfigModule y los módulos funcionales
 └── main.ts                # Punto de entrada: prefijo /api, validación global, puerto
 
@@ -565,6 +654,10 @@ Es intencional: un trigger impide modificar o borrar registros de `admin_audit_l
 - `Configuration key "JWT_SECRET" does not exist`: falta `JWT_SECRET` en `.env`.
 - `JWT_SECRET debe tener al menos 32 caracteres`: genera una clave más larga (sección F).
 - `JWT_EXPIRES_IN debe ser un número de segundos o una duración...`: usa un valor como `3600`, `15m`, `1h` o `7d`.
+
+### Fechas corridas 4 horas o pedidos que vencen antes de tiempo
+
+`PrismaService` abre las conexiones con la zona horaria de sesión en **UTC** (`-c TimeZone=UTC`), porque el adaptador `@prisma/adapter-pg` envía y lee las fechas sin zona. Así las fechas se guardan bien y `now()` de PostgreSQL coincide con la aplicación, aunque la base de datos esté configurada en `America/La_Paz`. No quites esa opción. Los registros creados antes de este cambio pueden tener la hora corrida; no se corrigieron (decisión del equipo).
 
 ### Puerto 3000 ocupado (`EADDRINUSE: address already in use :::3000`)
 

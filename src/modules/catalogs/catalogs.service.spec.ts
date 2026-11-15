@@ -359,4 +359,74 @@ describe('CatalogsService', () => {
       expect(audit.record).not.toHaveBeenCalled();
     });
   });
+
+  describe('lectura transaccional con FOR SHARE (para otros modulos)', () => {
+    const txMock = () => ({
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      serviceCategory: tableMock(),
+      zone: tableMock(),
+    });
+    const sqlOf = (call: unknown[]) =>
+      (call[0] as { strings?: string[] } & string[]).join('?');
+
+    it('bloquea los registros en la transaccion del llamador y los lee con ella', async () => {
+      const tx = txMock();
+      const inactive = item({ isActive: false });
+      tx.zone.findMany.mockResolvedValue([inactive]);
+
+      const result = await service.findByIdsForShare(
+        tx as unknown as Prisma.TransactionClient,
+        CatalogKind.ZONE,
+        [ITEM_ID, ITEM_ID, 'no-es-uuid'],
+      );
+
+      expect(result).toEqual([inactive]);
+      const call = tx.$queryRaw.mock.calls[0];
+      const sql = sqlOf(call);
+      expect(sql).toContain('FOR SHARE');
+      expect(sql).toContain('ORDER BY "id"');
+      // La tabla es constante del servicio, nunca un parametro del usuario.
+      expect(JSON.stringify(call)).toContain('zones');
+      expect(call).toContainEqual([ITEM_ID]);
+      expect(tx.zone.findMany).toHaveBeenCalledWith({
+        where: { id: { in: [ITEM_ID] } },
+        orderBy: { name: 'asc' },
+      });
+      // No usa la conexion general.
+      expect(prisma.zone.findMany).not.toHaveBeenCalled();
+    });
+
+    it('sin ids validos no consulta nada', async () => {
+      const tx = txMock();
+      await expect(
+        service.findByIdsForShare(
+          tx as unknown as Prisma.TransactionClient,
+          CatalogKind.CATEGORY,
+          ['x'],
+        ),
+      ).resolves.toEqual([]);
+      expect(tx.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('assertActiveForShare responde igual que assertActive', async () => {
+      const tx = txMock();
+      const asTx = tx as unknown as Prisma.TransactionClient;
+      await expect(
+        service.assertActiveForShare(asTx, CatalogKind.CATEGORY, ITEM_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      tx.serviceCategory.findMany.mockResolvedValue([
+        item({ isActive: false }),
+      ]);
+      await expect(
+        service.assertActiveForShare(asTx, CatalogKind.CATEGORY, ITEM_ID),
+      ).rejects.toThrow('La categoría seleccionada no está activa');
+
+      const active = item();
+      tx.serviceCategory.findMany.mockResolvedValue([active]);
+      await expect(
+        service.assertActiveForShare(asTx, CatalogKind.CATEGORY, ITEM_ID),
+      ).resolves.toEqual(active);
+    });
+  });
 });

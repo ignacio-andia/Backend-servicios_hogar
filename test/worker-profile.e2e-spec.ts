@@ -25,6 +25,10 @@ import {
   PublicUser,
   UsersService,
 } from '../src/modules/users/users.service.js';
+import {
+  ActiveWorkKind,
+  WorkerActiveWorkRegistry,
+} from '../src/modules/worker-profile/active-work.registry.js';
 import { WorkerProfileService } from '../src/modules/worker-profile/worker-profile.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { deleteWorkerData } from './utils/worker-profile-cleanup.js';
@@ -693,6 +697,39 @@ describe('WorkerProfileModule (e2e)', () => {
       ).rejects.toThrow(/solo inserción/);
     });
 
+    it('no se aprueba un perfil PENDIENTE que dejo de cumplir los requisitos', async () => {
+      await http()
+        .patch(`/api/users/${worker.id}`)
+        .set('Authorization', auth(worker))
+        .send({ phone: null })
+        .expect(200);
+
+      await expect(
+        profiles.changeStatusByAdmin(admin.id, profileId, {
+          status: WorkerProfileStatus.APROBADO,
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: {
+          message: [
+            'El perfil no cumple los requisitos para ser aprobado. Obsérvelo para que el trabajador lo corrija.',
+            'Registre un teléfono de contacto en su cuenta',
+          ],
+        },
+      });
+      const status = await http()
+        .get(`${BASE}/me/status`)
+        .set('Authorization', auth(worker))
+        .expect(200);
+      expect(status.body.status).toBe(WorkerProfileStatus.PENDIENTE);
+
+      await http()
+        .patch(`/api/users/${worker.id}`)
+        .set('Authorization', auth(worker))
+        .send({ phone: '70000000' })
+        .expect(200);
+    });
+
     it('un perfil APROBADO es elegible y aparece entre los habilitados', async () => {
       await profiles.changeStatusByAdmin(admin.id, profileId, {
         status: WorkerProfileStatus.APROBADO,
@@ -721,7 +758,27 @@ describe('WorkerProfileModule (e2e)', () => {
   });
 
   describe('RF-13: zona fija y solicitudes de cambio', () => {
+    // OrdersModule ya registra la fuente PEDIDOS (pedidos asignados). El
+    // modulo de ofertas todavia no existe: las pruebas que lo necesitan
+    // registran una fuente de prueba; la aplicacion real no lo hace.
+    let activeOffers = 0;
     let rejectedId: string;
+
+    const requestChange = (toZoneId: string, reason = 'Me mudé de barrio') =>
+      http()
+        .post(`${BASE}/me/zone-change-requests`)
+        .set('Authorization', auth(worker))
+        .send({ toZoneId, reason });
+    const zoneStatus = () =>
+      http()
+        .get(`${BASE}/me/zone`)
+        .set('Authorization', auth(worker))
+        .expect(200);
+    const decide = (requestId: string, body: object, user = admin) =>
+      http()
+        .patch(`${BASE}/admin/zone-change-requests/${requestId}`)
+        .set('Authorization', auth(user))
+        .send(body);
 
     it('impide cambiar la zona directamente', () =>
       http()
@@ -730,17 +787,51 @@ describe('WorkerProfileModule (e2e)', () => {
         .send({ zoneId: zoneC.id })
         .expect(403));
 
+    it('sin la verificacion de ofertas, bloquea la solicitud e informa el motivo', async () => {
+      const status = await zoneStatus();
+      expect(status.body).toMatchObject({
+        currentZone: { id: zoneB.id },
+        pendingRequest: null,
+        canRequestChange: false,
+        blockers: [{ code: 'VERIFICACION_NO_DISPONIBLE' }],
+      });
+
+      const res = await requestChange(zoneC.id).expect(409);
+      expect(res.body.message[0]).toContain(
+        'no se puede verificar si tiene ofertas activos',
+      );
+      expect(
+        await prisma.zoneChangeRequest.count({ where: { profileId } }),
+      ).toBe(0);
+    });
+
+    it('con pedidos u ofertas activos bloquea la solicitud e informa el motivo', async () => {
+      const registry = app.get(WorkerActiveWorkRegistry);
+      registry.register({
+        kind: ActiveWorkKind.OFERTAS,
+        countActive: () => Promise.resolve(activeOffers),
+      });
+      activeOffers = 1;
+
+      const blocked = await zoneStatus();
+      expect(blocked.body.blockers).toMatchObject([{ code: 'TRABAJO_ACTIVO' }]);
+      const res = await requestChange(zoneC.id).expect(409);
+      expect(res.body.message).toEqual([
+        'No puede solicitar un cambio de zona mientras tenga trabajo activo (1 ofertas activos).',
+      ]);
+
+      activeOffers = 0;
+      const allowed = await zoneStatus();
+      expect(allowed.body).toMatchObject({
+        canRequestChange: true,
+        blockers: [],
+      });
+    });
+
     it('valida la zona solicitada', async () => {
-      await http()
-        .post(`${BASE}/me/zone-change-requests`)
-        .set('Authorization', auth(worker))
-        .send({ toZoneId: zoneOff.id, reason: 'Me mudé de barrio' })
-        .expect(400);
-      await http()
-        .post(`${BASE}/me/zone-change-requests`)
-        .set('Authorization', auth(worker))
-        .send({ toZoneId: zoneB.id, reason: 'Me mudé de barrio' })
-        .expect(400);
+      await requestChange(zoneOff.id).expect(400);
+      await requestChange(zoneB.id).expect(400);
+      await requestChange(randomUUID()).expect(404);
       await http()
         .post(`${BASE}/me/zone-change-requests`)
         .set('Authorization', auth(worker))
@@ -748,79 +839,156 @@ describe('WorkerProfileModule (e2e)', () => {
         .expect(400);
     });
 
-    it('registra una solicitud pendiente y no admite otra', async () => {
-      const res = await http()
-        .post(`${BASE}/me/zone-change-requests`)
-        .set('Authorization', auth(worker))
-        .send({ toZoneId: zoneC.id, reason: 'Me mudé de barrio' })
-        .expect(201);
+    it('registra la solicitud sin cambiar la zona y no admite otra pendiente', async () => {
+      const res = await requestChange(zoneC.id).expect(201);
       expect(res.body).toMatchObject({
         status: ZoneChangeRequestStatus.PENDIENTE,
         fromZone: { id: zoneB.id },
         toZone: { id: zoneC.id },
+        decidedAt: null,
       });
       rejectedId = res.body.id;
 
-      await http()
-        .post(`${BASE}/me/zone-change-requests`)
+      const status = await zoneStatus();
+      expect(status.body).toMatchObject({
+        currentZone: { id: zoneB.id },
+        pendingRequest: { id: rejectedId },
+        canRequestChange: false,
+        blockers: [{ code: 'SOLICITUD_PENDIENTE' }],
+      });
+      const me = await http()
+        .get(`${BASE}/me`)
         .set('Authorization', auth(worker))
-        .send({ toZoneId: zoneA.id, reason: 'Otra solicitud' })
-        .expect(409);
+        .expect(200);
+      expect(me.body.zone.id).toBe(zoneB.id);
+
+      const duplicate = await requestChange(zoneA.id, 'Otra solicitud').expect(
+        409,
+      );
+      expect(duplicate.body.message).toEqual([
+        'Ya tiene una solicitud de cambio de zona pendiente',
+      ]);
     });
 
-    it('si se rechaza, el trabajador conserva su zona', async () => {
-      await profiles.decideZoneChangeRequest(admin.id, rejectedId, {
-        decision: 'RECHAZADA',
-        comment: 'No hay demanda en esa zona',
+    it('las operaciones administrativas exigen rol administrador', async () => {
+      await http()
+        .get(`${BASE}/admin/zone-change-requests`)
+        .set('Authorization', auth(worker))
+        .expect(403);
+      await http().get(`${BASE}/admin/zone-change-requests`).expect(401);
+      await decide(rejectedId, { decision: 'APROBADA' }, worker).expect(403);
+      await decide(rejectedId, { decision: 'APROBADA' }, client).expect(403);
+    });
+
+    it('el administrador consulta las solicitudes con datos del trabajador y zonas', async () => {
+      const list = await http()
+        .get(`${BASE}/admin/zone-change-requests`)
+        .query({ status: 'PENDIENTE', workerUserId: worker.id })
+        .set('Authorization', auth(admin))
+        .expect(200);
+      expect(list.body.meta).toMatchObject({ total: 1 });
+      expect(list.body.data[0]).toMatchObject({
+        id: rejectedId,
+        status: 'PENDIENTE',
+        reason: 'Me mudé de barrio',
+        fromZone: { id: zoneB.id, name: zoneB.name },
+        toZone: { id: zoneC.id, name: zoneC.name },
+        decidedBy: null,
+        worker: {
+          userId: worker.id,
+          profileId,
+          email: worker.email,
+          phone: '70000000',
+          profileStatus: WorkerProfileStatus.APROBADO,
+          currentZone: { id: zoneB.id },
+        },
       });
+
+      const detail = await http()
+        .get(`${BASE}/admin/zone-change-requests/${rejectedId}`)
+        .set('Authorization', auth(admin))
+        .expect(200);
+      expect(detail.body.id).toBe(rejectedId);
+      await http()
+        .get(`${BASE}/admin/zone-change-requests/${randomUUID()}`)
+        .set('Authorization', auth(admin))
+        .expect(404);
+      await http()
+        .get(`${BASE}/admin/zone-change-requests/123`)
+        .set('Authorization', auth(admin))
+        .expect(400);
+    });
+
+    it('si se rechaza, el trabajador conserva su zona (motivo opcional)', async () => {
+      await decide(rejectedId, { decision: 'PENDIENTE' }).expect(400);
+
+      const res = await decide(rejectedId, { decision: 'RECHAZADA' }).expect(
+        200,
+      );
+      expect(res.body).toMatchObject({
+        status: 'RECHAZADA',
+        decisionComment: null,
+        decidedBy: { id: admin.id },
+      });
+      expect(res.body.decidedAt).toBeTruthy();
 
       const me = await http()
         .get(`${BASE}/me`)
         .set('Authorization', auth(worker))
         .expect(200);
       expect(me.body.zone.id).toBe(zoneB.id);
+      const again = await decide(rejectedId, { decision: 'APROBADA' }).expect(
+        409,
+      );
+      expect(again.body.message).toBe('La solicitud ya fue resuelta');
     });
 
     it('si se aprueba, la nueva zona reemplaza a la anterior', async () => {
-      const res = await http()
-        .post(`${BASE}/me/zone-change-requests`)
-        .set('Authorization', auth(worker))
-        .send({ toZoneId: zoneC.id, reason: 'Nuevo domicilio' })
-        .expect(201);
-      await profiles.decideZoneChangeRequest(admin.id, res.body.id, {
+      const created = await requestChange(zoneC.id, 'Nuevo domicilio').expect(
+        201,
+      );
+      await decide(created.body.id, {
         decision: 'APROBADA',
-      });
+        comment: 'Domicilio verificado',
+      }).expect(200);
 
-      const me = await http()
-        .get(`${BASE}/me`)
-        .set('Authorization', auth(worker))
-        .expect(200);
-      expect(me.body.zone.id).toBe(zoneC.id);
-      await expect(
-        profiles.decideZoneChangeRequest(admin.id, res.body.id, {
-          decision: 'RECHAZADA',
-          comment: 'tarde',
-        }),
-      ).rejects.toThrow('La solicitud ya fue resuelta');
+      const status = await zoneStatus();
+      expect(status.body).toMatchObject({
+        currentZone: { id: zoneC.id },
+        pendingRequest: null,
+        canRequestChange: true,
+      });
     });
 
-    it('conserva el historial de solicitudes y decisiones', async () => {
-      const res = await http()
+    it('conserva el historial de solicitudes y resoluciones', async () => {
+      const own = await http()
         .get(`${BASE}/me/zone-change-requests`)
         .set('Authorization', auth(worker))
         .expect(200);
-
       expect(
-        res.body.map(
+        own.body.map(
           (r: { status: string; decisionComment: string | null }) => [
             r.status,
             r.decisionComment,
           ],
         ),
       ).toEqual([
-        ['APROBADA', null],
-        ['RECHAZADA', 'No hay demanda en esa zona'],
+        ['APROBADA', 'Domicilio verificado'],
+        ['RECHAZADA', null],
       ]);
+
+      const resolved = await http()
+        .get(`${BASE}/admin/zone-change-requests`)
+        .query({ resolved: true, workerUserId: worker.id })
+        .set('Authorization', auth(admin))
+        .expect(200);
+      expect(resolved.body.meta.total).toBe(2);
+      expect(
+        resolved.body.data.every(
+          (r: { decidedBy: { id: string } }) => r.decidedBy.id === admin.id,
+        ),
+      ).toBe(true);
+
       const logs = await prisma.adminAuditLog.findMany({
         where: {
           entityType: AuditEntityType.SOLICITUD_CAMBIO_ZONA,
@@ -833,19 +1001,80 @@ describe('WorkerProfileModule (e2e)', () => {
       ]);
     });
 
+    it('la BD impide borrar o reescribir el historial', async () => {
+      await expect(
+        prisma.zoneChangeRequest.update({
+          where: { id: rejectedId },
+          data: { status: ZoneChangeRequestStatus.APROBADA },
+        }),
+      ).rejects.toThrow(/ya resuelta no se puede modificar/);
+      await expect(
+        prisma.zoneChangeRequest.deleteMany({ where: { profileId } }),
+      ).rejects.toThrow(/no se pueden eliminar/);
+      expect(
+        await prisma.zoneChangeRequest.count({ where: { profileId } }),
+      ).toBe(2);
+    });
+
+    it('no se aprueba hacia una zona desactivada, pero si se puede rechazar', async () => {
+      const zoneD = await catalogs.create(CatalogKind.ZONE, admin.id, {
+        name: label('Zona D'),
+      });
+      const created = await requestChange(zoneD.id, 'Zona nueva').expect(201);
+      await catalogs.deactivate(CatalogKind.ZONE, admin.id, zoneD.id);
+
+      const detail = await http()
+        .get(`${BASE}/admin/zone-change-requests/${created.body.id}`)
+        .set('Authorization', auth(admin))
+        .expect(200);
+      expect(detail.body.toZone).toMatchObject({
+        id: zoneD.id,
+        isActive: false,
+      });
+
+      const approve = await decide(created.body.id, {
+        decision: 'APROBADA',
+      }).expect(409);
+      expect(approve.body.message).toBe(
+        `No se puede aprobar: la zona solicitada "${zoneD.name}" fue desactivada. Rechace la solicitud para que el trabajador pueda pedir otra zona.`,
+      );
+      const pending = await zoneStatus();
+      expect(pending.body).toMatchObject({
+        currentZone: { id: zoneC.id },
+        pendingRequest: { id: created.body.id },
+      });
+
+      await decide(created.body.id, { decision: 'RECHAZADA' }).expect(200);
+      const after = await zoneStatus();
+      expect(after.body).toMatchObject({
+        currentZone: { id: zoneC.id },
+        pendingRequest: null,
+      });
+    });
+
     it('de dos solicitudes simultaneas solo una queda pendiente', async () => {
       const responses = await Promise.all(
         [zoneA.id, zoneB.id].map((toZoneId) =>
-          http()
-            .post(`${BASE}/me/zone-change-requests`)
-            .set('Authorization', auth(worker))
-            .send({ toZoneId, reason: 'Solicitud simultánea' }),
+          requestChange(toZoneId, 'Solicitud simultánea'),
         ),
       );
 
       expect(responses.map((r) => r.status).sort((a, b) => a - b)).toEqual([
         201, 409,
       ]);
+    });
+
+    it('los datos originales de una solicitud pendiente no se pueden reescribir', async () => {
+      const pending = await prisma.zoneChangeRequest.findFirstOrThrow({
+        where: { profileId, status: ZoneChangeRequestStatus.PENDIENTE },
+      });
+
+      await expect(
+        prisma.zoneChangeRequest.update({
+          where: { id: pending.id },
+          data: { reason: 'Motivo alterado' },
+        }),
+      ).rejects.toThrow(/datos originales/);
     });
   });
 

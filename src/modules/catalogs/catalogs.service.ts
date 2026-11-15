@@ -67,6 +67,8 @@ interface CatalogConfig {
   noun: string;
   entityType: AuditEntityType;
   table: (db: Db) => CatalogTable;
+  /** Tabla en la BD, para el bloqueo FOR SHARE (constante, nunca del usuario). */
+  tableName: string;
 }
 
 const CATALOGS: Record<CatalogKind, CatalogConfig> = {
@@ -74,11 +76,13 @@ const CATALOGS: Record<CatalogKind, CatalogConfig> = {
     noun: 'categoría',
     entityType: AuditEntityType.CATEGORIA_SERVICIO,
     table: (db) => db.serviceCategory,
+    tableName: 'service_categories',
   },
   ZONE: {
     noun: 'zona',
     entityType: AuditEntityType.ZONA,
     table: (db) => db.zone,
+    tableName: 'zones',
   },
 };
 
@@ -151,6 +155,59 @@ export class CatalogsService {
    */
   async assertActive(kind: CatalogKind, id: string): Promise<CatalogItem> {
     const item = await this.findById(kind, id);
+    if (!item.isActive) {
+      throw new BadRequestException(
+        `La ${CATALOGS[kind].noun} seleccionada no está activa`,
+      );
+    }
+    return item;
+  }
+
+  /**
+   * Version transaccional de findByIds para otros modulos: dentro de la
+   * transaccion `tx` del llamador toma un bloqueo compartido
+   * (SELECT ... FOR SHARE) sobre los registros y los devuelve, activos o no.
+   * Hasta que esa transaccion termine nadie puede desactivarlos ni editarlos:
+   * una desactivacion simultanea espera, o ya se ve aplicada si se confirmo
+   * antes. Varios lectores no se bloquean entre si.
+   *
+   * Orden de bloqueos del proyecto: trabajador, pedido y, al final, catalogos.
+   * Las filas se bloquean ordenadas por id.
+   */
+  async findByIdsForShare(
+    tx: Db,
+    kind: CatalogKind,
+    ids: string[],
+  ): Promise<CatalogItem[]> {
+    const validIds = [...new Set(ids)].filter((id) => isUUID(id));
+    if (validIds.length === 0) {
+      return [];
+    }
+    await tx.$queryRaw`
+      SELECT "id" FROM ${Prisma.raw(`"${CATALOGS[kind].tableName}"`)}
+      WHERE "id" = ANY(${validIds}::uuid[])
+      ORDER BY "id"
+      FOR SHARE`;
+    return CATALOGS[kind].table(tx).findMany({
+      where: { id: { in: validIds } },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  /**
+   * Version transaccional de assertActive: misma validacion y mismos errores
+   * (404 si no existe, 400 si esta inactiva), con el registro bloqueado
+   * (FOR SHARE) hasta que termine la transaccion `tx` del llamador.
+   */
+  async assertActiveForShare(
+    tx: Db,
+    kind: CatalogKind,
+    id: string,
+  ): Promise<CatalogItem> {
+    const [item] = await this.findByIdsForShare(tx, kind, [id]);
+    if (!item) {
+      throw notFound(kind);
+    }
     if (!item.isActive) {
       throw new BadRequestException(
         `La ${CATALOGS[kind].noun} seleccionada no está activa`,

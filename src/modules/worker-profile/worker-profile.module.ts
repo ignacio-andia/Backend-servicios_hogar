@@ -6,12 +6,14 @@ import { StorageModule } from '../../storage/storage.module.js';
 import { AuditModule } from '../audit/audit.module.js';
 import { CatalogsModule } from '../catalogs/catalogs.module.js';
 import { UsersModule } from '../users/users.module.js';
+import { WorkerActiveWorkRegistry } from './active-work.registry.js';
 import { ApprovedWorkerGuard } from './approved-worker.guard.js';
 import { documentMaxBytes } from './document-file.js';
 import { DocumentTooLargeFilter } from './document-too-large.filter.js';
 import { WorkerDocumentsService } from './worker-documents.service.js';
 import { WorkerProfileController } from './worker-profile.controller.js';
 import { WorkerProfileService } from './worker-profile.service.js';
+import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
 
 @Module({
   imports: [
@@ -38,9 +40,19 @@ import { WorkerProfileService } from './worker-profile.service.js';
   providers: [
     WorkerProfileService,
     WorkerDocumentsService,
+    ZoneChangeRequestsService,
+    WorkerActiveWorkRegistry,
     DocumentTooLargeFilter,
     ApprovedWorkerGuard,
   ],
-  exports: [WorkerProfileService, WorkerDocumentsService, ApprovedWorkerGuard],
+  // WorkerActiveWorkRegistry se exporta para que los modulos de pedidos y
+  // ofertas registren su consulta de trabajo activo (RF-13).
+  exports: [
+    WorkerProfileService,
+    WorkerDocumentsService,
+    ZoneChangeRequestsService,
+    WorkerActiveWorkRegistry,
+    ApprovedWorkerGuard,
+  ],
 })
 export class WorkerProfileModule {}
