@@ -74,9 +74,11 @@ Transiciones:
 | `RECHAZADA` | El perfil conserva su zona. Siempre tiene motivo (`decisionComment`) |
 | `CANCELADA` | Cerrada sin decisión administrativa (T4.2); el perfil conserva su zona. La causa está en `cancellationCause` |
 
-`ZoneChangeCancellationCause`: `SUSPENSION_PERFIL` (el perfil se suspendió con la solicitud pendiente).
+`ZoneChangeCancellationCause`: `SUSPENSION_PERFIL` (el perfil se suspendió con la solicitud pendiente, T4.2) o `RETIRO_TRABAJADOR` (el trabajador la retiró con #65, T4.3; migración `20261122300000_zone_change_withdrawal`).
 
-Transiciones: `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un administrador (`PATCH /admin/zone-change-requests/:id`); `PENDIENTE` → `CANCELADA`, automáticamente al suspender el perfil (#55). Solo un perfil `APROBADO` puede crear una solicitud, y no se aprueba una de un perfil `SUSPENDIDO` o `RECHAZADO`. Las solicitudes resueltas no cambian más (lo impide un trigger en la BD) y una CHECK exige la causa solo en `CANCELADA` (migración `20261122200000_zone_change_cancellation`).
+Mientras exista una solicitud `PENDIENTE`, el trabajador no puede ofertar ni recibir trabajos nuevos (409); al aprobarse, rechazarse, retirarse o cancelarse vuelve a poder hacerlo, en la zona vigente. No afecta a los trabajos que ya tiene.
+
+Transiciones: `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un administrador (`PATCH /admin/zone-change-requests/:id`); `PENDIENTE` → `CANCELADA`, automáticamente al suspender el perfil (#55) o cuando el trabajador la retira (#65). Solo un perfil `APROBADO` puede crear una solicitud, y no se aprueba una de un perfil `SUSPENDIDO` o `RECHAZADO`. Las solicitudes resueltas no cambian más (lo impide un trigger en la BD) y una CHECK exige la causa solo en `CANCELADA` (migración `20261122200000_zone_change_cancellation`).
 
 ### `OrderStatus`
 
@@ -136,6 +138,7 @@ Notificaciones internas (T3.2, migración `20261122100000_create_notifications`)
 | `SOLICITUD_ZONA_APROBADA` | El trabajador | Su solicitud de cambio de zona se aprobó (#40) | Solo si el administrador escribió un comentario |
 | `SOLICITUD_ZONA_RECHAZADA` | El trabajador | Su solicitud se rechazó (#40) | Sí (obligatorio) |
 | `SOLICITUD_ZONA_CANCELADA` | El trabajador | Su solicitud pendiente se canceló al suspender su perfil (#55) | No (la suspensión llega en su propia notificación `PERFIL_SUSPENDIDO`) |
+| `SOLICITUD_ZONA_RETIRADA` | El trabajador | Confirma que retiró su solicitud (#65, T4.3) | No |
 
 Cada notificación se crea **en la misma transacción** que el evento: si falla, el cambio de estado o el envío tampoco se confirma. `NotificationResourceType`: `PERFIL_TRABAJADOR` (eventos de verificación) o `SOLICITUD_CAMBIO_ZONA` (T4.2).
 

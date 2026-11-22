@@ -178,9 +178,14 @@ enum ZoneChangeRequestStatus {
   CANCELADA
 }
 
-/// Causa de una cancelacion automatica de solicitud de cambio de zona (T4.2).
+/// Causa de la cancelacion de una solicitud de cambio de zona. No es una
+/// decision del administrador sobre la solicitud.
+/// SUSPENSION_PERFIL (T4.2): automatica al suspender el perfil; decidedBy es el
+/// administrador que suspendio. RETIRO_TRABAJADOR (T4.3): el trabajador la
+/// retiro; decidedBy es el propio trabajador.
 enum ZoneChangeCancellationCause {
   SUSPENSION_PERFIL
+  RETIRO_TRABAJADOR
 }
 
 /// Perfil del trabajador (RF-06). Nombre, correo y teléfono pertenecen a User.
@@ -456,6 +461,8 @@ enum NotificationType {
   SOLICITUD_ZONA_APROBADA
   SOLICITUD_ZONA_RECHAZADA
   SOLICITUD_ZONA_CANCELADA
+  /// Confirmacion al trabajador de que retiro su solicitud (T4.3).
+  SOLICITUD_ZONA_RETIRADA
 }
 
 /// Recurso al que apunta una notificacion (para navegar desde la interfaz).

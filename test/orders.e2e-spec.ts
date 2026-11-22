@@ -3,6 +3,7 @@ import { access, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  ConflictException,
   ForbiddenException,
   INestApplication,
   NotFoundException,
@@ -44,6 +45,7 @@ import {
   WorkerActiveWorkRegistry,
 } from '../src/modules/worker-profile/active-work.registry.js';
 import { WorkerProfileService } from '../src/modules/worker-profile/worker-profile.service.js';
+import { ZoneChangeRequestsService } from '../src/modules/worker-profile/zone-change-requests.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { FileStorage } from '../src/storage/file-storage.js';
 import { deleteOrderData } from './utils/orders-cleanup.js';
@@ -1428,6 +1430,83 @@ describe('OrdersModule (e2e)', () => {
       });
       await prisma.order.update({
         where: { id },
+        data: { status: OrderStatus.CERRADO },
+      });
+    });
+
+    it('con un cambio de zona pendiente no recibe asignaciones ni oferta; conserva sus trabajos acordados (T4.3)', async () => {
+      const visibility = app.get(OrderVisibilityService);
+      const assign = (orderId: string) =>
+        prisma.$transaction((tx) =>
+          service.transition(tx, {
+            orderId,
+            to: OrderStatus.ACORDADO,
+            actor: clientActor(client2.id),
+            assignWorkerId: workerOtherCategory.id,
+          }),
+        );
+      const offer = (orderId: string) =>
+        prisma.$transaction((tx) =>
+          visibility.assertOpenForOffers(tx, workerOtherCategory.id, orderId),
+        );
+      // Trabajo acordado antes de la solicitud, y un pedido en negociacion.
+      const agreedId = await newOrder('Instalar un calefón a gas nuevo');
+      await toNegotiation(agreedId);
+      await assign(agreedId);
+      const newId = await newOrder('Reparar la ducha eléctrica del baño');
+      await toNegotiation(newId);
+      const openId = await newOrder('Cambiar la grifería del lavamanos');
+
+      // Solicitud pendiente como dato de prueba: este archivo no registra la
+      // fuente OFERTAS y, con un trabajo acordado, la solicitud por HTTP se
+      // bloquearia por TRABAJO_ACTIVO.
+      const profile = await prisma.workerProfile.findUniqueOrThrow({
+        where: { userId: workerOtherCategory.id },
+      });
+      const pending = await prisma.zoneChangeRequest.create({
+        data: {
+          profileId: profile.id,
+          fromZoneId: profile.zoneId,
+          toZoneId: zoneB.id,
+          reason: 'Solicitud de prueba T4.3',
+        },
+      });
+      const blocked = new ConflictException(
+        'Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire.',
+      );
+
+      await expect(assign(newId)).rejects.toThrow(blocked);
+      await expect(offer(openId)).rejects.toThrow(blocked);
+      expect(await stored(newId)).toMatchObject({
+        status: OrderStatus.EN_NEGOCIACION,
+        assignedWorkerId: null,
+      });
+      // El trabajo ya acordado sigue igual: no se cancela ni se libera.
+      expect(await stored(agreedId)).toMatchObject({
+        status: OrderStatus.ACORDADO,
+        assignedWorkerId: workerOtherCategory.id,
+      });
+
+      // Al retirar la solicitud vuelve a participar.
+      await app
+        .get(ZoneChangeRequestsService)
+        .withdraw(workerOtherCategory.id, pending.id);
+      await expect(offer(openId)).resolves.toMatchObject({
+        order: { status: OrderStatus.PUBLICADO },
+      });
+      await assign(newId);
+      expect(await stored(newId)).toMatchObject({
+        status: OrderStatus.ACORDADO,
+        assignedWorkerId: workerOtherCategory.id,
+      });
+      expect(await stored(agreedId)).toMatchObject({
+        status: OrderStatus.ACORDADO,
+        assignedWorkerId: workerOtherCategory.id,
+      });
+
+      // Igual que las demas pruebas: no dejar trabajo activo al trabajador.
+      await prisma.order.updateMany({
+        where: { id: { in: [agreedId, newId] } },
         data: { status: OrderStatus.CERRADO },
       });
     });

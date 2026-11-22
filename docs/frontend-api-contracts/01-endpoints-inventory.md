@@ -3,7 +3,7 @@
 Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí no existe: ver [09](09-gaps-and-pending-contracts.md).
 
 - Base: `http://localhost:3000/api`. Todas las rutas siguientes incluyen el prefijo `/api`.
-- Total: **64 endpoints**.
+- Total: **65 endpoints**.
 
 | Módulo | Endpoints |
 |---|---|
@@ -11,7 +11,7 @@ Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí 
 | UsersModule | 4 |
 | CatalogsModule | 14 |
 | AuditModule | 1 |
-| WorkerProfileModule | 25 |
+| WorkerProfileModule | 26 |
 | OrdersModule | 13 |
 | NotificationsModule | 4 |
 
@@ -99,6 +99,7 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 | 34 | GET | `/api/worker-profile/me/documents/:documentId/download` | ✅ | `TRABAJADOR`; documento propio (cualquier estado) | `documentId` | — | Binario (`attachment`) | 200, 400, 401, 403, 404 | 404 documento ajeno o inexistente |
 | 35 | GET | `/api/worker-profile/me/zone` | ✅ | `TRABAJADOR` | — | — | `ZoneStatusView` | 200, 401, 403, 404 | — |
 | 36 | POST | `/api/worker-profile/me/zone-change-requests` | 🟡 (hoy siempre 409, ver nota) | `TRABAJADOR`; perfil **`APROBADO`** (T4.2) | — | `CreateZoneChangeRequestDto` (JSON) | `ZoneChangeRequestView` | 201, 400, 401, 403, 404, 409 | 400 `"La zona solicitada es su zona actual"`; 400 zona inactiva; 404 zona inexistente; 409 con un **arreglo** de motivos (ver `ZoneChangeBlocker`), por ejemplo `"No se puede solicitar un cambio de zona con el perfil en estado X"`; 409 `"Ya tiene una solicitud de cambio de zona pendiente"`. La zona se vuelve a validar con bloqueo dentro de la transacción |
+| 65 | POST | `/api/worker-profile/me/zone-change-requests/:requestId/withdraw` | ✅ | `TRABAJADOR`; solicitud **propia** y `PENDIENTE` | `requestId` (UUID) | — (sin cuerpo) | `ZoneChangeRequestView` (`CANCELADA`, `cancellationCause: "RETIRO_TRABAJADOR"`) | **200**, 400, 401, 403, 404, 409 | 404 `"La solicitud de cambio de zona no existe"` (también si es de otro usuario); 409 `"La solicitud ya fue resuelta"` (aprobada, rechazada, cancelada o ya retirada). Notifica al trabajador (T4.3) |
 | 37 | GET | `/api/worker-profile/me/zone-change-requests` | ✅ | `TRABAJADOR` | — | — | `ZoneChangeRequestView[]` (más reciente primero) | 200, 401, 403, 404 | — |
 | 38 | GET | `/api/worker-profile/admin/zone-change-requests` | ✅ | Admin | Query: `status?`, `resolved?`, `workerUserId?`, `page?`, `limit?` (≤ 100) | `ListZoneChangeRequestsQueryDto` | `Paginated<AdminZoneChangeRequestView>` | 200, 400, 401, 403 | — |
 | 39 | GET | `/api/worker-profile/admin/zone-change-requests/:requestId` | ✅ | Admin | `requestId` | — | `AdminZoneChangeRequestView` | 200, 400, 401, 403, 404 | 404 `"La solicitud de cambio de zona no existe"` |
@@ -112,6 +113,8 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 | 55 | PATCH | `/api/worker-profile/admin/profiles/:profileId/status` | ✅ | Admin activo; **no sobre su propio perfil** | `profileId` (UUID) | `ChangeWorkerProfileStatusDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 motivo ausente o vacío (`OBSERVADO`, `RECHAZADO`, `SUSPENDIDO`) o estado no permitido; 403 `"No puede revisar ni decidir sobre su propio perfil de trabajador"`; 404 `"El perfil de trabajador no existe"`; 409 transición inválida (`"No se puede pasar un perfil de X a Y"`); 409 requisitos de aprobación no cumplidos (arreglo); 409 cambio de estado concurrente |
 
 > **Nota (#36):** hoy la solicitud de cambio de zona **siempre se bloquea** con el motivo `VERIFICACION_NO_DISPONIBLE`, porque la fuente de trabajo activo `OFERTAS` todavía no existe (OffersModule no está implementado). El endpoint, sus validaciones y la decisión del administrador funcionan.
+>
+> **Nota (T4.3): trabajo nuevo con una solicitud pendiente.** Mientras el trabajador tenga una solicitud de cambio de zona `PENDIENTE`, `WorkerProfileService.lockApprovedWorker` responde 409 `"Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire."`. Lo usan la asignación de un pedido (`OrdersService.transition` a `ACORDADO`) y `OrderVisibilityService.assertOpenForOffers`, que debe usar el futuro módulo de ofertas. Tampoco aparece en `findApprovedWorkers`. Puede seguir consultando pedidos (#52–#54) y sus trabajos ya acordados no cambian. **No existen endpoints de ofertas**: el bloqueo de ofertas queda listo en ese punto de integración, pero no hay una ruta HTTP que lo ejerza todavía.
 >
 > **Nota (#40 y #55, T4.2):** suspender un perfil (#55) **cancela** su solicitud de cambio de zona pendiente en la misma transacción: queda `CANCELADA` con `cancellationCause: "SUSPENSION_PERFIL"` (no es un rechazo), el administrador que suspendió queda como `decidedBy`, la zona no cambia, se registra en la bitácora y se notifica al trabajador.
 >

@@ -230,6 +230,8 @@ En la subida (`POST …/documents`), en cambio, sí hay DTO: un campo de texto d
 { "toZoneId": "6a7b8c9d-0e1f-4a2b-8c3d-4e5f6a7b8c9d", "reason": "Me mudé a la zona sur" }
 ```
 
+`POST /api/worker-profile/me/zone-change-requests/:requestId/withdraw` (retiro, T4.3) no lleva cuerpo.
+
 ### `DecideZoneChangeRequestDto`: `PATCH /api/worker-profile/admin/zone-change-requests/:requestId` (JSON)
 
 | Propiedad | Tipo | Omitir / null | Restricciones | Reglas |

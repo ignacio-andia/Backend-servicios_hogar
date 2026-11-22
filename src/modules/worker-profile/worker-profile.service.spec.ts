@@ -14,6 +14,7 @@ import {
   UserStatus,
   WeekDay,
   WorkerProfileStatus,
+  ZoneChangeRequestStatus,
 } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -111,10 +112,16 @@ describe('WorkerProfileService', () => {
       ReturnType<typeof vi.fn>
     >;
     zoneChangeRequest: Record<
-      'create' | 'findMany' | 'findUnique' | 'findUniqueOrThrow' | 'updateMany',
+      | 'create'
+      | 'count'
+      | 'findMany'
+      | 'findUnique'
+      | 'findUniqueOrThrow'
+      | 'updateMany',
       ReturnType<typeof vi.fn>
     >;
     $transaction: ReturnType<typeof vi.fn>;
+    $queryRaw: ReturnType<typeof vi.fn>;
   };
   let users: Record<'findById' | 'grantWorkerRole', ReturnType<typeof vi.fn>>;
   let catalogs: Record<
@@ -144,6 +151,7 @@ describe('WorkerProfileService', () => {
       workerProfileStatusHistory: mockFns('create', 'findMany', 'findFirst'),
       zoneChangeRequest: mockFns(
         'create',
+        'count',
         'findMany',
         'findUnique',
         'findUniqueOrThrow',
@@ -152,7 +160,10 @@ describe('WorkerProfileService', () => {
       $transaction: vi.fn((work: (tx: unknown) => Promise<unknown>) =>
         work(prisma),
       ),
+      // lockWorker: SELECT ... FOR UPDATE dentro de la transaccion.
+      $queryRaw: vi.fn().mockResolvedValue([]),
     };
+    prisma.zoneChangeRequest.count.mockResolvedValue(0);
     prisma.workerProfile.updateMany.mockResolvedValue({ count: 1 });
     users = {
       findById: vi.fn().mockResolvedValue(user()),
@@ -677,6 +688,10 @@ describe('WorkerProfileService', () => {
         status: WorkerProfileStatus.APROBADO,
         zoneId: ZONE_A,
         specialties: { some: { categoryId: CATEGORY } },
+        // T4.3: con un cambio de zona pendiente no es candidato.
+        zoneChangeRequests: {
+          none: { status: ZoneChangeRequestStatus.PENDIENTE },
+        },
         user: {
           status: UserStatus.ACTIVO,
           roles: { some: { role: RoleName.TRABAJADOR } },
@@ -690,6 +705,47 @@ describe('WorkerProfileService', () => {
           categoryIds: [CATEGORY],
         },
       ]);
+    });
+
+    describe('lockApprovedWorker con un cambio de zona pendiente (T4.3)', () => {
+      const lockedProfile = () => ({
+        ...profile({ status: WorkerProfileStatus.APROBADO }),
+        user: {
+          status: UserStatus.ACTIVO,
+          roles: [{ role: RoleName.TRABAJADOR }],
+        },
+      });
+
+      it('sin solicitud pendiente devuelve el trabajador aprobado', async () => {
+        prisma.workerProfile.findUnique.mockResolvedValue(lockedProfile());
+
+        await expect(
+          service.lockApprovedWorker(prisma as never, USER_ID),
+        ).resolves.toMatchObject({ profileId: PROFILE_ID, userId: USER_ID });
+        expect(prisma.zoneChangeRequest.count).toHaveBeenCalledWith({
+          where: {
+            profileId: PROFILE_ID,
+            status: ZoneChangeRequestStatus.PENDIENTE,
+          },
+        });
+        // La consulta va despues del bloqueo del trabajador.
+        expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+          prisma.zoneChangeRequest.count.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('con una solicitud pendiente no puede tomar trabajos nuevos (409)', async () => {
+        prisma.workerProfile.findUnique.mockResolvedValue(lockedProfile());
+        prisma.zoneChangeRequest.count.mockResolvedValue(1);
+
+        await expect(
+          service.lockApprovedWorker(prisma as never, USER_ID),
+        ).rejects.toThrow(
+          new ConflictException(
+            'Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire.',
+          ),
+        );
+      });
     });
 
     it('no hay elegibles si la categoria o la zona estan inactivas', async () => {

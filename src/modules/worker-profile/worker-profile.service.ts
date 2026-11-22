@@ -39,6 +39,7 @@ import {
   ADMIN_TRANSITIONS,
   EDITABLE_STATUSES,
   NOT_APPROVED_MESSAGES,
+  PENDING_ZONE_CHANGE_BLOCKS_NEW_WORK_MESSAGE,
   STATUSES_REQUIRING_REASON,
   SUBMITTABLE_STATUSES,
   ZONE_DIRECTLY_EDITABLE_STATUS,
@@ -541,6 +542,12 @@ export class WorkerProfileService {
    *
    * Orden de bloqueos del proyecto: primero el trabajador (este metodo),
    * despues el pedido. Lanza 403 con el mismo mensaje que assertWorkerApproved.
+   *
+   * T4.3: con una solicitud de cambio de zona PENDIENTE lanza 409: no puede
+   * ofertar ni recibir trabajos nuevos. Se lee con el bloqueo tomado, asi que
+   * una solicitud, un retiro o una decision simultanea esperan su turno. Solo
+   * lo usan operaciones que crean trabajo nuevo (asignar un pedido, ofertar):
+   * los trabajos que ya tiene no pasan por aqui y no se ven afectados.
    */
   async lockApprovedWorker(
     tx: Prisma.TransactionClient,
@@ -570,12 +577,22 @@ export class WorkerProfileService {
           : eligibility,
       );
     }
+    const pendingZoneChange = await tx.zoneChangeRequest.count({
+      where: {
+        profileId: profile.id,
+        status: ZoneChangeRequestStatus.PENDIENTE,
+      },
+    });
+    if (pendingZoneChange > 0) {
+      throw new ConflictException(PENDING_ZONE_CHANGE_BLOCKS_NEW_WORK_MESSAGE);
+    }
     return toApprovedWorker(profile);
   }
 
   /**
    * Trabajadores elegibles para una categoria y zona: perfil APROBADO,
-   * cuenta activa y rol de trabajador vigente. Si la categoria o la zona
+   * cuenta activa, rol de trabajador vigente y sin una solicitud de cambio de
+   * zona pendiente (T4.3: no son candidatos para trabajos nuevos). Si la categoria o la zona
    * estan inactivas no hay elegibles (no se aceptan registros nuevos).
    */
   async findApprovedWorkers(filter: {
@@ -594,6 +611,9 @@ export class WorkerProfileService {
         status: WorkerProfileStatus.APROBADO,
         zoneId: zone.id,
         specialties: { some: { categoryId: category.id } },
+        zoneChangeRequests: {
+          none: { status: ZoneChangeRequestStatus.PENDIENTE },
+        },
         user: {
           status: UserStatus.ACTIVO,
           roles: { some: { role: RoleName.TRABAJADOR } },

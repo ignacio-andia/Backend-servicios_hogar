@@ -97,6 +97,16 @@ export const ADMIN_TARGET_STATUSES = [
   WorkerProfileStatus.SUSPENDIDO,
 ] as const;
 
+/**
+ * Mientras el trabajador tenga una solicitud de cambio de zona PENDIENTE no
+ * puede participar en trabajos nuevos (especificacion v1.0 §4, T4.3): ni
+ * ofertar ni recibir asignaciones. No afecta a los trabajos que ya tiene.
+ * Lo aplica WorkerProfileService.lockApprovedWorker, que usan la asignacion
+ * de pedidos y el futuro modulo de ofertas (OrderVisibilityService.assertOpenForOffers).
+ */
+export const PENDING_ZONE_CHANGE_BLOCKS_NEW_WORK_MESSAGE =
+  'Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire.';
+
 // Decisiones que deben explicarse al trabajador (RF-10 y CU-03 A1).
 export const STATUSES_REQUIRING_REASON: readonly WorkerProfileStatus[] = [
   WorkerProfileStatus.OBSERVADO,

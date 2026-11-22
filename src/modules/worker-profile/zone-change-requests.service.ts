@@ -31,6 +31,7 @@ import {
   zoneRequestCancelledBySuspensionNotification,
   zoneRequestDecisionNotification,
   ZoneRequestNames,
+  zoneRequestWithdrawnNotification,
 } from './worker-profile.notifications.js';
 import {
   ZONE_APPROVAL_BLOCKED_STATUSES,
@@ -212,6 +213,60 @@ export class ZoneChangeRequestsService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Retiro voluntario (T4.3): el trabajador cancela su propia solicitud
+   * PENDIENTE. Queda CANCELADA con la causa RETIRO_TRABAJADOR; decidedBy y
+   * decidedAt registran que el trabajador la retiro y cuando. La zona no
+   * cambia y el registro no se borra. Una solicitud ajena responde 404, sin
+   * revelar si existe. Avisa al trabajador en la misma transaccion.
+   *
+   * Es una accion del trabajador: igual que el envio de su perfil (T3.1), no
+   * va a la bitacora administrativa; su constancia es la propia solicitud.
+   */
+  async withdraw(
+    userId: string,
+    requestId: string,
+  ): Promise<ZoneChangeRequestView> {
+    const withdrawn = await this.prisma.$transaction(async (tx) => {
+      // Misma fila que bloquean la decision administrativa y la suspension:
+      // el retiro y una decision simultanea se ejecutan de a una.
+      await this.activeWork.lockWorker(tx, userId);
+      const request = await tx.zoneChangeRequest.findFirst({
+        where: { id: requestId, profile: { userId } },
+      });
+      if (!request) {
+        throw new NotFoundException('La solicitud de cambio de zona no existe');
+      }
+      if (request.status !== ZoneChangeRequestStatus.PENDIENTE) {
+        throw alreadyResolved();
+      }
+      const { count } = await tx.zoneChangeRequest.updateMany({
+        where: { id: requestId, status: ZoneChangeRequestStatus.PENDIENTE },
+        data: {
+          status: ZoneChangeRequestStatus.CANCELADA,
+          cancellationCause: ZoneChangeCancellationCause.RETIRO_TRABAJADOR,
+          decidedAt: new Date(),
+          decidedById: userId,
+        },
+      });
+      if (count === 0) {
+        throw alreadyResolved();
+      }
+      await this.notifications.create(
+        userId,
+        zoneRequestWithdrawnNotification(
+          requestId,
+          await this.zoneNames(request),
+        ),
+        tx,
+      );
+      return tx.zoneChangeRequest.findUniqueOrThrow({
+        where: { id: requestId },
+      });
+    });
+    return (await this.toViews([withdrawn]))[0];
   }
 
   async listOwn(userId: string): Promise<ZoneChangeRequestView[]> {

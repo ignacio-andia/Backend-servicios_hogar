@@ -27,6 +27,7 @@ Cada modelo se obtuvo de lo que **construye el service** (selects explícitos, f
 | #35 zona | `ZoneStatusView` |
 | #36 crear solicitud | `ZoneChangeRequestView` |
 | #37 solicitudes propias | `ZoneChangeRequestView[]` |
+| #65 retirar una solicitud propia | `ZoneChangeRequestView` (ya `CANCELADA`) |
 | #38 solicitudes (admin) | `Paginated<AdminZoneChangeRequestView>` |
 | #39, #40 solicitud (admin) | `AdminZoneChangeRequestView` |
 | #41 perfiles con zona inactiva | `AffectedProfile[]` |
@@ -380,7 +381,7 @@ Valores de `code`:
 | `createdAt` | string | no |
 | `decidedAt` | string | **sí** |
 | `decisionComment` | string | **sí** (en la entrada se llama `comment`). Siempre presente en `RECHAZADA`; `null` en `CANCELADA` |
-| `cancellationCause` | `ZoneChangeCancellationCause` | **sí**. Solo en `CANCELADA` (hoy `SUSPENSION_PERFIL`). En ese caso `decidedAt` y `decidedBy` indican cuándo y qué administrador la provocó |
+| `cancellationCause` | `ZoneChangeCancellationCause` | **sí**. Solo en `CANCELADA`: `SUSPENSION_PERFIL` (T4.2; `decidedBy` es el administrador que suspendió) o `RETIRO_TRABAJADOR` (T4.3; `decidedBy` es el propio trabajador). `decidedAt` es la fecha de la cancelación. En `AdminZoneChangeRequestView`, `decidedBy` puede ser entonces el trabajador |
 
 ### `AdminZoneChangeRequestView` (extiende `ZoneChangeRequestView`)
 

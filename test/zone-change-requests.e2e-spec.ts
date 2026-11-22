@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { INestApplication } from '@nestjs/common';
+import { ConflictException, INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -680,6 +680,213 @@ describe('Cambio de zona: validaciones y decisiones (T4.2, e2e)', () => {
       }
       expect(await requestAudit(requestId)).toHaveLength(1);
       expect(await requestNotifications(worker, requestId)).toHaveLength(1);
+    });
+  });
+  describe('retiro voluntario (T4.3)', () => {
+    const withdraw = (requestId: string, user: PublicUser) =>
+      http()
+        .post(`${BASE}/me/zone-change-requests/${requestId}/withdraw`)
+        .set('Authorization', auth(user));
+
+    it('el trabajador retira su solicitud: queda CANCELADA por retiro y conserva su zona', async () => {
+      const { worker, requestId } = await pendingRequest('retiro');
+
+      const res = await withdraw(requestId, worker.user).expect(200);
+
+      expect(res.body).toMatchObject({
+        id: requestId,
+        status: ZoneChangeRequestStatus.CANCELADA,
+        cancellationCause: ZoneChangeCancellationCause.RETIRO_TRABAJADOR,
+        decisionComment: null,
+        fromZone: { id: zoneA.id },
+        toZone: { id: zoneB.id },
+      });
+      expect(res.body.decidedAt).toEqual(expect.any(String));
+      // Responsable y fecha del retiro; el registro se conserva.
+      const row = await requestRow(requestId);
+      expect(row).toMatchObject({
+        decidedById: worker.user.id,
+        reason: 'Me mudé de barrio',
+      });
+      expect(await zoneOf(worker)).toBe(zoneA.id);
+      const own = await http()
+        .get(`${BASE}/me/zone-change-requests`)
+        .set('Authorization', auth(worker.user))
+        .expect(200);
+      expect(own.body.map((r: { id: string }) => r.id)).toEqual([requestId]);
+      const detail = await http()
+        .get(`${BASE}/admin/zone-change-requests/${requestId}`)
+        .set('Authorization', auth(admin))
+        .expect(200);
+      expect(detail.body.decidedBy).toMatchObject({ id: worker.user.id });
+
+      // Una sola notificacion de confirmacion; nada en la bitacora administrativa.
+      const received = await requestNotifications(worker, requestId);
+      expect(received).toHaveLength(1);
+      expect(received[0]).toMatchObject({
+        type: NotificationType.SOLICITUD_ZONA_RETIRADA,
+        resourceType: NotificationResourceType.SOLICITUD_CAMBIO_ZONA,
+        message: `Retiró su solicitud de cambio a la zona "${zoneB.name}". Conserva su zona "${zoneA.name}" y ya puede volver a ofertar y tomar trabajos en ella.`,
+      });
+      expect(await requestAudit(requestId)).toHaveLength(0);
+
+      // Puede volver a solicitar.
+      await requestChange(worker, zoneC.id).expect(201);
+    });
+
+    it('nadie más puede retirar la solicitud', async () => {
+      const { requestId } = await pendingRequest('retiro-ajeno');
+      const other = await newWorker('retiro-intruso');
+
+      await http()
+        .post(`${BASE}/me/zone-change-requests/${requestId}/withdraw`)
+        .expect(401);
+      await withdraw(requestId, client).expect(403);
+      await withdraw(requestId, admin).expect(403);
+      const res = await withdraw(requestId, other.user).expect(404);
+      expect(res.body.message).toBe('La solicitud de cambio de zona no existe');
+      await withdraw(randomUUID(), other.user).expect(404);
+      await withdraw('no-es-uuid', other.user).expect(400);
+      expect((await requestRow(requestId)).status).toBe(
+        ZoneChangeRequestStatus.PENDIENTE,
+      );
+    });
+
+    it('una solicitud ya decidida o cancelada no se puede retirar', async () => {
+      const approved = await pendingRequest('retiro-aprobada');
+      await decide(approved.requestId, { decision: 'APROBADA' }).expect(200);
+      const rejected = await pendingRequest('retiro-rechazada');
+      await decide(rejected.requestId, {
+        decision: 'RECHAZADA',
+        comment: 'Sin cobertura',
+      }).expect(200);
+      const suspended = await pendingRequest('retiro-suspendida');
+      await suspend(suspended.worker).expect(200);
+      const twice = await pendingRequest('retiro-doble');
+      await withdraw(twice.requestId, twice.worker.user).expect(200);
+
+      for (const { worker, requestId } of [
+        approved,
+        rejected,
+        suspended,
+        twice,
+      ]) {
+        const res = await withdraw(requestId, worker.user).expect(409);
+        expect(res.body.message).toBe('La solicitud ya fue resuelta');
+      }
+      expect((await requestRow(approved.requestId)).status).toBe(
+        ZoneChangeRequestStatus.APROBADA,
+      );
+      expect((await requestRow(suspended.requestId)).cancellationCause).toBe(
+        ZoneChangeCancellationCause.SUSPENSION_PERFIL,
+      );
+      // El segundo intento no duplica la notificacion.
+      expect(
+        await requestNotifications(twice.worker, twice.requestId),
+      ).toHaveLength(1);
+    });
+
+    it('si falla la notificación, el retiro no se confirma', async () => {
+      const { worker, requestId } = await pendingRequest('retiro-falla');
+      vi.spyOn(notifications, 'create').mockRejectedValueOnce(
+        new Error('falla simulada de notificaciones'),
+      );
+
+      await withdraw(requestId, worker.user).expect(500);
+
+      expect(await requestRow(requestId)).toMatchObject({
+        status: ZoneChangeRequestStatus.PENDIENTE,
+        cancellationCause: null,
+        decidedById: null,
+      });
+      expect(await requestNotifications(worker, requestId)).toHaveLength(0);
+    });
+
+    it('retiro y decisión administrativa simultáneos: solo uno gana', async () => {
+      const { worker, requestId } = await pendingRequest('retiro-simultaneo');
+
+      const [withdrawal, approval] = await Promise.all([
+        withdraw(requestId, worker.user),
+        decide(requestId, { decision: 'APROBADA' }),
+      ]);
+
+      expect(
+        [withdrawal.status, approval.status].sort((a, b) => a - b),
+      ).toEqual([200, 409]);
+      const row = await requestRow(requestId);
+      if (withdrawal.status === 200) {
+        expect(row).toMatchObject({
+          status: ZoneChangeRequestStatus.CANCELADA,
+          cancellationCause: ZoneChangeCancellationCause.RETIRO_TRABAJADOR,
+        });
+        expect(await zoneOf(worker)).toBe(zoneA.id);
+        expect(await requestAudit(requestId)).toHaveLength(0);
+      } else {
+        expect(row.status).toBe(ZoneChangeRequestStatus.APROBADA);
+        expect(await zoneOf(worker)).toBe(zoneB.id);
+        expect(await requestAudit(requestId)).toHaveLength(1);
+      }
+      expect(await requestNotifications(worker, requestId)).toHaveLength(1);
+    });
+  });
+
+  describe('trabajos nuevos con una solicitud pendiente (T4.3)', () => {
+    const gate = (worker: Worker) =>
+      prisma.$transaction((tx) =>
+        profiles.lockApprovedWorker(tx, worker.user.id),
+      );
+    const candidates = () =>
+      profiles.findApprovedWorkers({
+        categoryId: category.id,
+        zoneId: zoneA.id,
+      });
+
+    it('no pasa la verificación de trabajo nuevo ni es candidato hasta resolverse', async () => {
+      const { worker, requestId } = await pendingRequest('bloqueo-trabajo');
+
+      await expect(gate(worker)).rejects.toThrow(
+        new ConflictException(
+          'Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire.',
+        ),
+      );
+      expect((await candidates()).map((c) => c.userId)).not.toContain(
+        worker.user.id,
+      );
+      // Sigue APROBADO: puede consultar pedidos, pero no participar.
+      await http()
+        .get('/api/orders/available')
+        .set('Authorization', auth(worker.user))
+        .expect(200);
+
+      await http()
+        .post(`${BASE}/me/zone-change-requests/${requestId}/withdraw`)
+        .set('Authorization', auth(worker.user))
+        .expect(200);
+
+      await expect(gate(worker)).resolves.toMatchObject({
+        userId: worker.user.id,
+        zoneId: zoneA.id,
+      });
+      expect((await candidates()).map((c) => c.userId)).toContain(
+        worker.user.id,
+      );
+    });
+
+    it('tras una decisión también se levanta la restricción, en la zona vigente', async () => {
+      const rejected = await pendingRequest('bloqueo-rechazo');
+      await decide(rejected.requestId, {
+        decision: 'RECHAZADA',
+        comment: 'Sin cobertura',
+      }).expect(200);
+      await expect(gate(rejected.worker)).resolves.toMatchObject({
+        zoneId: zoneA.id,
+      });
+
+      const approved = await pendingRequest('bloqueo-aprobacion');
+      await decide(approved.requestId, { decision: 'APROBADA' }).expect(200);
+      await expect(gate(approved.worker)).resolves.toMatchObject({
+        zoneId: zoneB.id,
+      });
     });
   });
 });

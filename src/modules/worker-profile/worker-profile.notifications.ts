@@ -185,3 +185,16 @@ export function zoneRequestCancelledBySuspensionNotification(
     resource: zoneRequestResource(requestId),
   };
 }
+
+/** Confirmacion al trabajador de que retiro su solicitud pendiente (T4.3). */
+export function zoneRequestWithdrawnNotification(
+  requestId: string,
+  { fromZone, toZone }: ZoneRequestNames,
+): NewNotification {
+  return {
+    type: NotificationType.SOLICITUD_ZONA_RETIRADA,
+    title: 'Solicitud de cambio de zona retirada',
+    message: `Retiró su solicitud de cambio a la zona "${toZone}". Conserva su zona "${fromZone}" y ya puede volver a ofertar y tomar trabajos en ella.`,
+    resource: zoneRequestResource(requestId),
+  };
+}

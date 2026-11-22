@@ -199,6 +199,17 @@ export class WorkerProfileController {
     return this.zoneRequests.requestZoneChange(user.id, dto);
   }
 
+  // T4.3: retiro voluntario de la solicitud pendiente propia.
+  @Post('me/zone-change-requests/:requestId/withdraw')
+  @HttpCode(HttpStatus.OK)
+  @Auth(RoleName.TRABAJADOR)
+  withdrawZoneChangeRequest(
+    @CurrentUser() user: PublicUser,
+    @Param('requestId', ParseUUIDPipe) requestId: string,
+  ): Promise<ZoneChangeRequestView> {
+    return this.zoneRequests.withdraw(user.id, requestId);
+  }
+
   @Get('me/zone-change-requests')
   @Auth(RoleName.TRABAJADOR)
   listZoneChangeRequests(

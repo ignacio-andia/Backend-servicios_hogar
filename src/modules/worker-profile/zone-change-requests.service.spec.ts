@@ -110,6 +110,7 @@ describe('ZoneChangeRequestsService', () => {
       | 'findFirst'
       | 'findMany'
       | 'findUnique'
+      | 'findUniqueOrThrow'
       | 'updateMany',
       ReturnType<typeof vi.fn>
     >;
@@ -149,6 +150,7 @@ describe('ZoneChangeRequestsService', () => {
         'findFirst',
         'findMany',
         'findUnique',
+        'findUniqueOrThrow',
         'updateMany',
       ),
       $transaction: vi.fn((work: unknown) =>
@@ -749,6 +751,108 @@ describe('ZoneChangeRequestsService', () => {
         fromZone: { id: ZONE_A },
         toZone: { id: ZONE_B },
       });
+    });
+  });
+
+  describe('withdraw (T4.3)', () => {
+    beforeEach(() => {
+      prisma.zoneChangeRequest.findFirst.mockResolvedValue(request());
+      prisma.zoneChangeRequest.findUniqueOrThrow.mockResolvedValue(
+        request({
+          status: ZoneChangeRequestStatus.CANCELADA,
+          cancellationCause: ZoneChangeCancellationCause.RETIRO_TRABAJADOR,
+          decidedAt: new Date(),
+          decidedById: WORKER_ID,
+        }),
+      );
+    });
+
+    it('cancela la pendiente propia por retiro, sin tocar la zona, y avisa al trabajador', async () => {
+      const view = await service.withdraw(WORKER_ID, REQUEST_ID);
+
+      // Busca la solicitud solo entre las del propio trabajador.
+      expect(prisma.zoneChangeRequest.findFirst).toHaveBeenCalledWith({
+        where: { id: REQUEST_ID, profile: { userId: WORKER_ID } },
+      });
+      expect(prisma.zoneChangeRequest.updateMany).toHaveBeenCalledWith({
+        where: { id: REQUEST_ID, status: ZoneChangeRequestStatus.PENDIENTE },
+        data: {
+          status: ZoneChangeRequestStatus.CANCELADA,
+          cancellationCause: ZoneChangeCancellationCause.RETIRO_TRABAJADOR,
+          decidedAt: expect.any(Date),
+          decidedById: WORKER_ID,
+        },
+      });
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+      // Accion del trabajador: no va a la bitacora administrativa.
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(notifications.create).toHaveBeenCalledWith(
+        WORKER_ID,
+        {
+          type: NotificationType.SOLICITUD_ZONA_RETIRADA,
+          title: 'Solicitud de cambio de zona retirada',
+          message:
+            'Retiró su solicitud de cambio a la zona "Zona 2". Conserva su zona "Zona 1" y ya puede volver a ofertar y tomar trabajos en ella.',
+          resource: {
+            type: NotificationResourceType.SOLICITUD_CAMBIO_ZONA,
+            id: REQUEST_ID,
+          },
+        },
+        prisma,
+      );
+      expect(view).toMatchObject({
+        status: ZoneChangeRequestStatus.CANCELADA,
+        cancellationCause: ZoneChangeCancellationCause.RETIRO_TRABAJADOR,
+      });
+    });
+
+    it('bloquea al trabajador antes de leer la solicitud', async () => {
+      await service.withdraw(WORKER_ID, REQUEST_ID);
+
+      expect(prisma.$queryRaw.mock.calls[0][1]).toBe(WORKER_ID);
+      expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.zoneChangeRequest.findFirst.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('una solicitud ajena o inexistente responde 404', async () => {
+      prisma.zoneChangeRequest.findFirst.mockResolvedValue(null);
+
+      await expect(service.withdraw(WORKER_ID, REQUEST_ID)).rejects.toThrow(
+        new NotFoundException('La solicitud de cambio de zona no existe'),
+      );
+      expect(prisma.zoneChangeRequest.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ZoneChangeRequestStatus.APROBADA,
+      ZoneChangeRequestStatus.RECHAZADA,
+      ZoneChangeRequestStatus.CANCELADA,
+    ])('una solicitud %s ya no se puede retirar (409)', async (status) => {
+      prisma.zoneChangeRequest.findFirst.mockResolvedValue(request({ status }));
+
+      await expect(service.withdraw(WORKER_ID, REQUEST_ID)).rejects.toThrow(
+        'La solicitud ya fue resuelta',
+      );
+      expect(prisma.zoneChangeRequest.updateMany).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('si una decision simultanea gano, responde 409 sin notificar', async () => {
+      prisma.zoneChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.withdraw(WORKER_ID, REQUEST_ID)).rejects.toThrow(
+        'La solicitud ya fue resuelta',
+      );
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('si la notificacion falla, el retiro falla (misma transaccion)', async () => {
+      notifications.create.mockRejectedValue(new Error('sin conexion'));
+
+      await expect(service.withdraw(WORKER_ID, REQUEST_ID)).rejects.toThrow(
+        'sin conexion',
+      );
     });
   });
 
