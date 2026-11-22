@@ -36,11 +36,11 @@ Si el estado no cambia, responde 200 sin modificar nada.
 | Valor | Significado | ¿Editable? | ¿Usa funciones de trabajador? | ¿Puede pedir cambio de zona? |
 |---|---|---|---|---|
 | `BORRADOR` | Creado, aún no enviado | ✔ | ✘ | ✘ (elige la zona directamente) |
-| `PENDIENTE` | Enviado a revisión | ✘ | ✘ | ✔ (❓ pendiente con el docente) |
-| `OBSERVADO` | Con observaciones que corregir | ✔ | ✘ | ✔ (❓) |
+| `PENDIENTE` | Enviado a revisión | ✘ | ✘ | ✘ |
+| `OBSERVADO` | Con observaciones que corregir | ✔ | ✘ | ✘ |
 | `APROBADO` | Habilitado | ✘ | ✔ | ✔ |
 | `RECHAZADO` | Rechazado; puede corregir y reenviar | ✔ (salvo la zona) | ✘ | ✘ |
-| `SUSPENDIDO` | Suspendido | ✘ | ✘ | ✔ (❓) |
+| `SUSPENDIDO` | Suspendido | ✘ | ✘ | ✘ (al suspender se cancela la pendiente) |
 
 "Editable" se refiere a datos, especialidades y documentos. Los horarios se pueden reemplazar en **cualquier** estado.
 
@@ -71,9 +71,12 @@ Transiciones:
 |---|---|
 | `PENDIENTE` | Esperando la decisión. Solo puede haber una por perfil |
 | `APROBADA` | Aplicada: la zona del perfil cambió |
-| `RECHAZADA` | El perfil conserva su zona |
+| `RECHAZADA` | El perfil conserva su zona. Siempre tiene motivo (`decisionComment`) |
+| `CANCELADA` | Cerrada sin decisión administrativa (T4.2); el perfil conserva su zona. La causa está en `cancellationCause` |
 
-Transiciones: solo `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un administrador (`PATCH /admin/zone-change-requests/:id`). Las solicitudes resueltas no cambian más (lo impide un trigger en la BD).
+`ZoneChangeCancellationCause`: `SUSPENSION_PERFIL` (el perfil se suspendió con la solicitud pendiente).
+
+Transiciones: `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un administrador (`PATCH /admin/zone-change-requests/:id`); `PENDIENTE` → `CANCELADA`, automáticamente al suspender el perfil (#55). Solo un perfil `APROBADO` puede crear una solicitud, y no se aprueba una de un perfil `SUSPENDIDO` o `RECHAZADO`. Las solicitudes resueltas no cambian más (lo impide un trigger en la BD) y una CHECK exige la causa solo en `CANCELADA` (migración `20261122200000_zone_change_cancellation`).
 
 ### `OrderStatus`
 
@@ -130,8 +133,11 @@ Notificaciones internas (T3.2, migración `20261122100000_create_notifications`)
 | `VERIFICACION_SOLICITADA` | Cada administrador activo, salvo quien envía | `BORRADOR` → `PENDIENTE` (#28) | No (sin datos personales del trabajador) |
 | `VERIFICACION_REENVIADA_OBSERVACION` | Ídem | `OBSERVADO` → `PENDIENTE` (#28) | No |
 | `VERIFICACION_REENVIADA_RECHAZO` | Ídem | `RECHAZADO` → `PENDIENTE` (#28) | No |
+| `SOLICITUD_ZONA_APROBADA` | El trabajador | Su solicitud de cambio de zona se aprobó (#40) | Solo si el administrador escribió un comentario |
+| `SOLICITUD_ZONA_RECHAZADA` | El trabajador | Su solicitud se rechazó (#40) | Sí (obligatorio) |
+| `SOLICITUD_ZONA_CANCELADA` | El trabajador | Su solicitud pendiente se canceló al suspender su perfil (#55) | No (la suspensión llega en su propia notificación `PERFIL_SUSPENDIDO`) |
 
-Cada notificación se crea **en la misma transacción** que el evento: si falla, el cambio de estado o el envío tampoco se confirma. `NotificationResourceType` hoy solo tiene `PERFIL_TRABAJADOR`.
+Cada notificación se crea **en la misma transacción** que el evento: si falla, el cambio de estado o el envío tampoco se confirma. `NotificationResourceType`: `PERFIL_TRABAJADOR` (eventos de verificación) o `SOLICITUD_CAMBIO_ZONA` (T4.2).
 
 ## Literales de la API (no son enums de la BD)
 

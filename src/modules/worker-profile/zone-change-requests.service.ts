@@ -11,12 +11,14 @@ import {
   Prisma,
   UserStatus,
   WorkerProfileStatus,
+  ZoneChangeCancellationCause,
   ZoneChangeRequestStatus,
 } from '../../generated/prisma/client.js';
 import type { ZoneChangeRequest } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CatalogKind, CatalogsService } from '../catalogs/catalogs.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import { PublicUser, UsersService } from '../users/users.service.js';
 import {
   ActiveWorkKind,
@@ -26,6 +28,12 @@ import { CreateZoneChangeRequestDto } from './dto/create-zone-change-request.dto
 import { DecideZoneChangeRequestDto } from './dto/decide-zone-change-request.dto.js';
 import { ListZoneChangeRequestsQueryDto } from './dto/list-zone-change-requests-query.dto.js';
 import {
+  zoneRequestCancelledBySuspensionNotification,
+  zoneRequestDecisionNotification,
+  ZoneRequestNames,
+} from './worker-profile.notifications.js';
+import {
+  ZONE_APPROVAL_BLOCKED_STATUSES,
   ZONE_CHANGE_POLICY,
   ZONE_REQUEST_ALLOWED_STATUSES,
 } from './worker-profile.rules.js';
@@ -49,6 +57,8 @@ export interface ZoneChangeRequestView {
   createdAt: Date;
   decidedAt: Date | null;
   decisionComment: string | null;
+  /** Solo en CANCELADA: por que se cerro sin decision administrativa. */
+  cancellationCause: ZoneChangeCancellationCause | null;
 }
 
 export type ZoneChangeBlockerCode =
@@ -124,6 +134,7 @@ export class ZoneChangeRequestsService {
     private readonly catalogs: CatalogsService,
     private readonly audit: AuditService,
     private readonly activeWork: WorkerActiveWorkRegistry,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -177,6 +188,13 @@ export class ZoneChangeRequestsService {
             blockers.map((blocker) => blocker.message),
           );
         }
+        // Se vuelve a validar la zona con un bloqueo compartido: no puede
+        // desactivarse entre esta verificacion y el registro.
+        await this.catalogs.assertActiveForShare(
+          tx,
+          CatalogKind.ZONE,
+          dto.toZoneId,
+        );
         return tx.zoneChangeRequest.create({
           data: {
             profileId: profile.id,
@@ -237,7 +255,8 @@ export class ZoneChangeRequestsService {
   /**
    * Aprueba o rechaza una solicitud PENDIENTE. Al aprobar, la nueva zona
    * reemplaza a la anterior; al rechazar, el perfil conserva su zona. La
-   * decision, el cambio de zona y la bitacora van en una sola transaccion.
+   * decision, el cambio de zona, la bitacora y la notificacion al trabajador
+   * van en una sola transaccion: si algo falla, no queda nada a medias.
    */
   async decide(
     adminId: string,
@@ -263,20 +282,33 @@ export class ZoneChangeRequestsService {
     ) {
       throw new BadRequestException('Debe indicar el motivo del rechazo');
     }
-    if (approved) {
-      await this.assertTargetZoneActive(request.toZoneId);
-      if (request.profile.zoneId !== request.fromZoneId) {
-        throw zoneChangedMeanwhile();
-      }
-    }
+    const names = await this.zoneNames(request);
 
     await this.prisma.$transaction(async (tx) => {
-      // Misma fila bloqueada que al solicitar (y que deberan bloquear pedidos
-      // y ofertas al crear trabajo): la decision no se cruza con esas operaciones.
+      // Misma fila bloqueada que al solicitar, al suspender el perfil (su
+      // UPDATE espera) y en pedidos y ofertas: la decision no se cruza con
+      // esas operaciones. El estado del perfil se relee con el bloqueo.
       await this.activeWork.lockWorker(tx, request.profile.userId);
-      if (approved && ZONE_CHANGE_POLICY.recheckActiveWorkOnApproval) {
-        await this.assertNoActiveWorkForApproval(tx, request.profile.userId);
+      if (approved) {
+        const profile = await tx.workerProfile.findUniqueOrThrow({
+          where: { id: request.profileId },
+          select: OWN_PROFILE_SELECT,
+        });
+        if (ZONE_APPROVAL_BLOCKED_STATUSES.includes(profile.status)) {
+          throw new ConflictException(
+            `No se puede aprobar: el perfil del trabajador está en estado ${profile.status}`,
+          );
+        }
+        // Ultimo eslabon del orden de bloqueos: la zona (FOR SHARE).
+        await this.assertTargetZoneActive(tx, request.toZoneId);
+        if (profile.zoneId !== request.fromZoneId) {
+          throw zoneChangedMeanwhile();
+        }
+        if (ZONE_CHANGE_POLICY.recheckActiveWorkOnApproval) {
+          await this.assertNoActiveWorkForApproval(tx, request.profile.userId);
+        }
       }
+      // Solo una decision gana: la otra encuentra la solicitud ya resuelta.
       const { count } = await tx.zoneChangeRequest.updateMany({
         where: { id: requestId, status: ZoneChangeRequestStatus.PENDIENTE },
         data: {
@@ -303,13 +335,90 @@ export class ZoneChangeRequestsService {
             workerUserId: request.profile.userId,
             fromZoneId: request.fromZoneId,
             toZoneId: request.toZoneId,
+            fromStatus: ZoneChangeRequestStatus.PENDIENTE,
+            toStatus: decision,
             comment: cleanComment,
           },
         },
         tx,
       );
+      await this.notifications.create(
+        request.profile.userId,
+        zoneRequestDecisionNotification(
+          requestId,
+          decision,
+          names,
+          cleanComment,
+        ),
+        tx,
+      );
     });
     return this.getForAdmin(requestId);
+  }
+
+  /**
+   * Al suspender un perfil (WorkerProfileService.changeStatusByAdmin), cancela
+   * su solicitud pendiente dentro de la MISMA transaccion. No es un rechazo:
+   * queda CANCELADA con la causa SUSPENSION_PERFIL, y decidedBy y decidedAt
+   * registran que administrador la provoco y cuando. La zona no cambia. Deja
+   * constancia en la bitacora y avisa al trabajador. Devuelve si cancelo algo.
+   *
+   * El llamador ya tiene bloqueada la fila del perfil (su UPDATE de estado),
+   * asi que una decision simultanea espera y luego la encuentra resuelta.
+   */
+  async cancelPendingOnSuspension(
+    tx: Db,
+    adminId: string,
+    profile: { id: string; userId: string },
+  ): Promise<boolean> {
+    const pending = await tx.zoneChangeRequest.findFirst({
+      where: {
+        profileId: profile.id,
+        status: ZoneChangeRequestStatus.PENDIENTE,
+      },
+    });
+    if (!pending) {
+      return false;
+    }
+    const { count } = await tx.zoneChangeRequest.updateMany({
+      where: { id: pending.id, status: ZoneChangeRequestStatus.PENDIENTE },
+      data: {
+        status: ZoneChangeRequestStatus.CANCELADA,
+        cancellationCause: ZoneChangeCancellationCause.SUSPENSION_PERFIL,
+        decidedAt: new Date(),
+        decidedById: adminId,
+      },
+    });
+    if (count === 0) {
+      return false;
+    }
+    await this.audit.record(
+      {
+        actorId: adminId,
+        action: AuditAction.CAMBIO_ESTADO,
+        entityType: AuditEntityType.SOLICITUD_CAMBIO_ZONA,
+        entityId: pending.id,
+        details: {
+          profileId: profile.id,
+          workerUserId: profile.userId,
+          fromZoneId: pending.fromZoneId,
+          toZoneId: pending.toZoneId,
+          fromStatus: ZoneChangeRequestStatus.PENDIENTE,
+          toStatus: ZoneChangeRequestStatus.CANCELADA,
+          cause: ZoneChangeCancellationCause.SUSPENSION_PERFIL,
+        },
+      },
+      tx,
+    );
+    await this.notifications.create(
+      profile.userId,
+      zoneRequestCancelledBySuspensionNotification(
+        pending.id,
+        await this.zoneNames(pending),
+      ),
+      tx,
+    );
+    return true;
   }
 
   // ---------------------------------------------------------------------
@@ -333,12 +442,18 @@ export class ZoneChangeRequestsService {
     }
   }
 
-  /** La zona destino debe seguir activa; si no, se informa que corresponde rechazar. */
-  private async assertTargetZoneActive(zoneId: string): Promise<void> {
-    const zone = await this.catalogs.findById(CatalogKind.ZONE, zoneId);
-    if (!zone.isActive) {
+  /**
+   * La zona destino debe seguir activa; si no, se informa que corresponde
+   * rechazar. Se lee con FOR SHARE dentro de la transaccion de la decision:
+   * una desactivacion simultanea espera a que termine.
+   */
+  private async assertTargetZoneActive(tx: Db, zoneId: string): Promise<void> {
+    const [zone] = await this.catalogs.findByIdsForShare(tx, CatalogKind.ZONE, [
+      zoneId,
+    ]);
+    if (!zone?.isActive) {
       throw new ConflictException(
-        `No se puede aprobar: la zona solicitada "${zone.name}" fue desactivada. Rechace la solicitud para que el trabajador pueda pedir otra zona.`,
+        `No se puede aprobar: la zona solicitada "${zone?.name ?? zoneId}" fue desactivada. Rechace la solicitud para que el trabajador pueda pedir otra zona.`,
       );
     }
   }
@@ -506,6 +621,17 @@ export class ZoneChangeRequestsService {
     });
   }
 
+  /** Nombres de las zonas de una solicitud, para el texto de las notificaciones. */
+  private async zoneNames(
+    request: Pick<ZoneChangeRequest, 'fromZoneId' | 'toZoneId'>,
+  ): Promise<ZoneRequestNames> {
+    const zones = await this.zoneRefs([request.fromZoneId, request.toZoneId]);
+    return {
+      fromZone: zones.get(request.fromZoneId)?.name ?? '',
+      toZone: zones.get(request.toZoneId)?.name ?? '',
+    };
+  }
+
   private async zoneRefs(ids: string[]): Promise<Map<string, CatalogRef>> {
     const zones = await this.catalogs.findByIds(CatalogKind.ZONE, ids);
     return new Map(zones.map((zone) => [zone.id, toRef(zone)]));
@@ -525,6 +651,7 @@ function toView(
     createdAt: request.createdAt,
     decidedAt: request.decidedAt,
     decisionComment: request.decisionComment,
+    cancellationCause: request.cancellationCause,
   };
 }
 

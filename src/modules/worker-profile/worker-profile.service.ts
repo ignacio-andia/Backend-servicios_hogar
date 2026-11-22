@@ -51,6 +51,7 @@ import {
   PRISMA_UNIQUE_VIOLATION,
   toRef,
 } from './worker-profile.utils.js';
+import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
 
 export type { CatalogRef };
 
@@ -245,6 +246,7 @@ export class WorkerProfileService {
     private readonly audit: AuditService,
     private readonly activeWork: WorkerActiveWorkRegistry,
     private readonly notifications: NotificationsService,
+    private readonly zoneRequests: ZoneChangeRequestsService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -648,7 +650,8 @@ export class WorkerProfileService {
    * Cambio de estado administrativo (aprobar, observar, rechazar, suspender,
    * reactivar). Lo usara el modulo de verificacion; aqui no tiene endpoint.
    * Registra historial, bitacora y la notificacion al trabajador en la misma
-   * transaccion: si alguno falla, el cambio de estado se revierte.
+   * transaccion: si alguno falla, el cambio de estado se revierte. Al
+   * suspender, cancela tambien la solicitud de cambio de zona pendiente (T4.2).
    */
   async changeStatusByAdmin(
     adminId: string,
@@ -714,6 +717,14 @@ export class WorkerProfileService {
         decisionNotification(profileId, profile.status, status, cleanReason),
         tx,
       );
+      // La fila del perfil ya esta bloqueada por el UPDATE de lockStatus: una
+      // decision de zona simultanea espera y luego la encuentra resuelta.
+      if (status === WorkerProfileStatus.SUSPENDIDO) {
+        await this.zoneRequests.cancelPendingOnSuspension(tx, adminId, {
+          id: profileId,
+          userId: profile.userId,
+        });
+      }
     });
     return this.buildView(
       await this.prisma.workerProfile.findUniqueOrThrow({

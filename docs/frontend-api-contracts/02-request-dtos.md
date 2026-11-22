@@ -235,13 +235,13 @@ En la subida (`POST …/documents`), en cambio, sí hay DTO: un campo de texto d
 | Propiedad | Tipo | Omitir / null | Restricciones | Reglas |
 |---|---|---|---|---|
 | `decision` | `'APROBADA' \| 'RECHAZADA'` | Obligatoria | Solo esos dos valores (`PENDIENTE` responde 400) | — |
-| `comment` | string | Omitible, admite null | ≤ 500 | Opcional también al rechazar (❓ pendiente con el docente) |
+| `comment` | string | Omitible al aprobar; **obligatorio al rechazar** (T4.2, especificación v1.0 §4) | ≤ 500 después de recortar | Al rechazar, ausente, `null`, `""` o solo espacios responden 400 `"Debe indicar el motivo del rechazo"`. Es el motivo que recibe el trabajador en su notificación |
 
 ### `ListZoneChangeRequestsQueryDto`: `GET /api/worker-profile/admin/zone-change-requests` (query)
 
 | Propiedad | Tipo | Omitir | Restricciones |
 |---|---|---|---|
-| `status` | `ZoneChangeRequestStatus` | Omitible | `PENDIENTE`, `APROBADA`, `RECHAZADA` |
+| `status` | `ZoneChangeRequestStatus` | Omitible | `PENDIENTE`, `APROBADA`, `RECHAZADA`, `CANCELADA` |
 | `resolved` | boolean | Omitible | `"true"`: solo resueltas; `"false"`: solo pendientes. Se combina con `status` mediante AND |
 | `workerUserId` | string | Omitible | UUID de la **cuenta** del trabajador |
 | `page` / `limit` | number | Omitibles (1 / 20) | `limit` ≤ 100 |

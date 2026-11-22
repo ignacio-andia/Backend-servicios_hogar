@@ -36,7 +36,8 @@ export type WeekDay = (typeof WEEK_DAYS)[number];
 export const WORKER_DOCUMENT_TYPES = ['IDENTIDAD', 'ANTECEDENTES', 'CERTIFICADO', 'REFERENCIA'] as const;
 export type WorkerDocumentType = (typeof WORKER_DOCUMENT_TYPES)[number];
 
-export const ZONE_CHANGE_REQUEST_STATUSES = ['PENDIENTE', 'APROBADA', 'RECHAZADA'] as const;
+export const ZONE_CHANGE_REQUEST_STATUSES = ['PENDIENTE', 'APROBADA', 'RECHAZADA', 'CANCELADA'] as const;
+export type ZoneChangeCancellationCause = 'SUSPENSION_PERFIL';
 export type ZoneChangeRequestStatus = (typeof ZONE_CHANGE_REQUEST_STATUSES)[number];
 
 export const ORDER_STATUSES = [
@@ -245,8 +246,9 @@ export interface ChangeWorkerProfileStatusRequest {
 export type NotificationType =
   | 'PERFIL_APROBADO' | 'PERFIL_OBSERVADO' | 'PERFIL_RECHAZADO' | 'PERFIL_SUSPENDIDO'
   | 'PERFIL_REACTIVADO' | 'VERIFICACION_SOLICITADA'
-  | 'VERIFICACION_REENVIADA_OBSERVACION' | 'VERIFICACION_REENVIADA_RECHAZO';
-export type NotificationResourceType = 'PERFIL_TRABAJADOR';
+  | 'VERIFICACION_REENVIADA_OBSERVACION' | 'VERIFICACION_REENVIADA_RECHAZO'
+  | 'SOLICITUD_ZONA_APROBADA' | 'SOLICITUD_ZONA_RECHAZADA' | 'SOLICITUD_ZONA_CANCELADA';
+export type NotificationResourceType = 'PERFIL_TRABAJADOR' | 'SOLICITUD_CAMBIO_ZONA';
 export interface AppNotification {
   id: string;
   type: NotificationType;
@@ -342,7 +344,8 @@ export interface ZoneChangeRequest {
   toZone: CatalogRef;
   createdAt: string;
   decidedAt: string | null;
-  decisionComment: string | null;
+  decisionComment: string | null; // siempre presente en RECHAZADA
+  cancellationCause: ZoneChangeCancellationCause | null; // solo en CANCELADA
 }
 export interface ZoneStatus {
   currentZone: CatalogRef;
@@ -371,7 +374,7 @@ export interface AdminZoneChangeRequest extends ZoneChangeRequest {
 }
 export interface DecideZoneChangeRequestRequest {
   decision: 'APROBADA' | 'RECHAZADA';
-  comment?: string | null;
+  comment?: string | null; // obligatorio y no vacio al rechazar
 }
 export interface AdminZoneChangeRequestQuery extends PageQuery {
   status?: ZoneChangeRequestStatus;

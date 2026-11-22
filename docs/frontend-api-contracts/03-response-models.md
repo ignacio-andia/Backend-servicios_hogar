@@ -182,7 +182,8 @@ Formas de `details` que escribe el código hoy:
 | `CATEGORIA_SERVICIO` o `ZONA` / `CREACION` | `{ name: string, description: string \| null }` |
 | `CATEGORIA_SERVICIO` o `ZONA` / `EDICION` | `{ before: { name?, description? }, after: { name?, description? } }` (solo los campos cambiados) |
 | `CATEGORIA_SERVICIO` o `ZONA` / `DESACTIVACION` | `{ name: string }` |
-| `SOLICITUD_CAMBIO_ZONA` / `APROBACION` o `RECHAZO` | `{ profileId, workerUserId, fromZoneId, toZoneId, comment: string \| null }` |
+| `SOLICITUD_CAMBIO_ZONA` / `APROBACION` o `RECHAZO` | `{ profileId, workerUserId, fromZoneId, toZoneId, fromStatus: 'PENDIENTE', toStatus: 'APROBADA' \| 'RECHAZADA', comment: string \| null }` (`fromStatus` y `toStatus` desde T4.2) |
+| `SOLICITUD_CAMBIO_ZONA` / `CAMBIO_ESTADO` | Cancelación automática al suspender el perfil (T4.2): `{ profileId, workerUserId, fromZoneId, toZoneId, fromStatus: 'PENDIENTE', toStatus: 'CANCELADA', cause: 'SUSPENSION_PERFIL' }`. `actor` = administrador que suspendió |
 | `PERFIL_TRABAJADOR` / `CONSULTA_DOCUMENTOS` | `{ documentCount: number }`. `entityId` = id del perfil |
 | `PERFIL_TRABAJADOR` / `VISUALIZACION_DOCUMENTO` o `DESCARGA_DOCUMENTO` | `{ documentId, documentType: WorkerDocumentType }`. `entityId` = id del perfil |
 | `PERFIL_TRABAJADOR` / `CAMBIO_ESTADO` | `{ from, to, reason: string \| null }`. Lo genera la decisión administrativa (#55) |
@@ -378,7 +379,8 @@ Valores de `code`:
 | `toZone` | `CatalogRef` | no |
 | `createdAt` | string | no |
 | `decidedAt` | string | **sí** |
-| `decisionComment` | string | **sí** (en la entrada se llama `comment`) |
+| `decisionComment` | string | **sí** (en la entrada se llama `comment`). Siempre presente en `RECHAZADA`; `null` en `CANCELADA` |
+| `cancellationCause` | `ZoneChangeCancellationCause` | **sí**. Solo en `CANCELADA` (hoy `SUSPENSION_PERFIL`). En ese caso `decidedAt` y `decidedBy` indican cuándo y qué administrador la provocó |
 
 ### `AdminZoneChangeRequestView` (extiende `ZoneChangeRequestView`)
 
@@ -514,8 +516,8 @@ Al editar (#47) los avisos solo se calculan si cambió la descripción; si no, `
 | `type` | `NotificationType` | no | Ver 04 |
 | `title` | string | no | ≤ 150 caracteres, en español, listo para mostrar |
 | `message` | string | no | ≤ 2000 caracteres. En las decisiones incluye `Motivo: …` (o `Comentario: …` al aprobar o reactivar si lo hubo) |
-| `resourceType` | `NotificationResourceType` | **sí** | Hoy siempre `PERFIL_TRABAJADOR`. Si viene, también viene `resourceId` |
-| `resourceId` | string | **sí** | Id del perfil. El administrador lo abre con #57; el trabajador, con `/me` |
+| `resourceType` | `NotificationResourceType` | **sí** | `PERFIL_TRABAJADOR` o `SOLICITUD_CAMBIO_ZONA`. Si viene, también viene `resourceId` |
+| `resourceId` | string | **sí** | Id del perfil (el administrador lo abre con #57; el trabajador, con `/me`) o de la solicitud de cambio de zona (el trabajador la ve en #37) |
 | `readAt` | string | **sí** | `null` = no leída |
 | `createdAt` | string | no | Orden del listado: más reciente primero |
 

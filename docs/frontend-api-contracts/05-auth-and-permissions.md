@@ -98,8 +98,10 @@ Si no se cumple alguna condición, responde **404** (igual que un pedido inexist
 |---|---|---|
 | Editar el perfil, especialidades o documentos | Perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO` | 409 |
 | Cambiar la zona directamente | Perfil `BORRADOR` | 403 (hay que usar una solicitud) |
+| Aprobar un cambio de zona | Administrador activo, no su propia solicitud; perfil no `SUSPENDIDO` ni `RECHAZADO`; zona destino activa | 403 o 409 |
+| Rechazar un cambio de zona | Administrador activo, no su propia solicitud; motivo no vacío | 403 o 400 |
 | Enviar a revisión (o reenviar) | `BORRADOR`, `OBSERVADO` o `RECHAZADO`, sin requisitos pendientes | 409 o 400 |
-| Solicitar cambio de zona | Perfil `APROBADO`, `PENDIENTE`, `OBSERVADO` o `SUSPENDIDO`; sin solicitud pendiente; sin trabajo activo; fuentes de verificación disponibles | 409 con un arreglo de motivos |
+| Solicitar cambio de zona | Perfil `APROBADO` (T4.2); sin solicitud pendiente; sin trabajo activo; fuentes de verificación disponibles | 409 con un arreglo de motivos |
 | Editar un pedido o sus fotos, cancelarlo | Estado efectivo `PUBLICADO` o `EN_NEGOCIACION` | 409 (mensaje según el estado) |
 | Decidir una solicitud de zona | `PENDIENTE`; al aprobar, zona destino activa y zona del perfil sin cambios | 409 |
 | Decidir sobre un perfil (#55) | Transición permitida por `ADMIN_TRANSITIONS`; al aprobar desde `PENDIENTE`, requisitos de envío vigentes; nunca sobre el propio perfil | 409; 403 si es el propio |

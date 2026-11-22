@@ -922,15 +922,21 @@ describe('WorkerProfileModule (e2e)', () => {
         .expect(400);
     });
 
-    it('si se rechaza, el trabajador conserva su zona (motivo opcional)', async () => {
+    it('si se rechaza, el trabajador conserva su zona (motivo obligatorio, T4.2)', async () => {
       await decide(rejectedId, { decision: 'PENDIENTE' }).expect(400);
-
-      const res = await decide(rejectedId, { decision: 'RECHAZADA' }).expect(
-        200,
+      await decide(rejectedId, { decision: 'RECHAZADA' }).expect(400);
+      await decide(rejectedId, { decision: 'RECHAZADA', comment: '  ' }).expect(
+        400,
       );
+
+      const res = await decide(rejectedId, {
+        decision: 'RECHAZADA',
+        comment: 'Sin cobertura en la zona',
+      }).expect(200);
       expect(res.body).toMatchObject({
         status: 'RECHAZADA',
-        decisionComment: null,
+        decisionComment: 'Sin cobertura en la zona',
+        cancellationCause: null,
         decidedBy: { id: admin.id },
       });
       expect(res.body.decidedAt).toBeTruthy();
@@ -977,7 +983,7 @@ describe('WorkerProfileModule (e2e)', () => {
         ),
       ).toEqual([
         ['APROBADA', 'Domicilio verificado'],
-        ['RECHAZADA', null],
+        ['RECHAZADA', 'Sin cobertura en la zona'],
       ]);
 
       const resolved = await http()
@@ -1047,7 +1053,10 @@ describe('WorkerProfileModule (e2e)', () => {
         pendingRequest: { id: created.body.id },
       });
 
-      await decide(created.body.id, { decision: 'RECHAZADA' }).expect(200);
+      await decide(created.body.id, {
+        decision: 'RECHAZADA',
+        comment: 'La zona fue desactivada',
+      }).expect(200);
       const after = await zoneStatus();
       expect(after.body).toMatchObject({
         currentZone: { id: zoneC.id },

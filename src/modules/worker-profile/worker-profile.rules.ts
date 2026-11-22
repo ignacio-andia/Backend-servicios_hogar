@@ -20,25 +20,28 @@ export const SUBMITTABLE_STATUSES = EDITABLE_STATUSES;
 export const ZONE_DIRECTLY_EDITABLE_STATUS = WorkerProfileStatus.BORRADOR;
 
 /**
- * Estados del perfil desde los que se puede pedir un cambio de zona.
- * - APROBADO: respaldado por CU-13 ("tiene un perfil aprobado").
- * - PENDIENTE, OBSERVADO y SUSPENDIDO: PENDIENTE DE CONFIRMAR CON EL DOCENTE.
- *   Se admiten desde el modulo 3 sin respaldo explicito del documento; no se
- *   restringen hasta que se decida la politica definitiva.
- * No se admiten: BORRADOR (la zona aun se elige directamente) y RECHAZADO
- * (sin respaldo en el documento).
+ * Estados del perfil desde los que se puede pedir un cambio de zona: solo
+ * APROBADO (especificacion v1.0 §4, T4.2). BORRADOR elige la zona
+ * directamente; PENDIENTE, OBSERVADO, RECHAZADO y SUSPENDIDO no pueden pedirla.
  */
 export const ZONE_REQUEST_ALLOWED_STATUSES: readonly WorkerProfileStatus[] = [
   WorkerProfileStatus.APROBADO,
-  WorkerProfileStatus.PENDIENTE,
-  WorkerProfileStatus.OBSERVADO,
+];
+
+/**
+ * Estados del perfil para los que un administrador no puede aprobar una
+ * solicitud pendiente (especificacion v1.0 §4). Se vuelve a leer con la fila
+ * del trabajador bloqueada, dentro de la transaccion de la decision.
+ */
+export const ZONE_APPROVAL_BLOCKED_STATUSES: readonly WorkerProfileStatus[] = [
   WorkerProfileStatus.SUSPENDIDO,
+  WorkerProfileStatus.RECHAZADO,
 ];
 
 export interface ZoneChangePolicy {
   /**
-   * PENDIENTE DE CONFIRMAR CON EL DOCENTE (A): si el administrador debe
-   * indicar un motivo al rechazar. Mientras no se confirme, es opcional.
+   * Si el administrador debe indicar un motivo no vacio al rechazar.
+   * Confirmado por la especificacion v1.0 §4 (T4.2): es obligatorio.
    */
   rejectionCommentRequired: boolean;
   /** Trabajo activo que impide pedir el cambio (regla confirmada). */
@@ -61,7 +64,7 @@ export interface ZoneChangePolicy {
  * para poder agregarlo sin cambiar la entidad ni el flujo.
  */
 export const ZONE_CHANGE_POLICY: ZoneChangePolicy = {
-  rejectionCommentRequired: false,
+  rejectionCommentRequired: true,
   activeWorkSources: [ActiveWorkKind.PEDIDOS, ActiveWorkKind.OFERTAS],
   recheckActiveWorkOnApproval: false,
 };

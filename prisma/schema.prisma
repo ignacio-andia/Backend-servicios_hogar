@@ -168,10 +168,19 @@ enum WorkerDocumentType {
   REFERENCIA
 }
 
+/// CANCELADA: cierre automatico, no es una decision del administrador sobre la
+/// solicitud (por ejemplo, al suspender el perfil). La causa queda en
+/// ZoneChangeRequest.cancellationCause.
 enum ZoneChangeRequestStatus {
   PENDIENTE
   APROBADA
   RECHAZADA
+  CANCELADA
+}
+
+/// Causa de una cancelacion automatica de solicitud de cambio de zona (T4.2).
+enum ZoneChangeCancellationCause {
+  SUSPENSION_PERFIL
 }
 
 /// Perfil del trabajador (RF-06). Nombre, correo y teléfono pertenecen a User.
@@ -276,16 +285,19 @@ model WorkerProfileStatusHistory {
 /// permite resolver una solicitud PENDIENTE y un CHECK exige fecha y administrador
 /// en las resueltas (migración 20261114000000_zone_change_requests_history_guard).
 model ZoneChangeRequest {
-  id              String                  @id @default(uuid()) @db.Uuid
-  profileId       String                  @map("profile_id") @db.Uuid
-  fromZoneId      String                  @map("from_zone_id") @db.Uuid
-  toZoneId        String                  @map("to_zone_id") @db.Uuid
-  reason          String                  @db.VarChar(500)
-  status          ZoneChangeRequestStatus @default(PENDIENTE)
-  createdAt       DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
-  decidedAt       DateTime?               @map("decided_at") @db.Timestamptz(3)
-  decidedById     String?                 @map("decided_by_id") @db.Uuid
-  decisionComment String?                 @map("decision_comment") @db.VarChar(500)
+  id                String                       @id @default(uuid()) @db.Uuid
+  profileId         String                       @map("profile_id") @db.Uuid
+  fromZoneId        String                       @map("from_zone_id") @db.Uuid
+  toZoneId          String                       @map("to_zone_id") @db.Uuid
+  reason            String                       @db.VarChar(500)
+  status            ZoneChangeRequestStatus      @default(PENDIENTE)
+  createdAt         DateTime                     @default(now()) @map("created_at") @db.Timestamptz(3)
+  decidedAt         DateTime?                    @map("decided_at") @db.Timestamptz(3)
+  decidedById       String?                      @map("decided_by_id") @db.Uuid
+  decisionComment   String?                      @map("decision_comment") @db.VarChar(500)
+  /// Solo en CANCELADA (CHECK en la BD). decidedBy y decidedAt indican quien
+  /// provoco la cancelacion y cuando.
+  cancellationCause ZoneChangeCancellationCause? @map("cancellation_cause")
 
   profile   WorkerProfile @relation(fields: [profileId], references: [id], onDelete: Restrict)
   fromZone  Zone          @relation("ZoneChangeFrom", fields: [fromZoneId], references: [id], onDelete: Restrict)
@@ -440,11 +452,16 @@ enum NotificationType {
   VERIFICACION_SOLICITADA
   VERIFICACION_REENVIADA_OBSERVACION
   VERIFICACION_REENVIADA_RECHAZO
+  /// Para el trabajador: resultado de su solicitud de cambio de zona.
+  SOLICITUD_ZONA_APROBADA
+  SOLICITUD_ZONA_RECHAZADA
+  SOLICITUD_ZONA_CANCELADA
 }
 
 /// Recurso al que apunta una notificacion (para navegar desde la interfaz).
 enum NotificationResourceType {
   PERFIL_TRABAJADOR
+  SOLICITUD_CAMBIO_ZONA
 }
 
 /// Notificacion interna de un usuario (v1.0 §6). Se conservan todas: no hay

@@ -61,6 +61,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | Administradores adicionales y gestión de roles (RF-04). El primero ya tiene comando interno (T2.1) | ⛔ | Decisión del equipo |
 | Verificación de perfiles (RF-10, RF-47) | ✅ Listado, detalle, documentos y decisión (#55–#60) | — |
 | Notificaciones de verificación de perfiles | ✅ (T3.2) Decisiones al trabajador y envíos a los administradores; tipos en 04 | — |
+| Cambio de zona: retiro voluntario de la solicitud, bloqueo de ofertas y de nuevos trabajos mientras está pendiente, salida para perfiles `RECHAZADO` con la zona desactivada | ⛔ | Tareas siguientes de T4 (especificación v1.0 §4) |
 | Notificaciones de pedidos, ofertas, visitas y reclamos | ⛔ | Sus módulos. Deben usar `NotificationsService.create` o `createForRole` con el cliente de su transacción |
 | Notificaciones por correo, SMS o push | ⛔ Fuera de alcance | — |
 | Indicación de perfil revisado (RF-12) | ❓ | Texto del docente |
@@ -86,10 +87,8 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 - Si se pueden editar la categoría o la zona del pedido.
 - Cantidad definitiva de fotos y soporte de HEIC.
 - Retención de fotos de pedidos vencidos.
-- Si el rechazo de un cambio de zona exige motivo.
 - Si aprobar un cambio de zona devuelve el perfil a revisión.
 - Si se vuelve a verificar el trabajo activo al aprobar.
-- En qué estados del perfil se puede pedir un cambio de zona.
 - Texto de RF-12.
 
 **Del equipo**

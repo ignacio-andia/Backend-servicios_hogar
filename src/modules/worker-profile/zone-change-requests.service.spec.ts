@@ -7,10 +7,13 @@ import {
 import {
   AuditAction,
   AuditEntityType,
+  NotificationResourceType,
+  NotificationType,
   Prisma,
   RoleName,
   UserStatus,
   WorkerProfileStatus,
+  ZoneChangeCancellationCause,
   ZoneChangeRequestStatus,
 } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
@@ -20,6 +23,7 @@ import {
   CatalogKind,
   CatalogsService,
 } from '../catalogs/catalogs.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import { PublicUser, UsersService } from '../users/users.service.js';
 import {
   ActiveWorkKind,
@@ -83,6 +87,7 @@ const request = (overrides: Record<string, unknown> = {}) => ({
   decidedAt: null,
   decidedById: null,
   decisionComment: null,
+  cancellationCause: null,
   profile: profile(),
   ...overrides,
 });
@@ -96,7 +101,7 @@ const fns = <K extends string>(...names: K[]) =>
 describe('ZoneChangeRequestsService', () => {
   let prisma: {
     workerProfile: Record<
-      'findUnique' | 'updateMany',
+      'findUnique' | 'findUniqueOrThrow' | 'updateMany',
       ReturnType<typeof vi.fn>
     >;
     zoneChangeRequest: Record<
@@ -113,10 +118,15 @@ describe('ZoneChangeRequestsService', () => {
   };
   let users: { findById: ReturnType<typeof vi.fn> };
   let catalogs: Record<
-    'assertActive' | 'findById' | 'findByIds',
+    | 'assertActive'
+    | 'assertActiveForShare'
+    | 'findById'
+    | 'findByIds'
+    | 'findByIdsForShare',
     ReturnType<typeof vi.fn>
   >;
   let audit: { record: ReturnType<typeof vi.fn> };
+  let notifications: { create: ReturnType<typeof vi.fn> };
   let registry: WorkerActiveWorkRegistry;
   let activeCounts: Record<ActiveWorkKind, number>;
   let service: ZoneChangeRequestsService;
@@ -132,7 +142,7 @@ describe('ZoneChangeRequestsService', () => {
 
   beforeEach(() => {
     prisma = {
-      workerProfile: fns('findUnique', 'updateMany'),
+      workerProfile: fns('findUnique', 'findUniqueOrThrow', 'updateMany'),
       zoneChangeRequest: fns(
         'create',
         'count',
@@ -150,6 +160,7 @@ describe('ZoneChangeRequestsService', () => {
       $queryRaw: vi.fn().mockResolvedValue([]),
     };
     prisma.workerProfile.findUnique.mockResolvedValue(profile());
+    prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(profile());
     prisma.workerProfile.updateMany.mockResolvedValue({ count: 1 });
     prisma.zoneChangeRequest.count.mockResolvedValue(0);
     prisma.zoneChangeRequest.findFirst.mockResolvedValue(null);
@@ -162,7 +173,19 @@ describe('ZoneChangeRequestsService', () => {
         Promise.resolve(id === ADMIN_ID ? admin : account()),
       ),
     };
-    catalogs = fns('assertActive', 'findById', 'findByIds');
+    catalogs = fns(
+      'assertActive',
+      'assertActiveForShare',
+      'findById',
+      'findByIds',
+      'findByIdsForShare',
+    );
+    catalogs.assertActiveForShare.mockImplementation((_tx, _k, id: string) =>
+      Promise.resolve(zone(id)),
+    );
+    catalogs.findByIdsForShare.mockImplementation((_tx, _k, ids: string[]) =>
+      Promise.resolve(ids.map((id) => zone(id))),
+    );
     catalogs.assertActive.mockImplementation((_k, id: string) =>
       Promise.resolve(zone(id)),
     );
@@ -173,6 +196,7 @@ describe('ZoneChangeRequestsService', () => {
       Promise.resolve([...new Set(ids)].map((id) => zone(id))),
     );
     audit = { record: vi.fn().mockResolvedValue(undefined) };
+    notifications = { create: vi.fn().mockResolvedValue(undefined) };
     registry = new WorkerActiveWorkRegistry();
     activeCounts = { PEDIDOS: 0, OFERTAS: 0 };
     service = new ZoneChangeRequestsService(
@@ -181,6 +205,7 @@ describe('ZoneChangeRequestsService', () => {
       catalogs as unknown as CatalogsService,
       audit as unknown as AuditService,
       registry,
+      notifications as unknown as NotificationsService,
     );
   });
 
@@ -310,10 +335,13 @@ describe('ZoneChangeRequestsService', () => {
       });
     });
 
-    it('un perfil RECHAZADO no puede pedir el cambio (sin respaldo en el documento)', async () => {
-      prisma.workerProfile.findUnique.mockResolvedValue(
-        profile(WorkerProfileStatus.RECHAZADO),
-      );
+    it.each([
+      WorkerProfileStatus.PENDIENTE,
+      WorkerProfileStatus.OBSERVADO,
+      WorkerProfileStatus.RECHAZADO,
+      WorkerProfileStatus.SUSPENDIDO,
+    ])('un perfil %s no puede pedir el cambio (T4.2)', async (status) => {
+      prisma.workerProfile.findUnique.mockResolvedValue(profile(status));
 
       await expect(
         service.requestZoneChange(WORKER_ID, dto),
@@ -321,28 +349,38 @@ describe('ZoneChangeRequestsService', () => {
         status: 409,
         response: {
           message: [
-            'No se puede solicitar un cambio de zona con el perfil en estado RECHAZADO',
+            `No se puede solicitar un cambio de zona con el perfil en estado ${status}`,
           ],
         },
       });
       expect(prisma.zoneChangeRequest.create).not.toHaveBeenCalled();
     });
 
-    it.each([
-      WorkerProfileStatus.APROBADO,
-      WorkerProfileStatus.PENDIENTE,
-      WorkerProfileStatus.OBSERVADO,
-      WorkerProfileStatus.SUSPENDIDO,
-    ])(
-      'mantiene permitido el estado %s (politica pendiente)',
-      async (status) => {
-        prisma.workerProfile.findUnique.mockResolvedValue(profile(status));
+    it('un perfil APROBADO puede pedirlo', async () => {
+      await expect(
+        service.requestZoneChange(WORKER_ID, dto),
+      ).resolves.toMatchObject({ status: ZoneChangeRequestStatus.PENDIENTE });
+    });
 
-        await expect(
-          service.requestZoneChange(WORKER_ID, dto),
-        ).resolves.toMatchObject({ status: ZoneChangeRequestStatus.PENDIENTE });
-      },
-    );
+    it('vuelve a validar la zona destino con bloqueo dentro de la transaccion', async () => {
+      catalogs.assertActiveForShare.mockRejectedValueOnce(
+        new BadRequestException('La zona seleccionada no está activa'),
+      );
+
+      await expect(
+        service.requestZoneChange(WORKER_ID, dto),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(catalogs.assertActiveForShare).toHaveBeenCalledWith(
+        prisma,
+        CatalogKind.ZONE,
+        ZONE_B,
+      );
+      // Despues del bloqueo del trabajador (orden: trabajador y luego catalogos).
+      expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        catalogs.assertActiveForShare.mock.invocationCallOrder[0],
+      );
+      expect(prisma.zoneChangeRequest.create).not.toHaveBeenCalled();
+    });
 
     it('verifica y registra con la fila del trabajador bloqueada', async () => {
       await service.requestZoneChange(WORKER_ID, dto);
@@ -404,24 +442,130 @@ describe('ZoneChangeRequestsService', () => {
       });
     });
 
-    it('el motivo del rechazo es opcional mientras el docente no lo confirme', async () => {
-      expect(ZONE_CHANGE_POLICY.rejectionCommentRequired).toBe(false);
+    it.each([undefined, '', '   '])(
+      'rechazar sin motivo (%j) responde 400 y no resuelve la solicitud',
+      async (comment) => {
+        expect(ZONE_CHANGE_POLICY.rejectionCommentRequired).toBe(true);
 
+        await expect(
+          service.decide(ADMIN_ID, REQUEST_ID, {
+            decision: 'RECHAZADA',
+            comment,
+          }),
+        ).rejects.toThrow(
+          new BadRequestException('Debe indicar el motivo del rechazo'),
+        );
+        expect(prisma.zoneChangeRequest.updateMany).not.toHaveBeenCalled();
+        expect(audit.record).not.toHaveBeenCalled();
+        expect(notifications.create).not.toHaveBeenCalled();
+      },
+    );
+
+    it('el comentario es opcional al aprobar', async () => {
       await expect(
-        service.decide(ADMIN_ID, REQUEST_ID, { decision: 'RECHAZADA' }),
+        service.decide(ADMIN_ID, REQUEST_ID, { decision: 'APROBADA' }),
       ).resolves.toBeDefined();
     });
 
-    it('si la politica exige motivo, rechazar sin motivo responde 400', async () => {
-      const original = ZONE_CHANGE_POLICY.rejectionCommentRequired;
-      ZONE_CHANGE_POLICY.rejectionCommentRequired = true;
-      try {
+    it('audita estado anterior y nuevo y notifica al trabajador al rechazar', async () => {
+      await service.decide(ADMIN_ID, REQUEST_ID, {
+        decision: 'RECHAZADA',
+        comment: '  Sin cobertura  ',
+      });
+
+      expect(audit.record).toHaveBeenCalledWith(
+        {
+          actorId: ADMIN_ID,
+          action: AuditAction.RECHAZO,
+          entityType: AuditEntityType.SOLICITUD_CAMBIO_ZONA,
+          entityId: REQUEST_ID,
+          details: {
+            profileId: PROFILE_ID,
+            workerUserId: WORKER_ID,
+            fromZoneId: ZONE_A,
+            toZoneId: ZONE_B,
+            fromStatus: ZoneChangeRequestStatus.PENDIENTE,
+            toStatus: ZoneChangeRequestStatus.RECHAZADA,
+            comment: 'Sin cobertura',
+          },
+        },
+        prisma,
+      );
+      expect(notifications.create).toHaveBeenCalledTimes(1);
+      const [recipient, notification, db] = notifications.create.mock
+        .calls[0] as [string, { type: string; message: string }, unknown];
+      expect(recipient).toBe(WORKER_ID);
+      expect(db).toBe(prisma);
+      expect(notification).toMatchObject({
+        type: NotificationType.SOLICITUD_ZONA_RECHAZADA,
+        resource: {
+          type: NotificationResourceType.SOLICITUD_CAMBIO_ZONA,
+          id: REQUEST_ID,
+        },
+      });
+      expect(notification.message).toBe(
+        'Su solicitud de cambio a la zona "Zona 2" fue rechazada. Conserva su zona "Zona 1". Motivo: Sin cobertura',
+      );
+    });
+
+    it('al aprobar notifica la nueva zona al trabajador', async () => {
+      await service.decide(ADMIN_ID, REQUEST_ID, { decision: 'APROBADA' });
+
+      expect(notifications.create).toHaveBeenCalledWith(
+        WORKER_ID,
+        expect.objectContaining({
+          type: NotificationType.SOLICITUD_ZONA_APROBADA,
+          message:
+            'Su solicitud de cambio de zona fue aprobada. Su nueva zona de atención es "Zona 2".',
+        }),
+        prisma,
+      );
+      expect(audit.record.mock.calls[0][0].details).toMatchObject({
+        fromStatus: ZoneChangeRequestStatus.PENDIENTE,
+        toStatus: ZoneChangeRequestStatus.APROBADA,
+      });
+    });
+
+    it.each([WorkerProfileStatus.SUSPENDIDO, WorkerProfileStatus.RECHAZADO])(
+      'no aprueba si el perfil esta %s (se relee con el bloqueo)',
+      async (status) => {
+        prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(
+          profile(status),
+        );
+
         await expect(
-          service.decide(ADMIN_ID, REQUEST_ID, { decision: 'RECHAZADA' }),
-        ).rejects.toBeInstanceOf(BadRequestException);
-      } finally {
-        ZONE_CHANGE_POLICY.rejectionCommentRequired = original;
-      }
+          service.decide(ADMIN_ID, REQUEST_ID, { decision: 'APROBADA' }),
+        ).rejects.toThrow(
+          new ConflictException(
+            `No se puede aprobar: el perfil del trabajador está en estado ${status}`,
+          ),
+        );
+        expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+          prisma.workerProfile.findUniqueOrThrow.mock.invocationCallOrder[0],
+        );
+        expect(prisma.zoneChangeRequest.updateMany).not.toHaveBeenCalled();
+        expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+        expect(notifications.create).not.toHaveBeenCalled();
+      },
+    );
+
+    it('si otra decision gano (concurrencia), responde 409 sin auditar ni notificar', async () => {
+      prisma.zoneChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.decide(ADMIN_ID, REQUEST_ID, { decision: 'APROBADA' }),
+      ).rejects.toThrow('La solicitud ya fue resuelta');
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('si la notificacion falla, la decision falla (misma transaccion)', async () => {
+      notifications.create.mockRejectedValue(new Error('sin conexion'));
+
+      await expect(
+        service.decide(ADMIN_ID, REQUEST_ID, { decision: 'APROBADA' }),
+      ).rejects.toThrow('sin conexion');
     });
 
     it('solo un administrador activo decide', async () => {
@@ -454,9 +598,9 @@ describe('ZoneChangeRequestsService', () => {
     });
 
     it('no aprueba si la zona solicitada fue desactivada e indica que se rechace', async () => {
-      catalogs.findById.mockResolvedValue(
+      catalogs.findByIdsForShare.mockResolvedValue([
         zone(ZONE_B, { name: 'Zona Norte', isActive: false }),
-      );
+      ]);
 
       await expect(
         service.decide(ADMIN_ID, REQUEST_ID, { decision: 'APROBADA' }),
@@ -469,10 +613,15 @@ describe('ZoneChangeRequestsService', () => {
     });
 
     it('con la zona solicitada desactivada, rechazar sigue siendo posible', async () => {
-      catalogs.findById.mockResolvedValue(zone(ZONE_B, { isActive: false }));
+      catalogs.findByIdsForShare.mockResolvedValue([
+        zone(ZONE_B, { isActive: false }),
+      ]);
 
       await expect(
-        service.decide(ADMIN_ID, REQUEST_ID, { decision: 'RECHAZADA' }),
+        service.decide(ADMIN_ID, REQUEST_ID, {
+          decision: 'RECHAZADA',
+          comment: 'Zona sin cobertura',
+        }),
       ).resolves.toBeDefined();
       expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
     });
@@ -530,7 +679,10 @@ describe('ZoneChangeRequestsService', () => {
       it('activada y sin trabajo activo, aprueba; nunca se aplica al rechazar', () =>
         withRecheck(async () => {
           await expect(
-            service.decide(ADMIN_ID, REQUEST_ID, { decision: 'RECHAZADA' }),
+            service.decide(ADMIN_ID, REQUEST_ID, {
+              decision: 'RECHAZADA',
+              comment: 'Sin cobertura',
+            }),
           ).resolves.toBeDefined();
 
           registerSources();
@@ -597,6 +749,97 @@ describe('ZoneChangeRequestsService', () => {
         fromZone: { id: ZONE_A },
         toZone: { id: ZONE_B },
       });
+    });
+  });
+
+  describe('cancelPendingOnSuspension (T4.2)', () => {
+    const owner = { id: PROFILE_ID, userId: WORKER_ID };
+
+    it('sin solicitud pendiente no escribe nada', async () => {
+      await expect(
+        service.cancelPendingOnSuspension(prisma as never, ADMIN_ID, owner),
+      ).resolves.toBe(false);
+      expect(prisma.zoneChangeRequest.updateMany).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('cancela la pendiente sin rechazarla, la audita y avisa al trabajador', async () => {
+      prisma.zoneChangeRequest.findFirst.mockResolvedValue(request());
+
+      await expect(
+        service.cancelPendingOnSuspension(prisma as never, ADMIN_ID, owner),
+      ).resolves.toBe(true);
+
+      expect(prisma.zoneChangeRequest.findFirst).toHaveBeenCalledWith({
+        where: {
+          profileId: PROFILE_ID,
+          status: ZoneChangeRequestStatus.PENDIENTE,
+        },
+      });
+      expect(prisma.zoneChangeRequest.updateMany).toHaveBeenCalledWith({
+        where: { id: REQUEST_ID, status: ZoneChangeRequestStatus.PENDIENTE },
+        data: {
+          status: ZoneChangeRequestStatus.CANCELADA,
+          cancellationCause: ZoneChangeCancellationCause.SUSPENSION_PERFIL,
+          decidedAt: expect.any(Date),
+          decidedById: ADMIN_ID,
+        },
+      });
+      // La zona del perfil no cambia.
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+      expect(audit.record).toHaveBeenCalledWith(
+        {
+          actorId: ADMIN_ID,
+          action: AuditAction.CAMBIO_ESTADO,
+          entityType: AuditEntityType.SOLICITUD_CAMBIO_ZONA,
+          entityId: REQUEST_ID,
+          details: {
+            profileId: PROFILE_ID,
+            workerUserId: WORKER_ID,
+            fromZoneId: ZONE_A,
+            toZoneId: ZONE_B,
+            fromStatus: ZoneChangeRequestStatus.PENDIENTE,
+            toStatus: ZoneChangeRequestStatus.CANCELADA,
+            cause: ZoneChangeCancellationCause.SUSPENSION_PERFIL,
+          },
+        },
+        prisma,
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        WORKER_ID,
+        {
+          type: NotificationType.SOLICITUD_ZONA_CANCELADA,
+          title: 'Solicitud de cambio de zona cancelada',
+          message:
+            'Su solicitud de cambio a la zona "Zona 2" se canceló porque su perfil de trabajador fue suspendido. Conserva su zona "Zona 1".',
+          resource: {
+            type: NotificationResourceType.SOLICITUD_CAMBIO_ZONA,
+            id: REQUEST_ID,
+          },
+        },
+        prisma,
+      );
+    });
+
+    it('si ya se resolvio, no audita ni notifica', async () => {
+      prisma.zoneChangeRequest.findFirst.mockResolvedValue(request());
+      prisma.zoneChangeRequest.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.cancelPendingOnSuspension(prisma as never, ADMIN_ID, owner),
+      ).resolves.toBe(false);
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('propaga los errores para revertir la suspension', async () => {
+      prisma.zoneChangeRequest.findFirst.mockResolvedValue(request());
+      notifications.create.mockRejectedValue(new Error('sin conexion'));
+
+      await expect(
+        service.cancelPendingOnSuspension(prisma as never, ADMIN_ID, owner),
+      ).rejects.toThrow('sin conexion');
     });
   });
 });

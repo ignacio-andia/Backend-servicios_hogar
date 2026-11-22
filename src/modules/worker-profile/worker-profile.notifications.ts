@@ -126,3 +126,62 @@ export function submissionNotification(
       };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Solicitudes de cambio de zona (T4.2). Solo las recibe el trabajador dueno de
+// la solicitud; el motivo del rechazo es privado.
+// ---------------------------------------------------------------------------
+
+const zoneRequestResource = (requestId: string) => ({
+  type: NotificationResourceType.SOLICITUD_CAMBIO_ZONA,
+  id: requestId,
+});
+
+export interface ZoneRequestNames {
+  fromZone: string;
+  toZone: string;
+}
+
+/** Resultado de la decision administrativa sobre una solicitud. */
+export function zoneRequestDecisionNotification(
+  requestId: string,
+  decision: 'APROBADA' | 'RECHAZADA',
+  { fromZone, toZone }: ZoneRequestNames,
+  comment: string | null,
+): NewNotification {
+  const resource = zoneRequestResource(requestId);
+  return decision === 'APROBADA'
+    ? {
+        type: NotificationType.SOLICITUD_ZONA_APROBADA,
+        title: 'Cambio de zona aprobado',
+        message: withReason(
+          `Su solicitud de cambio de zona fue aprobada. Su nueva zona de atención es "${toZone}".`,
+          'Comentario',
+          comment,
+        ),
+        resource,
+      }
+    : {
+        type: NotificationType.SOLICITUD_ZONA_RECHAZADA,
+        title: 'Cambio de zona rechazado',
+        message: withReason(
+          `Su solicitud de cambio a la zona "${toZone}" fue rechazada. Conserva su zona "${fromZone}".`,
+          'Motivo',
+          comment,
+        ),
+        resource,
+      };
+}
+
+/** Cancelacion automatica de la solicitud pendiente al suspender el perfil. */
+export function zoneRequestCancelledBySuspensionNotification(
+  requestId: string,
+  { fromZone, toZone }: ZoneRequestNames,
+): NewNotification {
+  return {
+    type: NotificationType.SOLICITUD_ZONA_CANCELADA,
+    title: 'Solicitud de cambio de zona cancelada',
+    message: `Su solicitud de cambio a la zona "${toZone}" se canceló porque su perfil de trabajador fue suspendido. Conserva su zona "${fromZone}".`,
+    resource: zoneRequestResource(requestId),
+  };
+}
