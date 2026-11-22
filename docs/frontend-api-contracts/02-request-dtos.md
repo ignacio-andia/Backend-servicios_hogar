@@ -1,6 +1,6 @@
 # 02. DTOs de entrada
 
-Se documentan los **26 DTOs** que recibe la API por HTTP. `CreateUserDto` es interno (lo usa AuthModule) y no se recibe por HTTP.
+Se documentan los **28 DTOs** que recibe la API por HTTP. `CreateUserDto` es interno (lo usa AuthModule) y no se recibe por HTTP.
 
 ## Columna "Omitir / null"
 
@@ -30,39 +30,7 @@ Se documentan los **26 DTOs** que recibe la API por HTTP. `CreateUserDto` es int
 | `lastName` | string | Obligatoria | 1 a 100 | ídem | — |
 | `email` | string | Obligatoria | email válido, ≤ 255 | `@Trim @IsEmail @MaxLength(255)` | Se guarda en minúsculas; 409 si ya existe |
 | `password` | string | Obligatoria | ≥ 8 caracteres, ≤ 72 **bytes**, al menos una letra y un número | `@IsString @MinLength(8) @IsByteLength(0,72) @Matches(/(?=.*\p{L})(?=.*\d)/u)` | Sin `@Trim` (los espacios cuentan) |
-| `phone` | string | Omitible, admite null. `""` o solo espacios se tratan como **ausente** | `^\+?[1-9]\d{6,14}# 02. DTOs de entrada
-
-Se documentan los **26 DTOs** que recibe la API por HTTP. `CreateUserDto` es interno (lo usa AuthModule) y no se recibe por HTTP.
-
-## Columna "Omitir / null"
-
-| Valor | Significado |
-|---|---|
-| **Obligatoria** | No se puede omitir ni enviar `null` |
-| **Omitible, admite null** | `@IsOptional()`: se puede omitir o enviar `null` |
-| **Omitible, no admite null** | `@ValidateIf(v !== undefined)`: se puede omitir, pero `null` responde 400 |
-
-## Reglas globales
-
-- Toda propiedad no declarada responde 400 (`property X should not exist`).
-- `@Trim()` recorta los espacios antes de validar: `"  hola "` llega como `"hola"`.
-- En multipart todos los campos de texto llegan como strings.
-- Los query params se convierten con `@Type(() => Number)` o con un parser propio de booleanos (`"true"`/`"false"`).
-- Los parámetros de ruta `:id`, `:orderId`, `:imageId`, `:documentId` y `:requestId` deben ser UUID (`ParseUUIDPipe`); si no, responden 400 `"Validation failed (uuid is expected)"`.
-
----
-
-## AuthModule
-
-### `RegisterDto`: `POST /api/auth/register` (JSON)
-
-| Propiedad | Tipo | Omitir / null | Restricciones | Validadores y transformaciones | Reglas de negocio |
-|---|---|---|---|---|---|
-| `firstName` | string | Obligatoria | 1 a 100 caracteres después de recortar | `@Trim @IsString @IsNotEmpty @MaxLength(100)` | — |
-| `lastName` | string | Obligatoria | 1 a 100 | ídem | — |
-| `email` | string | Obligatoria | email válido, ≤ 255 | `@Trim @IsEmail @MaxLength(255)` | Se guarda en minúsculas; 409 si ya existe |
-| `password` | string | Obligatoria | ≥ 8 caracteres, ≤ 72 **bytes**, al menos una letra y un número | `@IsString @MinLength(8) @IsByteLength(0,72) @Matches(/(?=.*\p{L})(?=.*\d)/u)` | Sin `@Trim` (los espacios cuentan) |
- (7 a 15 dígitos, `+` opcional, sin espacios ni guiones) | `@TrimEmptyAs(undefined) @IsOptional @Matches` | Si no se envía un valor válido, se guarda `null`. Es necesario para enviar el perfil de trabajador a revisión |
+| `phone` | string | Omitible, admite null. `""` o solo espacios se tratan como **ausente** | `^\+?[1-9]\d{6,14}$` (7 a 15 dígitos, `+` opcional, sin espacios ni guiones) | `@TrimEmptyAs(undefined) @IsOptional @Matches` | Si no se envía un valor válido, se guarda `null`. Es necesario para enviar el perfil de trabajador a revisión |
 
 No se aceptan `roles` ni `status`: el registro siempre crea una cuenta `CLIENTE` y `ACTIVO`.
 
@@ -277,6 +245,39 @@ En la subida (`POST …/documents`), en cambio, sí hay DTO: un campo de texto d
 | `resolved` | boolean | Omitible | `"true"`: solo resueltas; `"false"`: solo pendientes. Se combina con `status` mediante AND |
 | `workerUserId` | string | Omitible | UUID de la **cuenta** del trabajador |
 | `page` / `limit` | number | Omitibles (1 / 20) | `limit` ≤ 100 |
+
+### `ListAdminWorkerProfilesQueryDto`: `GET /api/worker-profile/admin/profiles` (query)
+
+| Propiedad | Tipo | Omitir | Restricciones |
+|---|---|---|---|
+| `status` | `WorkerProfileStatus` | Omitible (sin valor: todos los estados) | Uno de los 6 valores; por ejemplo `PENDIENTE` para la cola de revisión |
+| `zoneId` | string | Omitible | UUID de la zona del perfil |
+| `categoryId` | string | Omitible | UUID: perfiles que tienen esa especialidad |
+| `page` | number | Omitible (1) | ≥ 1 |
+| `limit` | number | Omitible (20) | 1 a 100 |
+
+Cualquier otro parámetro responde 400.
+
+### `ChangeWorkerProfileStatusDto`: `PATCH /api/worker-profile/admin/profiles/:profileId/status` (JSON)
+
+| Propiedad | Tipo | Omitir / null | Restricciones | Validadores | Reglas de negocio |
+|---|---|---|---|---|---|
+| `status` | `'APROBADO' \| 'OBSERVADO' \| 'RECHAZADO' \| 'SUSPENDIDO'` | Obligatoria | Solo esos cuatro valores (400 con `PENDIENTE`, `BORRADOR` u otro) | `@IsIn(ADMIN_TARGET_STATUSES)` | La transición debe estar permitida desde el estado actual (ver 04); si no, 409 |
+| `reason` | string | **Obligatoria** para `OBSERVADO`, `RECHAZADO` y `SUSPENDIDO`; omitible al aprobar. **No admite null** | 1 a 1000 después de recortar; `""` o solo espacios responden 400 | `@Trim @ValidateIf(exige motivo \|\| enviado) @IsString @IsNotEmpty @MaxLength(1000)` | Es el motivo privado que ve el trabajador (`statusReason`); queda en el historial y en la bitácora |
+
+No se envía el id del administrador: sale del token. Cualquier propiedad extra (por ejemplo `adminId`) responde 400.
+
+```json
+{ "status": "OBSERVADO", "reason": "Suba una foto legible de su cédula" }
+```
+
+```json
+{ "status": "APROBADO" }
+```
+
+Ejemplos inválidos:
+- `{ "status": "RECHAZADO" }` o `{ "status": "RECHAZADO", "reason": "   " }`: 400, falta el motivo.
+- `{ "status": "PENDIENTE" }`: 400, estado no permitido.
 
 ### `ListInactiveZoneProfilesQueryDto`: `GET /api/worker-profile/admin/inactive-zone-profiles` (query)
 

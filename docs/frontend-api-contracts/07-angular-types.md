@@ -198,6 +198,46 @@ export interface UpdateSpecialtiesRequest {
 export interface UpdateSchedulesRequest {
   schedules: ScheduleItemRequest[];
 }
+// Solo administradores: GET /worker-profile/admin/profiles y /:profileId
+export interface AdminWorkerProfilesQuery extends PageQuery {
+  status?: WorkerProfileStatus;
+  zoneId?: string;
+  categoryId?: string;
+}
+export interface AdminAccountSummary {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  status: UserStatus;
+}
+export interface AdminWorkerProfileSummary {
+  id: string;
+  userId: string;
+  status: WorkerProfileStatus;
+  account: AdminAccountSummary;
+  zone: CatalogRef;
+  specialties: CatalogRef[];
+  submittedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface AdminStatusHistoryEntry extends WorkerStatusHistoryEntry {
+  changedByUser: { id: string; firstName: string; lastName: string };
+}
+export interface AdminWorkerProfileView {
+  profile: WorkerProfile;
+  account: AdminAccountSummary & { roles: RoleName[] };
+  statusReason: string | null;
+  history: AdminStatusHistoryEntry[];
+  allowedDecisions: WorkerProfileStatus[];
+}
+// Solo administradores: PATCH /worker-profile/admin/profiles/:profileId/status
+export type AdminProfileDecision = 'APROBADO' | 'OBSERVADO' | 'RECHAZADO' | 'SUSPENDIDO';
+export interface ChangeWorkerProfileStatusRequest {
+  status: AdminProfileDecision;
+  reason?: string; // obligatorio y no vacio salvo APROBADO; no admite null
+}
 
 export interface Schedule {
   id: string;

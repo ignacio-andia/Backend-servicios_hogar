@@ -77,6 +77,18 @@ export const ADMIN_TRANSITIONS: Readonly<
   [WorkerProfileStatus.SUSPENDIDO]: [WorkerProfileStatus.APROBADO],
 };
 
+/**
+ * Estados que un administrador puede asignar por HTTP (destinos de
+ * ADMIN_TRANSITIONS). Que la transicion sea valida desde el estado actual lo
+ * decide ADMIN_TRANSITIONS en el servicio.
+ */
+export const ADMIN_TARGET_STATUSES = [
+  WorkerProfileStatus.APROBADO,
+  WorkerProfileStatus.OBSERVADO,
+  WorkerProfileStatus.RECHAZADO,
+  WorkerProfileStatus.SUSPENDIDO,
+] as const;
+
 // Decisiones que deben explicarse al trabajador (RF-10 y CU-03 A1).
 export const STATUSES_REQUIRING_REASON: readonly WorkerProfileStatus[] = [
   WorkerProfileStatus.OBSERVADO,

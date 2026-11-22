@@ -50,10 +50,11 @@ Transiciones:
 |---|---|---|
 | (nuevo) → `BORRADOR` | Trabajador, `POST /worker-profile` | ✅ |
 | `BORRADOR` → `PENDIENTE`, `OBSERVADO` → `PENDIENTE` | Trabajador, `POST /me/submit` | ✅ |
-| `PENDIENTE` → `APROBADO` / `OBSERVADO` / `RECHAZADO` | Administrador (`ADMIN_TRANSITIONS`) | 🟡 **No.** Existe `WorkerProfileService.changeStatusByAdmin`, pero ningún endpoint lo llama |
-| `APROBADO` → `SUSPENDIDO`, `SUSPENDIDO` → `APROBADO` | Administrador | 🟡 **No**, por la misma razón |
+| `PENDIENTE` → `APROBADO` / `OBSERVADO` / `RECHAZADO` | Administrador (`ADMIN_TRANSITIONS`), nunca sobre su propio perfil | ✅ `PATCH /worker-profile/admin/profiles/:profileId/status` (#55). Aprobar exige que el perfil siga cumpliendo los requisitos de envío |
+| `APROBADO` → `SUSPENDIDO`, `SUSPENDIDO` → `APROBADO` | Administrador, nunca sobre su propio perfil | ✅ #55. La reactivación (`SUSPENDIDO` → `APROBADO`) no vuelve a exigir los requisitos de envío (decisión previa del equipo) |
+| `RECHAZADO` → `PENDIENTE` (nueva presentación) | Trabajador | ⛔ **Pendiente (T3.1).** Un perfil `RECHAZADO` no es terminal (v1.0 §5), pero hoy no se puede editar ni reenviar |
 
-`OBSERVADO`, `RECHAZADO` y `SUSPENDIDO` exigen un motivo (`STATUSES_REQUIRING_REASON`) cuando lo decide el administrador. Hoy, sin endpoint, **ningún perfil puede llegar a `APROBADO` por la API**.
+`OBSERVADO`, `RECHAZADO` y `SUSPENDIDO` exigen un motivo no vacío (`STATUSES_REQUIRING_REASON`). Cualquier otra transición responde 409. Rechazar o suspender un perfil **no** cambia los roles ni el estado de la cuenta: el usuario sigue siendo `CLIENTE` y `ACTIVO`.
 
 ### `WeekDay`
 
@@ -111,7 +112,7 @@ Todo cambio de estado queda en `order_status_history`, pero **no hay endpoint pa
 
 | Enum | Valores | Uso real hoy |
 |---|---|---|
-| `AuditAction` | `CREACION`, `EDICION`, `DESACTIVACION`, `CAMBIO_ESTADO`, `APROBACION`, `RECHAZO` | Catálogos (las tres primeras); solicitudes de zona (`APROBACION`, `RECHAZO`). `CAMBIO_ESTADO` solo lo escribiría el cambio de estado del perfil, que no tiene endpoint |
+| `AuditAction` | `CREACION`, `EDICION`, `DESACTIVACION`, `CAMBIO_ESTADO`, `APROBACION`, `RECHAZO` | Catálogos (las tres primeras); solicitudes de zona (`APROBACION`, `RECHAZO`); decisiones sobre perfiles (`CAMBIO_ESTADO`, #55) |
 | `AuditEntityType` | `CATEGORIA_SERVICIO`, `ZONA`, `PERFIL_TRABAJADOR`, `SOLICITUD_CAMBIO_ZONA` | Filtro de `GET /audit-logs` |
 
 ## Literales de la API (no son enums de la BD)

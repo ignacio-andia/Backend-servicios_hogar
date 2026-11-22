@@ -30,6 +30,9 @@ Cada modelo se obtuvo de lo que **construye el service** (selects explícitos, f
 | #38 solicitudes (admin) | `Paginated<AdminZoneChangeRequestView>` |
 | #39, #40 solicitud (admin) | `AdminZoneChangeRequestView` |
 | #41 perfiles con zona inactiva | `AffectedProfile[]` |
+| #55 decisión administrativa sobre un perfil | `WorkerProfileView` (el perfil ya actualizado; **sin** el motivo ni el historial) |
+| #56 perfiles para revisar (admin) | `Paginated<AdminWorkerProfileSummary>` |
+| #57 detalle de un perfil (admin) | `AdminWorkerProfileView` |
 | #42 crear pedido, #47 editar pedido | `OrderWithWarnings` |
 | #43 aviso de duplicados | `DuplicateCheckResponse` |
 | #44 mis pedidos | `Paginated<OwnerOrderView>` |
@@ -174,7 +177,7 @@ Formas de `details` que escribe el código hoy:
 | `CATEGORIA_SERVICIO` o `ZONA` / `EDICION` | `{ before: { name?, description? }, after: { name?, description? } }` (solo los campos cambiados) |
 | `CATEGORIA_SERVICIO` o `ZONA` / `DESACTIVACION` | `{ name: string }` |
 | `SOLICITUD_CAMBIO_ZONA` / `APROBACION` o `RECHAZO` | `{ profileId, workerUserId, fromZoneId, toZoneId, comment: string \| null }` |
-| `PERFIL_TRABAJADOR` / `CAMBIO_ESTADO` | `{ from, to, reason }`. **Hoy no se genera por HTTP** (no hay endpoint de verificación) |
+| `PERFIL_TRABAJADOR` / `CAMBIO_ESTADO` | `{ from, to, reason: string \| null }`. Lo genera la decisión administrativa (#55) |
 
 ---
 
@@ -284,6 +287,56 @@ Condiciones de cada requisito:
 ```json
 { "id": "d4e5f6a7-b8c9-4d0e-8f1a-2b3c4d5e6f7a", "type": "IDENTIDAD", "originalName": "cedula.pdf", "mimeType": "application/pdf", "sizeBytes": 183402, "uploadedAt": "2026-11-15T14:35:00.000Z", "replacedAt": null, "replacedById": null }
 ```
+
+---
+
+## Revisión administrativa de perfiles
+
+### `AdminWorkerProfileSummary` (fila del listado #56)
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `id` | string | no | Id del perfil |
+| `userId` | string | no | Id de la cuenta |
+| `status` | `WorkerProfileStatus` | no | |
+| `account` | `AdminAccountSummary` | no | `{ firstName, lastName, email, phone, status }`. `phone` puede ser `null`. **Sin** hash ni roles |
+| `zone` | `CatalogRef` | no | |
+| `specialties` | `CatalogRef[]` | no | Ordenadas por nombre |
+| `submittedAt` | string | **sí** | Último envío a revisión; `null` si nunca se envió |
+| `createdAt`, `updatedAt` | string | no | |
+
+Orden: `submittedAt` ascendente (los nunca enviados al final) y luego `createdAt`. El perfil del propio administrador nunca aparece.
+
+```json
+{
+  "data": [{
+    "id": "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
+    "userId": "8f1c2a8e-5a2b-4c3d-9e4f-1a2b3c4d5e6f",
+    "status": "PENDIENTE",
+    "account": { "firstName": "Juan", "lastName": "Pérez", "email": "juan@example.com", "phone": "70000000", "status": "ACTIVO" },
+    "zone": { "id": "3f1d6c2e-8a4b-4c5d-9e6f-7a8b9c0d1e2f", "name": "Norte", "isActive": true },
+    "specialties": [{ "id": "2b7e9d1c-3f4a-4b5c-8d6e-7f8091a2b3c4", "name": "Plomería", "isActive": true }],
+    "submittedAt": "2026-11-20T15:00:00.000Z",
+    "createdAt": "2026-11-20T14:30:00.000Z",
+    "updatedAt": "2026-11-20T15:00:00.000Z"
+  }],
+  "meta": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
+}
+```
+
+### `AdminWorkerProfileView` (detalle #57)
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `profile` | `WorkerProfileView` | no | El mismo modelo que ve el trabajador, incluidos `pendingRequirements`, que indican si se puede aprobar |
+| `account` | `AdminAccountSummary` + `roles: RoleName[]` | no | Datos de contacto y estado de la cuenta |
+| `statusReason` | string | **sí** | Motivo **privado** del cambio más reciente al estado vigente |
+| `history` | `AdminStatusHistoryEntry[]` | no | Más reciente primero |
+| `allowedDecisions` | `WorkerProfileStatus[]` | no | Calculado con `ADMIN_TRANSITIONS`: `PENDIENTE` → `[APROBADO, OBSERVADO, RECHAZADO]`; `APROBADO` → `[SUSPENDIDO]`; `SUSPENDIDO` → `[APROBADO]`; los demás → `[]` |
+
+`AdminStatusHistoryEntry` = `StatusHistoryEntry` (ver arriba) más `changedByUser: { id, firstName, lastName }`, que muestra quién hizo el cambio. Esa identidad solo la ve el administrador; el trabajador solo ve `changedBy`.
+
+**No incluye los documentos:** su consulta administrativa (con bitácora) es una tarea pendiente.
 
 ---
 

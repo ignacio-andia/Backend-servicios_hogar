@@ -54,7 +54,7 @@ Columnas:
 | `GET /audit-logs` | ✘ | ✘ | ✘ | ✘ | ✔ | — |
 | `POST /worker-profile` | ✘ | ✔ | ✔ | — | ✘ (salvo que también tenga `CLIENTE`) | Cuenta `ACTIVO`; un solo perfil por cuenta |
 | `/worker-profile/me/*` | ✘ | ✘ (403 hasta tener el rol) | propio | propio | ✘ (salvo que también tenga `TRABAJADOR`) | Ver los estados en 04 |
-| `/worker-profile/admin/*` | ✘ | ✘ | ✘ | ✘ | ✔ | Un administrador no resuelve su propia solicitud (403) |
+| `/worker-profile/admin/*` | ✘ | ✘ | ✘ | ✘ | ✔ | Un administrador no resuelve su propia solicitud de zona ni decide sobre su propio perfil (403) |
 | `POST /orders`, `POST /orders/duplicate-check`, `/orders/me/*` | ✘ | propio | propio (tiene `CLIENTE`) | propio | ✘ (salvo que también tenga `CLIENTE`) | Editar y cancelar solo en `PUBLICADO` (sin vencer) o `EN_NEGOCIACION` |
 | `/orders/available/*` | ✘ | ✘ | ✘ (403) | ✔ | ✘ | Regla de visibilidad (abajo) |
 
@@ -66,7 +66,9 @@ Columnas:
 |---|---|---|---|---|---|
 | Datos de una cuenta (`PublicUser`) | ✘ | la propia | ✘ | la propia | todas |
 | Teléfono y correo de un trabajador | ✘ | ✘ | ✘ | el propio | ✔ (en solicitudes de zona y usuarios) |
-| Perfil de trabajador completo | ✘ | — | ✘ | el propio | ✘ (**no hay endpoint**) |
+| Perfil de trabajador completo | ✘ | — | ✘ | el propio | ✔ listado (#56) y detalle (#57), **salvo el propio** |
+| Motivo de observación, rechazo o suspensión | ✘ | — | ✘ | solo el propio (`/me/status`, `/me/eligibility`) | lo escribe; lo ve en el detalle (#57) y en la bitácora (#22) |
+| Quién decidió cada cambio de estado | ✘ | — | ✘ | solo `TRABAJADOR` o `ADMINISTRADOR` | nombre e id (#57) |
 | Documentos del trabajador | ✘ | — | ✘ | los propios (listar y descargar) | ✘ (**no hay endpoint**; RF-56 pendiente) |
 | Pedido (datos generales) | ✘ | ✔ | ✘ | solo los visibles | ✘ (**no hay endpoint**) |
 | Dirección exacta del pedido | ✘ | ✔ | ✘ | ✘ (❓ RF-55, pendiente con el docente) | ✘ |
@@ -98,5 +100,6 @@ Si no se cumple alguna condición, responde **404** (igual que un pedido inexist
 | Solicitar cambio de zona | Perfil `APROBADO`, `PENDIENTE`, `OBSERVADO` o `SUSPENDIDO`; sin solicitud pendiente; sin trabajo activo; fuentes de verificación disponibles | 409 con un arreglo de motivos |
 | Editar un pedido o sus fotos, cancelarlo | Estado efectivo `PUBLICADO` o `EN_NEGOCIACION` | 409 (mensaje según el estado) |
 | Decidir una solicitud de zona | `PENDIENTE`; al aprobar, zona destino activa y zona del perfil sin cambios | 409 |
+| Decidir sobre un perfil (#55) | Transición permitida por `ADMIN_TRANSITIONS`; al aprobar desde `PENDIENTE`, requisitos de envío vigentes; nunca sobre el propio perfil | 409; 403 si es el propio |
 
 **Para la interfaz:** use `canEdit` y `canSubmit` (perfil), `canEdit` y `canCancel` (pedido), `canRequestChange` y `blockers` (zona), y `eligible` (trabajador) para mostrar u ocultar acciones. El backend vuelve a validar todo.

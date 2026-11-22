@@ -13,6 +13,8 @@ import {
   AuditAction,
   AuditEntityType,
   RoleName,
+  UserStatus,
+  WeekDay,
   WorkerProfileStatus,
   ZoneChangeRequestStatus,
 } from '../src/generated/prisma/client.js';
@@ -1138,6 +1140,498 @@ describe('WorkerProfileModule (e2e)', () => {
       await expect(profiles.assertWorkerApproved(worker.id)).rejects.toThrow(
         'Motivo: Reclamos reiterados',
       );
+    });
+  });
+
+  describe('RF-10 y RF-47: verificación administrativa (PATCH /admin/profiles/:id/status)', () => {
+    // Cuentas propias de este bloque: se crean y se borran aquí.
+    const created: PublicUser[] = [];
+    let adminWorker: PublicUser;
+    let adminWorkerProfileId: string;
+
+    const statusUrl = (id: string) => `${BASE}/admin/profiles/${id}/status`;
+    const decide = (id: string, body: object, user: PublicUser = admin) =>
+      http().patch(statusUrl(id)).set('Authorization', auth(user)).send(body);
+    const statusOf = async (id: string) =>
+      (await prisma.workerProfile.findUniqueOrThrow({ where: { id } })).status;
+
+    /** Trabajador con perfil completo enviado a revisión (PENDIENTE). */
+    const newCandidate = async (name: string) => {
+      const user = await app.get(UsersService).create({
+        firstName: name,
+        lastName: 'E2E',
+        email: `verif-${name}-${RUN_ID}${EMAIL_DOMAIN}`,
+        passwordHash: 'hash',
+        phone: '70000011',
+      });
+      created.push(user);
+      const profile = await profiles.create(user.id, {
+        ...validProfile(),
+        schedules: [
+          { dayOfWeek: WeekDay.LUNES, startTime: '08:00', endTime: '12:00' },
+        ],
+      });
+      await profiles.submit(user.id);
+      return {
+        user: await app.get(UsersService).findById(user.id),
+        profileId: profile.id,
+      };
+    };
+
+    beforeAll(async () => {
+      // Administrador que además es trabajador, con su perfil PENDIENTE.
+      const candidate = await newCandidate('admin-trabajador');
+      await prisma.userRole.create({
+        data: { userId: candidate.user.id, role: RoleName.ADMINISTRADOR },
+      });
+      adminWorker = await app.get(UsersService).findById(candidate.user.id);
+      adminWorkerProfileId = candidate.profileId;
+    });
+
+    afterAll(async () => {
+      const ids = created.map((user) => user.id);
+      await deleteWorkerData(prisma, ids);
+      await prisma.user.deleteMany({ where: { id: { in: ids } } });
+    });
+
+    it('exige sesión (401)', async () => {
+      const { profileId } = await newCandidate('sin-sesion');
+      await http()
+        .patch(statusUrl(profileId))
+        .send({ status: WorkerProfileStatus.APROBADO })
+        .expect(401);
+      expect(await statusOf(profileId)).toBe(WorkerProfileStatus.PENDIENTE);
+    });
+
+    it('solo un administrador puede decidir (403 para cliente y trabajador)', async () => {
+      const { user, profileId } = await newCandidate('no-admin');
+      for (const intruder of [client, user]) {
+        const res = await decide(
+          profileId,
+          { status: WorkerProfileStatus.RECHAZADO, reason: 'Intento' },
+          intruder,
+        ).expect(403);
+        expect(JSON.stringify(res.body)).not.toContain('Intento');
+      }
+      expect(await statusOf(profileId)).toBe(WorkerProfileStatus.PENDIENTE);
+    });
+
+    it('aprueba un perfil válido, con historial y bitácora', async () => {
+      const { user, profileId } = await newCandidate('aprobado');
+
+      const res = await decide(profileId, {
+        status: WorkerProfileStatus.APROBADO,
+      }).expect(200);
+
+      expect(res.body).toMatchObject({
+        id: profileId,
+        userId: user.id,
+        status: WorkerProfileStatus.APROBADO,
+        canEdit: false,
+      });
+      const eligibility = await http()
+        .get(`${BASE}/me/eligibility`)
+        .set('Authorization', auth(user))
+        .expect(200);
+      expect(eligibility.body).toMatchObject({ eligible: true });
+      expect(
+        await prisma.workerProfileStatusHistory.findFirst({
+          where: { profileId, toStatus: WorkerProfileStatus.APROBADO },
+        }),
+      ).toMatchObject({
+        fromStatus: WorkerProfileStatus.PENDIENTE,
+        changedById: admin.id,
+      });
+      expect(
+        await prisma.adminAuditLog.findFirst({
+          where: { entityId: profileId, action: AuditAction.CAMBIO_ESTADO },
+        }),
+      ).toMatchObject({
+        actorId: admin.id,
+        entityType: AuditEntityType.PERFIL_TRABAJADOR,
+        details: {
+          from: WorkerProfileStatus.PENDIENTE,
+          to: WorkerProfileStatus.APROBADO,
+          reason: null,
+        },
+      });
+    });
+
+    it('observa un perfil con un motivo que solo ve el trabajador', async () => {
+      const { user, profileId } = await newCandidate('observado');
+      const reason = 'Suba una foto legible de su cédula';
+
+      await decide(profileId, {
+        status: WorkerProfileStatus.OBSERVADO,
+        reason: `  ${reason}  `,
+      }).expect(200);
+
+      const status = await http()
+        .get(`${BASE}/me/status`)
+        .set('Authorization', auth(user))
+        .expect(200);
+      expect(status.body).toMatchObject({
+        status: WorkerProfileStatus.OBSERVADO,
+        statusReason: reason,
+      });
+    });
+
+    it('rechaza con motivo sin tocar el rol CLIENTE ni el estado de la cuenta', async () => {
+      const { user, profileId } = await newCandidate('rechazado');
+      const reason = 'Los antecedentes no corresponden al titular';
+
+      const res = await decide(profileId, {
+        status: WorkerProfileStatus.RECHAZADO,
+        reason,
+      }).expect(200);
+      expect(res.body.status).toBe(WorkerProfileStatus.RECHAZADO);
+
+      const account = await app.get(UsersService).findById(user.id);
+      expect(account.status).toBe(UserStatus.ACTIVO);
+      expect(account.roles).toEqual(
+        expect.arrayContaining([RoleName.CLIENTE, RoleName.TRABAJADOR]),
+      );
+      // La cuenta sigue operando como cliente.
+      await http()
+        .get('/api/auth/me')
+        .set('Authorization', auth(user))
+        .expect(200);
+      const eligibility = await http()
+        .get(`${BASE}/me/eligibility`)
+        .set('Authorization', auth(user))
+        .expect(200);
+      expect(eligibility.body).toMatchObject({
+        eligible: false,
+        status: WorkerProfileStatus.RECHAZADO,
+        reason,
+      });
+    });
+
+    it('suspende un perfil aprobado con motivo, sin tocar la cuenta', async () => {
+      const { user, profileId } = await newCandidate('suspendido');
+      await decide(profileId, { status: WorkerProfileStatus.APROBADO }).expect(
+        200,
+      );
+
+      await decide(profileId, {
+        status: WorkerProfileStatus.SUSPENDIDO,
+        reason: 'Reclamos reiterados',
+      }).expect(200);
+
+      expect(await statusOf(profileId)).toBe(WorkerProfileStatus.SUSPENDIDO);
+      const account = await app.get(UsersService).findById(user.id);
+      expect(account.status).toBe(UserStatus.ACTIVO);
+      expect(account.roles).toEqual(
+        expect.arrayContaining([RoleName.CLIENTE, RoleName.TRABAJADOR]),
+      );
+    });
+
+    it.each([
+      ['rechazo sin motivo', { status: WorkerProfileStatus.RECHAZADO }],
+      [
+        'rechazo con motivo vacío',
+        { status: WorkerProfileStatus.RECHAZADO, reason: '' },
+      ],
+      [
+        'rechazo con solo espacios',
+        { status: WorkerProfileStatus.RECHAZADO, reason: '   ' },
+      ],
+      ['observación sin motivo', { status: WorkerProfileStatus.OBSERVADO }],
+      ['suspensión sin motivo', { status: WorkerProfileStatus.SUSPENDIDO }],
+      ['estado no permitido', { status: WorkerProfileStatus.PENDIENTE }],
+      [
+        'adminId en el cuerpo',
+        { status: WorkerProfileStatus.APROBADO, adminId: randomUUID() },
+      ],
+    ])('valida el cuerpo: %s (400)', async (_label, body) => {
+      const { profileId } = await newCandidate(
+        `val-${randomUUID().slice(0, 6)}`,
+      );
+      await decide(profileId, body).expect(400);
+      expect(await statusOf(profileId)).toBe(WorkerProfileStatus.PENDIENTE);
+    });
+
+    it('rechaza transiciones inválidas (409)', async () => {
+      const pendiente = await newCandidate('trans-pendiente');
+      // PENDIENTE no se suspende.
+      await decide(pendiente.profileId, {
+        status: WorkerProfileStatus.SUSPENDIDO,
+        reason: 'x',
+      }).expect(409);
+
+      const rechazado = await newCandidate('trans-rechazado');
+      await decide(rechazado.profileId, {
+        status: WorkerProfileStatus.RECHAZADO,
+        reason: 'Motivo',
+      }).expect(200);
+      // RECHAZADO no se aprueba ni se rechaza otra vez por esta vía.
+      await decide(rechazado.profileId, {
+        status: WorkerProfileStatus.APROBADO,
+      }).expect(409);
+      await decide(rechazado.profileId, {
+        status: WorkerProfileStatus.RECHAZADO,
+        reason: 'Otra vez',
+      }).expect(409);
+
+      expect(await statusOf(pendiente.profileId)).toBe(
+        WorkerProfileStatus.PENDIENTE,
+      );
+      expect(await statusOf(rechazado.profileId)).toBe(
+        WorkerProfileStatus.RECHAZADO,
+      );
+    });
+
+    it('no aprueba un perfil que dejó de cumplir los requisitos (409)', async () => {
+      const { user, profileId } = await newCandidate('sin-telefono');
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { phone: null },
+      });
+
+      const res = await decide(profileId, {
+        status: WorkerProfileStatus.APROBADO,
+      }).expect(409);
+
+      expect(res.body.message).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('no cumple los requisitos'),
+          'Registre un teléfono de contacto en su cuenta',
+        ]),
+      );
+      expect(await statusOf(profileId)).toBe(WorkerProfileStatus.PENDIENTE);
+    });
+
+    it('un administrador no puede decidir sobre su propio perfil (403)', async () => {
+      const res = await decide(
+        adminWorkerProfileId,
+        { status: WorkerProfileStatus.APROBADO },
+        adminWorker,
+      ).expect(403);
+
+      expect(res.body.message).toBe(
+        'No puede revisar ni decidir sobre su propio perfil de trabajador',
+      );
+      expect(await statusOf(adminWorkerProfileId)).toBe(
+        WorkerProfileStatus.PENDIENTE,
+      );
+      // Otro administrador sí puede.
+      await decide(adminWorkerProfileId, {
+        status: WorkerProfileStatus.OBSERVADO,
+        reason: 'Complete sus horarios',
+      }).expect(200);
+    });
+
+    it('los motivos privados no se exponen a otros usuarios', async () => {
+      const rechazado = await newCandidate('privado');
+      const otro = await newCandidate('otro-trabajador');
+      const reason = `Motivo privado ${RUN_ID}`;
+      await decide(rechazado.profileId, {
+        status: WorkerProfileStatus.RECHAZADO,
+        reason,
+      }).expect(200);
+
+      // La respuesta de la decisión no incluye el motivo.
+      const again = await decide(otro.profileId, {
+        status: WorkerProfileStatus.APROBADO,
+      }).expect(200);
+      expect(JSON.stringify(again.body)).not.toContain(reason);
+
+      // Otro trabajador solo ve lo suyo.
+      for (const path of ['/me', '/me/status', '/me/eligibility']) {
+        const res = await http()
+          .get(`${BASE}${path}`)
+          .set('Authorization', auth(otro.user))
+          .expect(200);
+        expect(JSON.stringify(res.body)).not.toContain(reason);
+      }
+      // Un cliente no accede a las rutas administrativas ni a la cuenta ajena.
+      await http()
+        .get(`${BASE}/admin/zone-change-requests`)
+        .set('Authorization', auth(client))
+        .expect(403);
+      await http()
+        .get(`/api/users/${rechazado.user.id}`)
+        .set('Authorization', auth(client))
+        .expect(403);
+      // El afectado sí lo ve.
+      const own = await http()
+        .get(`${BASE}/me/status`)
+        .set('Authorization', auth(rechazado.user))
+        .expect(200);
+      expect(own.body.statusReason).toBe(reason);
+    });
+
+    it('responde 404 si el perfil no existe y 400 si el id no es UUID', async () => {
+      await decide(randomUUID(), {
+        status: WorkerProfileStatus.APROBADO,
+      }).expect(404);
+      await decide('no-es-uuid', {
+        status: WorkerProfileStatus.APROBADO,
+      }).expect(400);
+    });
+
+    describe('listado y detalle para revisar (GET /admin/profiles)', () => {
+      const list = (query: Record<string, string>, user: PublicUser = admin) =>
+        http()
+          .get(`${BASE}/admin/profiles`)
+          .query(query)
+          .set('Authorization', auth(user));
+      const detail = (id: string, user: PublicUser = admin) =>
+        http()
+          .get(`${BASE}/admin/profiles/${id}`)
+          .set('Authorization', auth(user));
+      const ids = (body: { data: { id: string }[] }) =>
+        body.data.map((item) => item.id);
+
+      it('exige sesión (401) y rol administrador (403)', async () => {
+        const { user, profileId } = await newCandidate('lista-permisos');
+        await http().get(`${BASE}/admin/profiles`).expect(401);
+        await http().get(`${BASE}/admin/profiles/${profileId}`).expect(401);
+        for (const intruder of [client, user]) {
+          await list({}, intruder).expect(403);
+          await detail(profileId, intruder).expect(403);
+        }
+      });
+
+      it('lista los perfiles pendientes con datos de la cuenta, sin el hash', async () => {
+        const a = await newCandidate('cola-a');
+        const b = await newCandidate('cola-b');
+
+        const res = await list({
+          status: WorkerProfileStatus.PENDIENTE,
+          limit: '100',
+        }).expect(200);
+
+        expect(ids(res.body)).toEqual(
+          expect.arrayContaining([a.profileId, b.profileId]),
+        );
+        expect(
+          res.body.data.every(
+            (item: { status: string }) =>
+              item.status === WorkerProfileStatus.PENDIENTE,
+          ),
+        ).toBe(true);
+        const row = res.body.data.find(
+          (item: { id: string }) => item.id === a.profileId,
+        );
+        expect(row).toMatchObject({
+          userId: a.user.id,
+          account: {
+            email: a.user.email,
+            phone: '70000011',
+            status: UserStatus.ACTIVO,
+          },
+          zone: { id: zoneA.id },
+          specialties: [{ id: catA.id }],
+        });
+        expect(row.submittedAt).not.toBeNull();
+        expect(JSON.stringify(res.body)).not.toMatch(/password/i);
+      });
+
+      it('filtra por zona y especialidad y pagina', async () => {
+        const c = await newCandidate('filtro');
+
+        const otherZone = await list({ zoneId: zoneB.id, limit: '100' }).expect(
+          200,
+        );
+        expect(ids(otherZone.body)).not.toContain(c.profileId);
+        const otherCategory = await list({
+          categoryId: catB.id,
+          limit: '100',
+        }).expect(200);
+        expect(ids(otherCategory.body)).not.toContain(c.profileId);
+        const sameZone = await list({
+          zoneId: zoneA.id,
+          categoryId: catA.id,
+          limit: '100',
+        }).expect(200);
+        expect(ids(sameZone.body)).toContain(c.profileId);
+
+        const page = await list({ limit: '1' }).expect(200);
+        expect(page.body.data).toHaveLength(1);
+        expect(page.body.meta).toMatchObject({ page: 1, limit: 1 });
+        expect(page.body.meta.totalPages).toBe(page.body.meta.total);
+      });
+
+      it.each([
+        ['un estado desconocido', { status: 'CUALQUIERA' }],
+        ['un límite mayor a 100', { limit: '101' }],
+        ['una zona que no es UUID', { zoneId: 'x' }],
+        ['un filtro no permitido', { userId: randomUUID() }],
+      ])('valida la consulta: %s (400)', async (_label, query) => {
+        await list(query).expect(400);
+      });
+
+      it('nunca incluye el perfil del propio administrador', async () => {
+        const byOther = await list({ limit: '100' }).expect(200);
+        expect(ids(byOther.body)).toContain(adminWorkerProfileId);
+
+        const byOwner = await list({ limit: '100' }, adminWorker).expect(200);
+        expect(ids(byOwner.body)).not.toContain(adminWorkerProfileId);
+        await detail(adminWorkerProfileId, adminWorker).expect(403);
+      });
+
+      it('el detalle trae cuenta, motivo vigente, historial y decisiones posibles', async () => {
+        const pending = await newCandidate('detalle-pendiente');
+        const fresh = await detail(pending.profileId).expect(200);
+        expect(fresh.body).toMatchObject({
+          profile: {
+            id: pending.profileId,
+            status: WorkerProfileStatus.PENDIENTE,
+            pendingRequirements: [],
+          },
+          account: {
+            email: pending.user.email,
+            roles: expect.arrayContaining([
+              RoleName.CLIENTE,
+              RoleName.TRABAJADOR,
+            ]),
+          },
+          statusReason: null,
+          allowedDecisions: [
+            WorkerProfileStatus.APROBADO,
+            WorkerProfileStatus.OBSERVADO,
+            WorkerProfileStatus.RECHAZADO,
+          ],
+        });
+
+        const reason = 'Falta el horario de los sábados';
+        await decide(pending.profileId, {
+          status: WorkerProfileStatus.OBSERVADO,
+          reason,
+        }).expect(200);
+        const observed = await detail(pending.profileId).expect(200);
+
+        expect(observed.body).toMatchObject({
+          statusReason: reason,
+          allowedDecisions: [],
+          history: [
+            {
+              fromStatus: WorkerProfileStatus.PENDIENTE,
+              toStatus: WorkerProfileStatus.OBSERVADO,
+              reason,
+              changedBy: 'ADMINISTRADOR',
+              changedByUser: {
+                id: admin.id,
+                firstName: admin.firstName,
+                lastName: admin.lastName,
+              },
+            },
+            {
+              fromStatus: WorkerProfileStatus.BORRADOR,
+              toStatus: WorkerProfileStatus.PENDIENTE,
+              changedBy: 'TRABAJADOR',
+            },
+            { fromStatus: null, toStatus: WorkerProfileStatus.BORRADOR },
+          ],
+        });
+        expect(JSON.stringify(observed.body)).not.toMatch(/password/i);
+      });
+
+      it('responde 404 si el perfil no existe y 400 si el id no es UUID', async () => {
+        await detail(randomUUID()).expect(404);
+        await detail('no-es-uuid').expect(400);
+      });
     });
   });
 });

@@ -608,6 +608,25 @@ describe('WorkerProfileService', () => {
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
 
+    it('impide que un administrador decida sobre su propio perfil', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ userId: ADMIN_ID, status: WorkerProfileStatus.PENDIENTE }),
+      );
+
+      await expect(
+        service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
+          status: WorkerProfileStatus.APROBADO,
+        }),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          'No puede revisar ni decidir sobre su propio perfil de trabajador',
+        ),
+      );
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+      expect(prisma.workerProfileStatusHistory.create).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
     it.each([
       [WorkerProfileStatus.BORRADOR, WorkerProfileStatus.APROBADO],
       [WorkerProfileStatus.OBSERVADO, WorkerProfileStatus.APROBADO],
@@ -765,6 +784,159 @@ describe('WorkerProfileService', () => {
 
       await expect(service.findProfilesWithInactiveZone()).resolves.toEqual([]);
       expect(prisma.workerProfile.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('revision administrativa: listado y detalle (RF-10, RF-47)', () => {
+    const admin = () => user({ id: ADMIN_ID, roles: [RoleName.ADMINISTRADOR] });
+    let count: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      users.findById.mockImplementation((id: string) =>
+        Promise.resolve(id === ADMIN_ID ? admin() : user()),
+      );
+      count = vi.fn().mockResolvedValue(1);
+      (prisma.workerProfile as Record<string, unknown>).count = count;
+      // El listado usa la forma de arreglo de $transaction.
+      prisma.$transaction.mockImplementation((work: unknown) =>
+        Array.isArray(work)
+          ? Promise.all(work)
+          : (work as (tx: unknown) => Promise<unknown>)(prisma),
+      );
+    });
+
+    it('lista excluyendo el perfil propio y aplicando filtros y paginacion', async () => {
+      prisma.workerProfile.findMany.mockResolvedValue([
+        {
+          ...profile({ status: WorkerProfileStatus.PENDIENTE }),
+          user: {
+            firstName: 'Juan',
+            lastName: 'Pérez',
+            email: 'juan@example.com',
+            phone: '70000000',
+            status: UserStatus.ACTIVO,
+          },
+        },
+      ]);
+
+      const result = await service.listForAdmin(ADMIN_ID, {
+        status: WorkerProfileStatus.PENDIENTE,
+        zoneId: ZONE_A,
+        categoryId: CATEGORY,
+        page: 2,
+        limit: 10,
+      });
+
+      const where = {
+        userId: { not: ADMIN_ID },
+        status: WorkerProfileStatus.PENDIENTE,
+        zoneId: ZONE_A,
+        specialties: { some: { categoryId: CATEGORY } },
+      };
+      expect(prisma.workerProfile.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where, skip: 10, take: 10 }),
+      );
+      expect(count).toHaveBeenCalledWith({ where });
+      expect(result.meta).toEqual({
+        page: 2,
+        limit: 10,
+        total: 1,
+        totalPages: 1,
+      });
+      expect(result.data[0]).toMatchObject({
+        id: PROFILE_ID,
+        status: WorkerProfileStatus.PENDIENTE,
+        account: { email: 'juan@example.com', status: UserStatus.ACTIVO },
+        zone: { id: ZONE_A },
+        specialties: [{ id: CATEGORY }],
+      });
+      expect(JSON.stringify(result)).not.toContain('passwordHash');
+    });
+
+    it('solo un administrador activo puede listar', async () => {
+      await expect(
+        service.listForAdmin(USER_ID, { page: 1, limit: 20 }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.workerProfile.findMany).not.toHaveBeenCalled();
+    });
+
+    it('el detalle del perfil propio responde 403 sin leer el historial', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ userId: ADMIN_ID }),
+      );
+
+      await expect(
+        service.getForAdmin(ADMIN_ID, PROFILE_ID),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.workerProfileStatusHistory.findMany).not.toHaveBeenCalled();
+    });
+
+    it('responde 404 si el perfil no existe', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.getForAdmin(ADMIN_ID, PROFILE_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('arma el detalle con cuenta, motivo vigente, historial y decisiones posibles', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.OBSERVADO }),
+      );
+      const changedBy = { id: ADMIN_ID, firstName: 'Ana', lastName: 'Admin' };
+      prisma.workerProfileStatusHistory.findMany.mockResolvedValue([
+        {
+          id: 'h2',
+          fromStatus: WorkerProfileStatus.PENDIENTE,
+          toStatus: WorkerProfileStatus.OBSERVADO,
+          reason: 'Falta la cédula',
+          createdAt: new Date(),
+          changedById: ADMIN_ID,
+          changedBy,
+        },
+        {
+          id: 'h1',
+          fromStatus: WorkerProfileStatus.BORRADOR,
+          toStatus: WorkerProfileStatus.PENDIENTE,
+          reason: null,
+          createdAt: new Date(),
+          changedById: USER_ID,
+          changedBy: { id: USER_ID, firstName: 'Juan', lastName: 'Pérez' },
+        },
+      ]);
+
+      const view = await service.getForAdmin(ADMIN_ID, PROFILE_ID);
+
+      expect(view).toMatchObject({
+        profile: { id: PROFILE_ID, status: WorkerProfileStatus.OBSERVADO },
+        account: {
+          email: 'juan@example.com',
+          roles: [RoleName.CLIENTE, RoleName.TRABAJADOR],
+        },
+        statusReason: 'Falta la cédula',
+        history: [
+          { id: 'h2', changedBy: 'ADMINISTRADOR', changedByUser: changedBy },
+          { id: 'h1', changedBy: 'TRABAJADOR' },
+        ],
+        // OBSERVADO no tiene decisiones administrativas (el trabajador reenvia).
+        allowedDecisions: [],
+      });
+    });
+
+    it('ofrece las decisiones permitidas para un perfil PENDIENTE', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.PENDIENTE }),
+      );
+      prisma.workerProfileStatusHistory.findMany.mockResolvedValue([]);
+
+      const view = await service.getForAdmin(ADMIN_ID, PROFILE_ID);
+
+      expect(view.allowedDecisions).toEqual([
+        WorkerProfileStatus.APROBADO,
+        WorkerProfileStatus.OBSERVADO,
+        WorkerProfileStatus.RECHAZADO,
+      ]);
+      expect(view.statusReason).toBeNull();
     });
   });
 });

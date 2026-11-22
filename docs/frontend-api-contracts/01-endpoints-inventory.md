@@ -3,7 +3,7 @@
 Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí no existe: ver [09](09-gaps-and-pending-contracts.md).
 
 - Base: `http://localhost:3000/api`. Todas las rutas siguientes incluyen el prefijo `/api`.
-- Total: **54 endpoints**.
+- Total: **57 endpoints**.
 
 | Módulo | Endpoints |
 |---|---|
@@ -11,7 +11,7 @@ Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí 
 | UsersModule | 4 |
 | CatalogsModule | 14 |
 | AuditModule | 1 |
-| WorkerProfileModule | 19 |
+| WorkerProfileModule | 22 |
 | OrdersModule | 13 |
 
 ## Códigos comunes (no se repiten en cada fila)
@@ -103,10 +103,13 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 | 39 | GET | `/api/worker-profile/admin/zone-change-requests/:requestId` | ✅ | Admin | `requestId` | — | `AdminZoneChangeRequestView` | 200, 400, 401, 403, 404 | 404 `"La solicitud de cambio de zona no existe"` |
 | 40 | PATCH | `/api/worker-profile/admin/zone-change-requests/:requestId` | ✅ | Admin activo; no su propia solicitud | `requestId` | `DecideZoneChangeRequestDto` (JSON) | `AdminZoneChangeRequestView` | 200, 400, 401, 403, 404, 409 | 403 `"No puede resolver su propia solicitud de cambio de zona"`; 409 `"La solicitud ya fue resuelta"`; 409 zona destino desactivada (hay que rechazar); 409 `"La zona del perfil cambió desde que se creó la solicitud"` |
 | 41 | GET | `/api/worker-profile/admin/inactive-zone-profiles` | ✅ | Admin | Query: `zoneId?` | `ListInactiveZoneProfilesQueryDto` | `AffectedProfile[]` | 200, 400, 401, 403 | — |
+| 56 | GET | `/api/worker-profile/admin/profiles` | ✅ | Admin activo | Query: `status?`, `zoneId?`, `categoryId?`, `page?`, `limit?` (≤ 100) | `ListAdminWorkerProfilesQueryDto` | `Paginated<AdminWorkerProfileSummary>` | 200, 400, 401, 403 | **Nunca incluye el perfil del propio administrador**. Orden: primero los enviados a revisión hace más tiempo; los nunca enviados al final |
+| 57 | GET | `/api/worker-profile/admin/profiles/:profileId` | ✅ | Admin activo; **no su propio perfil** | `profileId` (UUID) | — | `AdminWorkerProfileView` | 200, 400, 401, 403, 404 | 403 `"No puede revisar ni decidir sobre su propio perfil de trabajador"`; 404 `"El perfil de trabajador no existe"` |
+| 55 | PATCH | `/api/worker-profile/admin/profiles/:profileId/status` | ✅ | Admin activo; **no sobre su propio perfil** | `profileId` (UUID) | `ChangeWorkerProfileStatusDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 motivo ausente o vacío (`OBSERVADO`, `RECHAZADO`, `SUSPENDIDO`) o estado no permitido; 403 `"No puede revisar ni decidir sobre su propio perfil de trabajador"`; 404 `"El perfil de trabajador no existe"`; 409 transición inválida (`"No se puede pasar un perfil de X a Y"`); 409 requisitos de aprobación no cumplidos (arreglo); 409 cambio de estado concurrente |
 
 > **Nota (#36):** hoy la solicitud de cambio de zona **siempre se bloquea** con el motivo `VERIFICACION_NO_DISPONIBLE`, porque la fuente de trabajo activo `OFERTAS` todavía no existe (OffersModule no está implementado). El endpoint, sus validaciones y la decisión del administrador funcionan.
 >
-> **No hay endpoints** para que un administrador apruebe, observe, rechace o suspenda perfiles, ni para que vea los documentos de un trabajador (ver 08 y 09).
+> **Nota (#55–#57):** el flujo de revisión es listar (#56), ver el detalle (#57) y decidir (#55). Todavía **no hay** endpoints para que el administrador **vea o descargue** los documentos de un trabajador (con registro en la bitácora, RF-56): el detalle no los incluye (ver 08 y 09).
 
 ## OrdersModule (`/api/orders`)
 

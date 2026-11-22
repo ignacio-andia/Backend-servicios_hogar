@@ -6,7 +6,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 
 | # | Hallazgo | Impacto en Angular | Prioridad |
 |---|---|---|---|
-| A1 | No hay endpoint para aprobar, observar, rechazar o suspender perfiles (RF-10, RF-47). El método `changeStatusByAdmin` existe sin exponer | Ningún trabajador llega a `APROBADO` desde la aplicación; las pantallas de pedidos disponibles solo se pueden probar modificando la BD | **Alta** |
+| A1 | **Parcialmente resuelto (T2.2).** Ya existen el listado (#56), el detalle (#57) y la decisión (#55). Faltan la **consulta y descarga de documentos** por el administrador (con bitácora, RF-56) y la **notificación** al trabajador | La pantalla de verificación funciona, pero el administrador todavía no puede abrir los documentos del trabajador | **Alta** |
 | A2 | El commit `207f2cb` (OrdersModule, cambio de zona, cola de archivos y 2 migraciones) **no está publicado** en `origin/main` | Quien clone el repositorio remoto no tiene esos endpoints | **Alta** (se resuelve con un push) |
 | A3 | **Resuelto (T2.1).** El primer `ADMINISTRADOR` se crea con el comando interno `npm run admin:create-first` (README, sección H, paso 5). Sigue sin existir un mecanismo para administradores adicionales | Para probar las pantallas de administración basta con ejecutar el comando una vez | Baja |
 | A4 | Descargas (fotos y documentos) solo con Bearer | `<img src>` no funciona: hay que descargar como Blob (ver 06) | Media |
@@ -59,7 +59,9 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 |---|---|---|
 | Logout, refresh, recuperación o cambio de contraseña (RF-01, RF-05) | ⛔ | — |
 | Administradores adicionales y gestión de roles (RF-04). El primero ya tiene comando interno (T2.1) | ⛔ | Decisión del equipo |
-| Verificación de perfiles (RF-10, RF-47) | 🟡 (servicio sin endpoint) | Diseño del módulo de verificación |
+| Verificación de perfiles (RF-10, RF-47) | 🟡 Listado, detalle y decisión implementados (#55–#57); faltan los documentos | Siguiente tarea de administración (T2.3) |
+| Notificaciones de verificación al trabajador (aprobado, observado, rechazado y suspendido, con motivo privado) | ⛔ No existe módulo de notificaciones | Módulo de notificaciones internas (v1.0 §6); punto de integración: `WorkerProfileService.changeStatusByAdmin`, dentro de su transacción |
+| Nueva presentación tras un rechazo | ⛔ | T3.1 |
 | Indicación de perfil revisado (RF-12) | ❓ | Texto del docente |
 | Perfil público y búsqueda de trabajadores (RF-11, RF-16) | ⛔ | Calificaciones; decisión sobre datos públicos |
 | **Ofertas y negociación (RF-19 a RF-24)** | 📐 (solo integración interna) | OffersModule |
@@ -92,4 +94,4 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 **Del equipo**
 - Qué pasa con las ofertas enviadas si se desactiva un catálogo o se suspende al cliente.
 - Cómo se crean administradores adicionales. El primero ya está resuelto (T2.1).
-- Cuándo se implementa la verificación de perfiles.
+- Qué consultas de documentos por el administrador se registran en la bitácora (ver la lista, ver o descargar).

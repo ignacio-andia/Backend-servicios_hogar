@@ -10,7 +10,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 |---|---|---|---|
 | RF-01 Registro, inicio y cierre de sesión | 🟡 | #1, #2, #3 (`RegisterDto`, `LoginDto` → `AuthResponse`, `PublicUser`) | El cierre de sesión es solo del lado del cliente (no hay endpoint ni revocación) |
 | RF-02 Trabajador que también es cliente | ✅ | Roles múltiples en `PublicUser.roles` | `POST /worker-profile` agrega `TRABAJADOR` sin quitar `CLIENTE` |
-| RF-03 Funciones de trabajador solo con perfil aprobado | ✅ | `ApprovedWorkerGuard` (#52–#54), #30 elegibilidad | No hay forma de llegar a `APROBADO` por la API (ver grupo 2) |
+| RF-03 Funciones de trabajador solo con perfil aprobado | ✅ | `ApprovedWorkerGuard` (#52–#54), #30 elegibilidad | Un administrador aprueba con #55 |
 | RF-04 Administradores creados internamente | 🟡 | Sin contrato HTTP (a propósito) | El **primer** administrador se crea con el comando interno `npm run admin:create-first` (T2.1). No hay mecanismo para administradores adicionales |
 | RF-05 Recuperar contraseña | ⛔ | — | — |
 | Gestión de la propia cuenta | ✅ | #5, #6, #7 | Editar nombre y teléfono; desactivar la propia cuenta |
@@ -26,7 +26,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 | RF-07 Documentación de respaldo | ✅ | #31–#34 (`UploadDocumentDto` → `WorkerDocumentView`) | Solo el propio trabajador ve y descarga sus documentos |
 | RF-08 Estados del perfil | ✅ (consulta) | #29 `WorkerStatusView` | — |
 | RF-09 No aprobado no recibe pedidos | ✅ | Guard en #52–#54 | Búsqueda de trabajadores: ver RF-16 |
-| RF-10 Revisión administrativa (aprobar, observar, rechazar) | 🟡 | **Sin endpoint.** Existe `WorkerProfileService.changeStatusByAdmin` con sus reglas, historial y bitácora | ❗ Bloquea los flujos de trabajador de punta a punta |
+| RF-10 Revisión administrativa (aprobar, observar, rechazar) | 🟡 | Listado #56, detalle #57 y decisión #55 (`ChangeWorkerProfileStatusDto` → `WorkerProfileView`): transiciones, motivo obligatorio, requisitos de aprobación, historial y bitácora; nunca sobre el propio perfil | Faltan la consulta de documentos por el administrador y la notificación al trabajador. La nueva presentación tras un rechazo es T3.1 |
 | RF-11 Perfil público (especialidades, zona, calificación, opiniones) | ⛔ | — | Depende de calificaciones (grupo 10) |
 | RF-12 Indicación de perfil revisado | ❓ | — | Texto pendiente con el docente |
 | RF-13 Zona fija y cambio por solicitud | 🟡 | #35–#41 (`CreateZoneChangeRequestDto`, `DecideZoneChangeRequestDto` → `ZoneStatusView`, `ZoneChangeRequestView`, `AdminZoneChangeRequestView`) | La solicitud se bloquea siempre (`VERIFICACION_NO_DISPONIBLE`) hasta que exista la fuente `OFERTAS` |
@@ -115,13 +115,13 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 
 | RF | Estado | Contrato |
 |---|---|---|
-| RF-47 Revisar y suspender trabajadores | 🟡 | Sin endpoint (igual que RF-10). Sí existe #41 (perfiles con zona inactiva) y la decisión de cambios de zona (#38–#40) |
+| RF-47 Revisar y suspender trabajadores | 🟡 | Listar (#56), ver (#57), suspender y reactivar (#55). Además, #41 (perfiles con zona inactiva) y la decisión de cambios de zona (#38–#40). Falta la consulta de documentos |
 | RF-48 Categorías | ✅ | #8, #9, #12, #13, #16–#18 (sin reactivación) |
 | RF-49 Zonas | ✅ | #10, #11, #14, #15, #19–#21 (sin reactivación) |
 | RF-50 Supervisar pedidos | ⛔ | No hay vista administrativa de pedidos |
 | RF-51 Atender reclamos | ⛔ | — |
 | RF-52 Reportes | ⛔ | — |
-| RF-53 Bitácora | ✅ | #22 (catálogos y decisiones de zona; los cambios de estado de perfil se registrarán cuando exista su endpoint) |
+| RF-53 Bitácora | ✅ | #22 (catálogos, decisiones de zona y decisiones sobre perfiles, `CAMBIO_ESTADO`) |
 | Gestión de usuarios | 🟡 | #4–#7 (sin roles ni filtros) |
 
 ## 12. Privacidad (RF-54 a RF-56)

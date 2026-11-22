@@ -24,6 +24,7 @@ import {
 } from '../catalogs/catalogs.service.js';
 import { PublicUser, UsersService } from '../users/users.service.js';
 import { CreateWorkerProfileDto } from './dto/create-worker-profile.dto.js';
+import { ListAdminWorkerProfilesQueryDto } from './dto/list-admin-worker-profiles-query.dto.js';
 import { UpdateSchedulesDto } from './dto/update-schedules.dto.js';
 import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
 import { UpdateWorkerProfileDto } from './dto/update-worker-profile.dto.js';
@@ -70,6 +71,27 @@ const PROFILE_SELECT = {
       isActive: true,
     },
     orderBy: [{ dayOfWeek: 'asc' }, { startMinutes: 'asc' }],
+  },
+} satisfies Prisma.WorkerProfileSelect;
+
+// Listado administrativo: perfil, especialidades y datos basicos de la cuenta.
+const ADMIN_PROFILE_SELECT = {
+  id: true,
+  userId: true,
+  zoneId: true,
+  status: true,
+  submittedAt: true,
+  createdAt: true,
+  updatedAt: true,
+  specialties: { select: { categoryId: true } },
+  user: {
+    select: {
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      status: true,
+    },
   },
 } satisfies Prisma.WorkerProfileSelect;
 
@@ -132,6 +154,49 @@ export interface WorkerEligibility {
   status: WorkerProfileStatus | null;
   message: string;
   reason: string | null;
+}
+
+/** Datos de la cuenta que ve un administrador (nunca el hash). */
+export interface AdminAccountSummary {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  status: UserStatus;
+}
+
+/** Fila del listado administrativo de perfiles. */
+export interface AdminWorkerProfileSummary {
+  id: string;
+  userId: string;
+  status: WorkerProfileStatus;
+  account: AdminAccountSummary;
+  zone: CatalogRef;
+  specialties: CatalogRef[];
+  submittedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PaginatedAdminWorkerProfiles {
+  data: AdminWorkerProfileSummary[];
+  meta: { page: number; limit: number; total: number; totalPages: number };
+}
+
+/** Entrada del historial vista por un administrador: incluye quien decidio. */
+export interface AdminStatusHistoryEntry extends StatusHistoryEntry {
+  changedByUser: { id: string; firstName: string; lastName: string };
+}
+
+/** Detalle de un perfil para revisarlo (RF-10, RF-47). */
+export interface AdminWorkerProfileView {
+  profile: WorkerProfileView;
+  account: AdminAccountSummary & { roles: RoleName[] };
+  /** Motivo del cambio mas reciente al estado vigente (privado). */
+  statusReason: string | null;
+  history: AdminStatusHistoryEntry[];
+  /** Estados a los que puede pasar ahora (ADMIN_TRANSITIONS). */
+  allowedDecisions: WorkerProfileStatus[];
 }
 
 export interface ApprovedWorker {
@@ -581,6 +646,13 @@ export class WorkerProfileService {
     if (!profile) {
       throw new NotFoundException('El perfil de trabajador no existe');
     }
+    // Un administrador no revisa ni decide sobre su propio perfil (v1.0 §5).
+    // La identidad sale del token, nunca del cuerpo de la peticion.
+    if (profile.userId === adminId) {
+      throw new ForbiddenException(
+        'No puede revisar ni decidir sobre su propio perfil de trabajador',
+      );
+    }
     if (!ADMIN_TRANSITIONS[profile.status]?.includes(status)) {
       throw new ConflictException(
         `No se puede pasar un perfil de ${profile.status} a ${status}`,
@@ -627,6 +699,139 @@ export class WorkerProfileService {
         select: PROFILE_SELECT,
       }),
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // RF-10 y RF-47: revision administrativa (listado y detalle)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Listado paginado de perfiles para revisar. Excluye el perfil del propio
+   * administrador: no puede revisar su propio perfil (v1.0 §5). Orden de
+   * cola: primero los enviados hace mas tiempo; los nunca enviados al final.
+   */
+  async listForAdmin(
+    adminId: string,
+    {
+      status,
+      zoneId,
+      categoryId,
+      page,
+      limit,
+    }: ListAdminWorkerProfilesQueryDto,
+  ): Promise<PaginatedAdminWorkerProfiles> {
+    await assertActiveAdmin(this.users, adminId);
+    const where: Prisma.WorkerProfileWhereInput = {
+      userId: { not: adminId },
+      ...(status ? { status } : {}),
+      ...(zoneId ? { zoneId } : {}),
+      ...(categoryId ? { specialties: { some: { categoryId } } } : {}),
+    };
+    const [profiles, total] = await this.prisma.$transaction([
+      this.prisma.workerProfile.findMany({
+        where,
+        select: ADMIN_PROFILE_SELECT,
+        orderBy: [
+          { submittedAt: { sort: 'asc', nulls: 'last' } },
+          { createdAt: 'asc' },
+        ],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.workerProfile.count({ where }),
+    ]);
+    const [zones, categories] = await Promise.all([
+      this.catalogs.findByIds(
+        CatalogKind.ZONE,
+        profiles.map((profile) => profile.zoneId),
+      ),
+      this.catalogs.findByIds(
+        CatalogKind.CATEGORY,
+        profiles.flatMap((profile) =>
+          profile.specialties.map((item) => item.categoryId),
+        ),
+      ),
+    ]);
+    const zoneRefs = new Map(zones.map((zone) => [zone.id, toRef(zone)]));
+    const categoryRefs = new Map(
+      categories.map((category) => [category.id, toRef(category)]),
+    );
+    return {
+      data: profiles.map((profile) => ({
+        id: profile.id,
+        userId: profile.userId,
+        status: profile.status,
+        account: toAccountSummary(profile.user),
+        zone: zoneRefs.get(profile.zoneId)!,
+        specialties: profile.specialties
+          .map((item) => categoryRefs.get(item.categoryId)!)
+          .sort((a, b) => a.name.localeCompare(b.name)),
+        submittedAt: profile.submittedAt,
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+      })),
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  /**
+   * Detalle de un perfil para revisarlo: datos del perfil, cuenta, motivo
+   * vigente, historial completo y decisiones posibles. Un administrador no
+   * puede revisar su propio perfil (403). No incluye los documentos: su
+   * consulta y descarga administrativa es una tarea aparte (con bitacora).
+   */
+  async getForAdmin(
+    adminId: string,
+    profileId: string,
+  ): Promise<AdminWorkerProfileView> {
+    await assertActiveAdmin(this.users, adminId);
+    const record = await this.prisma.workerProfile.findUnique({
+      where: { id: profileId },
+      select: PROFILE_SELECT,
+    });
+    if (!record) {
+      throw new NotFoundException('El perfil de trabajador no existe');
+    }
+    if (record.userId === adminId) {
+      throw new ForbiddenException(
+        'No puede revisar ni decidir sobre su propio perfil de trabajador',
+      );
+    }
+    const [account, history] = await Promise.all([
+      this.users.findById(record.userId),
+      this.prisma.workerProfileStatusHistory.findMany({
+        where: { profileId },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          changedBy: { select: { id: true, firstName: true, lastName: true } },
+        },
+      }),
+    ]);
+    return {
+      profile: await this.buildView(record, account),
+      account: {
+        firstName: account.firstName,
+        lastName: account.lastName,
+        email: account.email,
+        phone: account.phone,
+        status: account.status,
+        roles: account.roles,
+      },
+      statusReason:
+        history.find((entry) => entry.toStatus === record.status)?.reason ??
+        null,
+      history: history.map((entry) => ({
+        id: entry.id,
+        fromStatus: entry.fromStatus,
+        toStatus: entry.toStatus,
+        reason: entry.reason,
+        createdAt: entry.createdAt,
+        changedBy:
+          entry.changedById === record.userId ? 'TRABAJADOR' : 'ADMINISTRADOR',
+        changedByUser: entry.changedBy,
+      })),
+      allowedDecisions: [...(ADMIN_TRANSITIONS[record.status] ?? [])],
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -800,6 +1005,17 @@ function assertEditable(status: WorkerProfileStatus): void {
       `No se puede modificar el perfil en estado ${status}`,
     );
   }
+}
+
+function toAccountSummary(user: {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  status: UserStatus;
+}): AdminAccountSummary {
+  const { firstName, lastName, email, phone, status } = user;
+  return { firstName, lastName, email, phone, status };
 }
 
 function notApprovedError(eligibility: WorkerEligibility): ForbiddenException {

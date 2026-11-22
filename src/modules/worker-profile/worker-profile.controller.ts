@@ -23,7 +23,9 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import type { PublicUser } from '../users/users.service.js';
 import type { UploadedDocumentFile } from './document-file.js';
 import { DocumentTooLargeFilter } from './document-too-large.filter.js';
+import { ChangeWorkerProfileStatusDto } from './dto/change-worker-profile-status.dto.js';
 import { CreateWorkerProfileDto } from './dto/create-worker-profile.dto.js';
+import { ListAdminWorkerProfilesQueryDto } from './dto/list-admin-worker-profiles-query.dto.js';
 import { CreateZoneChangeRequestDto } from './dto/create-zone-change-request.dto.js';
 import { DecideZoneChangeRequestDto } from './dto/decide-zone-change-request.dto.js';
 import { ListInactiveZoneProfilesQueryDto } from './dto/list-inactive-zone-profiles-query.dto.js';
@@ -35,7 +37,9 @@ import { UploadDocumentDto } from './dto/upload-document.dto.js';
 import type { WorkerDocumentView } from './worker-documents.service.js';
 import { WorkerDocumentsService } from './worker-documents.service.js';
 import type {
+  AdminWorkerProfileView,
   AffectedProfile,
+  PaginatedAdminWorkerProfiles,
   WorkerEligibility,
   WorkerProfileView,
   WorkerStatusView,
@@ -227,6 +231,40 @@ export class WorkerProfileController {
     @Body() dto: DecideZoneChangeRequestDto,
   ): Promise<AdminZoneChangeRequestView> {
     return this.zoneRequests.decide(admin.id, requestId, dto);
+  }
+
+  // RF-10 y RF-47: listado y detalle de perfiles para revisarlos. Nunca
+  // incluyen el perfil del propio administrador.
+  @Get('admin/profiles')
+  @Auth(RoleName.ADMINISTRADOR)
+  listProfilesForAdmin(
+    @CurrentUser() admin: PublicUser,
+    @Query() query: ListAdminWorkerProfilesQueryDto,
+  ): Promise<PaginatedAdminWorkerProfiles> {
+    return this.profiles.listForAdmin(admin.id, query);
+  }
+
+  @Get('admin/profiles/:profileId')
+  @Auth(RoleName.ADMINISTRADOR)
+  getProfileForAdmin(
+    @CurrentUser() admin: PublicUser,
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+  ): Promise<AdminWorkerProfileView> {
+    return this.profiles.getForAdmin(admin.id, profileId);
+  }
+
+  // RF-10 y RF-47: el administrador aprueba, observa, rechaza o suspende un
+  // perfil. Reutiliza changeStatusByAdmin: transiciones validas, motivo
+  // obligatorio, requisitos de aprobacion, historial y bitacora. El
+  // administrador sale del token; no puede decidir sobre su propio perfil.
+  @Patch('admin/profiles/:profileId/status')
+  @Auth(RoleName.ADMINISTRADOR)
+  changeProfileStatus(
+    @CurrentUser() admin: PublicUser,
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+    @Body() dto: ChangeWorkerProfileStatusDto,
+  ): Promise<WorkerProfileView> {
+    return this.profiles.changeStatusByAdmin(admin.id, profileId, dto);
   }
 
   // RF-49: perfiles cuya zona fue desactivada (uso administrativo).
