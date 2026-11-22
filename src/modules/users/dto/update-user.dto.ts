@@ -6,7 +6,10 @@ import {
   MaxLength,
   ValidateIf,
 } from 'class-validator';
-import { Trim } from '../../../common/decorators/trim.decorator.js';
+import {
+  Trim,
+  TrimEmptyAs,
+} from '../../../common/decorators/trim.decorator.js';
 import { PHONE_MESSAGE, PHONE_PATTERN } from './create-user.dto.js';
 
 const isPresent = (_dto: object, value: unknown): boolean =>
@@ -32,8 +35,8 @@ export class UpdateUserDto {
   @MaxLength(100)
   lastName?: string;
 
-  /** `null` elimina el teléfono registrado. */
-  @Trim()
+  /** `null`, "" o solo espacios eliminan el telefono registrado. */
+  @TrimEmptyAs(null)
   @IsOptional()
   @Matches(PHONE_PATTERN, { message: PHONE_MESSAGE })
   phone?: string | null;

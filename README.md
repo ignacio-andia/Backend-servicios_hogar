@@ -310,14 +310,48 @@ Se conecta a PostgreSQL con tu `DATABASE_URL`. El resultado esperado es `Databas
 
 ### 4. Datos iniciales (seed)
 
-No existe un seed aparte (`prisma/seed.ts`). La migración `20261111000000_create_catalogs_and_audit_log` carga las cuatro categorías de servicio iniciales del documento de requerimientos (Plomería, Electricidad, Albañilería y Electrodomésticos) sin duplicarlas. Las **zonas** empiezan vacías: las registra un administrador (sección J). Las cuentas se crean con el endpoint de registro.
+No existe un seed aparte (`prisma/seed.ts`). La migración `20261111000000_create_catalogs_and_audit_log` carga las cuatro categorías de servicio iniciales del documento de requerimientos (Plomería, Electricidad, Albañilería y Electrodomésticos) sin duplicarlas. Las **zonas** empiezan vacías: las registra un administrador (sección J). Las cuentas se crean con el endpoint de registro, salvo el primer administrador (paso 5).
 
-Para probar los endpoints de administración en tu máquina, puedes dar el rol de administrador a una cuenta ya registrada. **Esto es solo para desarrollo local:**
+### 5. Crear el primer administrador (RF-04)
 
-```sql
-INSERT INTO user_roles (user_id, role)
-SELECT id, 'ADMINISTRADOR' FROM users WHERE email = 'tu-correo@example.com';
+Las cuentas de administrador no se registran públicamente (RF-04): **no existe ningún endpoint** para crearlas. El primer administrador se crea **una sola vez**, con un comando interno que se ejecuta en la máquina del servidor.
+
+**Requisitos previos**
+
+- Pasos C a H completos: dependencias instaladas (`npm ci`), `.env` con `DATABASE_URL`, migraciones aplicadas (`npx prisma migrate deploy`) y cliente generado (`npx prisma generate`).
+- No hace falta ninguna variable nueva: el comando solo usa `DATABASE_URL`. No arranca el servidor HTTP ni las tareas programadas.
+- Una **terminal interactiva**: PowerShell, CMD o Windows Terminal. La contraseña se escribe sin que se vea en pantalla. En una terminal no interactiva (por ejemplo, Git Bash con mintty o una salida redirigida), el comando se detiene sin crear nada.
+
+**Pasos en Windows 11 (PowerShell)**
+
+```powershell
+cd C:\ruta\a\servicios_hogar\backend
+npm run admin:create-first
 ```
+
+El comando compila el proyecto y pide:
+1. Nombre.
+2. Apellido.
+3. Correo electrónico.
+4. Teléfono (opcional; Enter para omitirlo).
+5. La contraseña, dos veces. No se muestra al escribirla.
+
+Se aplican las mismas reglas que en el registro público: contraseña de al menos 8 caracteres, con letras y números, y teléfono de 7 a 15 dígitos.
+
+**Resultado**
+
+- Se crea una cuenta `ACTIVO` con el rol `ADMINISTRADOR`. La contraseña se guarda con bcrypt, con las mismas 12 rondas que el registro.
+- El comando muestra el correo y el id de la cuenta; nunca la contraseña ni su hash.
+- Con esa cuenta se inicia sesión con `POST /api/auth/login`.
+
+**Reglas de seguridad**
+
+- Si ya existe **cualquier** cuenta con el rol `ADMINISTRADOR`, en cualquier estado, el comando termina con error y no crea nada. No sirve para crear administradores adicionales.
+- Si el correo ya está registrado, no se crea otra cuenta ni se convierte la existente en administrador.
+- Si se ejecuta dos veces a la vez, solo una ejecución crea la cuenta: un bloqueo de PostgreSQL serializa la comprobación y la creación.
+- La contraseña **no** se acepta por argumentos ni variables de entorno, para que no quede en el historial de comandos. Tampoco se guarda en archivos ni aparece en la salida.
+- El comando nunca se ejecuta al arrancar el servidor.
+- Para corregir un error (por ejemplo, un correo mal escrito) no existe todavía un mecanismo para gestionar administradores: hay que hacerlo manualmente en la base de datos.
 
 ### Crear migraciones nuevas (solo quien modifica el esquema)
 
@@ -362,10 +396,11 @@ Para comprobar que inició correctamente:
 | `npm run start:debug` | Inicia con depurador y watch |
 | `npm run build` | Compila a `dist/` |
 | `npm run start:prod` | Ejecuta la versión compilada (`dist/main`); requiere `npm run build` |
+| `npm run admin:create-first` | Crea el **primer** administrador (sección H, paso 5). Solo funciona si no existe ninguno |
 | `npm run lint` | Revisa el código con oxlint |
 | `npm run format` | Formatea `src/` y `test/` con Prettier |
 | `npm test` | Pruebas unitarias (Vitest) |
-| `npm run test:e2e` | Pruebas end-to-end. **Usan la base de datos de tu `.env`**: crean cuentas de prueba (`@users-e2e.test`, `@auth-e2e.test`, `@orders-e2e.test`, etc.) y las borran al terminar. Las fotos de prueba van a una carpeta temporal. Requieren las migraciones aplicadas. |
+| `npm run test:e2e` | Pruebas end-to-end. **Usan la base de datos de tu `.env`**: crean cuentas de prueba (`@users-e2e.test`, `@auth-e2e.test`, `@orders-e2e.test`, etc.) y las borran al terminar. Las fotos de prueba van a una carpeta temporal. La prueba del primer administrador crea un esquema temporal vacío (`first_admin_*`), le aplica las migraciones y lo borra al terminar: no toca los datos existentes. Requieren las migraciones aplicadas y que el usuario de la BD pueda crear esquemas. |
 | `npm run test:cov` | Pruebas unitarias con cobertura |
 
 ---

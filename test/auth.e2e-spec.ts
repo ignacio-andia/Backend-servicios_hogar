@@ -112,12 +112,60 @@ describe('AuthModule (e2e)', () => {
       ['un rol', { role: RoleName.ADMINISTRADOR }],
       ['un estado', { status: UserStatus.ACTIVO }],
       ['un passwordHash', { passwordHash: 'x' }],
+      // Angular no debe enviar la confirmacion de contrasena al backend.
+      ['confirmPassword', { confirmPassword: PASSWORD }],
+      ['un teléfono con separadores', { phone: '7000-0000' }],
     ])('responde 400 al enviar %s', async (_label, extra) => {
       const body = registerBody(`invalido-${randomUUID().slice(0, 4)}`, extra);
       await http().post('/api/auth/register').send(body).expect(400);
 
       expect(await prisma.user.count({ where: { email: body.email } })).toBe(0);
     });
+  });
+
+  describe('POST /api/auth/register: teléfono opcional (T1.1)', () => {
+    const storedPhone = async (userEmail: string) =>
+      (await prisma.user.findUniqueOrThrow({ where: { email: userEmail } }))
+        .phone;
+
+    it('registra con un teléfono válido, recortando espacios', async () => {
+      const body = registerBody('tel-valido', { phone: ' 70000002 ' });
+      const res = await http()
+        .post('/api/auth/register')
+        .send(body)
+        .expect(201);
+
+      expect(res.body.user.phone).toBe('70000002');
+      expect(await storedPhone(body.email)).toBe('70000002');
+    });
+
+    it('registra sin teléfono y lo guarda como null', async () => {
+      const { phone: _omitted, ...body } = registerBody('tel-ausente');
+      const res = await http()
+        .post('/api/auth/register')
+        .send(body)
+        .expect(201);
+
+      expect(res.body.user.phone).toBeNull();
+      expect(await storedPhone(body.email)).toBeNull();
+    });
+
+    it.each([
+      ['vacío', '', 'tel-vacio'],
+      ['con solo espacios', '   ', 'tel-espacios'],
+    ])(
+      'registra con un teléfono %s como si no se hubiera enviado',
+      async (_label, phone, name) => {
+        const body = registerBody(name, { phone });
+        const res = await http()
+          .post('/api/auth/register')
+          .send(body)
+          .expect(201);
+
+        expect(res.body.user.phone).toBeNull();
+        expect(await storedPhone(body.email)).toBeNull();
+      },
+    );
   });
 
   describe('POST /api/auth/login', () => {

@@ -8,7 +8,10 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
-import { Trim } from '../../../common/decorators/trim.decorator.js';
+import {
+  Trim,
+  TrimEmptyAs,
+} from '../../../common/decorators/trim.decorator.js';
 import {
   PHONE_MESSAGE,
   PHONE_PATTERN,
@@ -50,7 +53,8 @@ export class RegisterDto {
   })
   password: string;
 
-  @Trim()
+  /** "" o solo espacios se tratan como ausente: se guarda null. */
+  @TrimEmptyAs(undefined)
   @IsOptional()
   @Matches(PHONE_PATTERN, { message: PHONE_MESSAGE })
   phone?: string;

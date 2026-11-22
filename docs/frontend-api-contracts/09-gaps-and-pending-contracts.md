@@ -8,7 +8,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 |---|---|---|---|
 | A1 | No hay endpoint para aprobar, observar, rechazar o suspender perfiles (RF-10, RF-47). El método `changeStatusByAdmin` existe sin exponer | Ningún trabajador llega a `APROBADO` desde la aplicación; las pantallas de pedidos disponibles solo se pueden probar modificando la BD | **Alta** |
 | A2 | El commit `207f2cb` (OrdersModule, cambio de zona, cola de archivos y 2 migraciones) **no está publicado** en `origin/main` | Quien clone el repositorio remoto no tiene esos endpoints | **Alta** (se resuelve con un push) |
-| A3 | No hay forma de crear el primer `ADMINISTRADOR` (RF-04) | Las pantallas de administración requieren preparar la BD a mano | Media-alta |
+| A3 | **Resuelto (T2.1).** El primer `ADMINISTRADOR` se crea con el comando interno `npm run admin:create-first` (README, sección H, paso 5). Sigue sin existir un mecanismo para administradores adicionales | Para probar las pantallas de administración basta con ejecutar el comando una vez | Baja |
 | A4 | Descargas (fotos y documentos) solo con Bearer | `<img src>` no funciona: hay que descargar como Blob (ver 06) | Media |
 | A5 | Sin OpenAPI o Swagger | Los contratos se mantienen a mano (esta carpeta) | Media |
 | A6 | Sin refresh token; expiración de 1 h por defecto | Hay que volver a iniciar sesión; manejar el 401 globalmente | Media |
@@ -37,6 +37,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | C4 | El teléfono es opcional al registrarse, pero obligatorio para enviar el perfil a revisión | Pedirlo en el flujo de alta del trabajador (`pendingRequirements` lo indica) |
 | C5 | Un trabajador `APROBADO` no puede editar sus datos ni especialidades (409), pero sí sus horarios | Usar `canEdit` solo para datos, especialidades y documentos |
 | C6 | `categoryId` y `zoneId` de `duplicate-check` no se verifican | Sin impacto: solo afectan a los avisos |
+| C7 | **Resuelto (T1.1).** `phone: ""` o solo espacios: en el registro se trata como ausente (se guarda `null`); en `PATCH /users/:id` borra el teléfono. Antes respondía 400 | Los formularios pueden enviar el campo vacío. **Sigue prohibido enviar `confirmPassword`** u otras propiedades no declaradas (400) |
 
 ## D. Información que Angular necesitaría y la API no devuelve
 
@@ -57,7 +58,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | Módulo o funcionalidad | Estado | Depende de |
 |---|---|---|
 | Logout, refresh, recuperación o cambio de contraseña (RF-01, RF-05) | ⛔ | — |
-| Creación de administradores y gestión de roles (RF-04) | ⛔ | Decisión del equipo |
+| Administradores adicionales y gestión de roles (RF-04). El primero ya tiene comando interno (T2.1) | ⛔ | Decisión del equipo |
 | Verificación de perfiles (RF-10, RF-47) | 🟡 (servicio sin endpoint) | Diseño del módulo de verificación |
 | Indicación de perfil revisado (RF-12) | ❓ | Texto del docente |
 | Perfil público y búsqueda de trabajadores (RF-11, RF-16) | ⛔ | Calificaciones; decisión sobre datos públicos |
@@ -90,5 +91,5 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 
 **Del equipo**
 - Qué pasa con las ofertas enviadas si se desactiva un catálogo o se suspende al cliente.
-- Cómo se crea el primer administrador.
+- Cómo se crean administradores adicionales. El primero ya está resuelto (T2.1).
 - Cuándo se implementa la verificación de perfiles.

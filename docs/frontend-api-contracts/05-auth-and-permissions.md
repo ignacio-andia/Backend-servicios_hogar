@@ -58,7 +58,7 @@ Columnas:
 | `POST /orders`, `POST /orders/duplicate-check`, `/orders/me/*` | ✘ | propio | propio (tiene `CLIENTE`) | propio | ✘ (salvo que también tenga `CLIENTE`) | Editar y cancelar solo en `PUBLICADO` (sin vencer) o `EN_NEGOCIACION` |
 | `/orders/available/*` | ✘ | ✘ | ✘ (403) | ✔ | ✘ | Regla de visibilidad (abajo) |
 
-> Toda cuenta registrada tiene `CLIENTE`. Un trabajador también es cliente con la misma cuenta (RF-02, RN-14). Un administrador creado directamente en la BD solo tiene `CLIENTE` si se le asignó.
+> Toda cuenta registrada tiene `CLIENTE`. Un trabajador también es cliente con la misma cuenta (RF-02, RN-14). El primer administrador, creado con `npm run admin:create-first`, solo tiene el rol `ADMINISTRADOR` (no `CLIENTE`).
 
 ## Visibilidad de datos por rol
 

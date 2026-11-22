@@ -10,7 +10,7 @@ Valores **exactos** que usa el backend: enums de Prisma y literales del código.
 |---|---|---|
 | `CLIENTE` | Publica y gestiona pedidos | Siempre al registrarse |
 | `TRABAJADOR` | Gestiona su perfil de trabajador. Las funciones de trabajador también exigen el perfil `APROBADO` | Al crear el perfil (`POST /worker-profile`), en la misma transacción |
-| `ADMINISTRADOR` | Catálogos, bitácora, cambios de zona y usuarios | **No hay endpoint**: se asigna directamente en la BD (RF-04) |
+| `ADMINISTRADOR` | Catálogos, bitácora, cambios de zona y usuarios | **No hay endpoint** (RF-04). El primero se crea con el comando interno `npm run admin:create-first` (README, sección H, paso 5), solo con el rol `ADMINISTRADOR`. No hay mecanismo para administradores adicionales |
 
 Una cuenta puede tener varios roles (RN-14 y RF-02). Ningún endpoint quita roles.
 

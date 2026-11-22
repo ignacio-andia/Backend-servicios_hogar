@@ -252,6 +252,42 @@ describe('UsersModule (e2e)', () => {
         .expect(400);
     });
 
+    describe('teléfono vacío (T1.1)', () => {
+      const patch = (body: object) =>
+        http()
+          .patch(`/api/users/${client.id}`)
+          .set('Authorization', bearer(client))
+          .send(body);
+      const storedPhone = async () =>
+        (await prisma.user.findUniqueOrThrow({ where: { id: client.id } }))
+          .phone;
+
+      it.each([
+        ['vacío', ''],
+        ['con solo espacios', '   '],
+      ])('un teléfono %s borra el teléfono guardado', async (_label, phone) => {
+        await patch({ phone: '70000003' }).expect(200);
+        expect(await storedPhone()).toBe('70000003');
+
+        const res = await patch({ phone }).expect(200);
+
+        expect(res.body.phone).toBeNull();
+        expect(await storedPhone()).toBeNull();
+      });
+
+      it('no modifica el teléfono si no se envía', async () => {
+        await patch({ phone: '70000004' }).expect(200);
+
+        const res = await patch({ lastName: 'Sin Cambio' }).expect(200);
+
+        expect(res.body).toMatchObject({
+          lastName: 'Sin Cambio',
+          phone: '70000004',
+        });
+        expect(await storedPhone()).toBe('70000004');
+      });
+    });
+
     it('impide modificar cuentas ajenas sin ser administrador', () =>
       http()
         .patch(`/api/users/${other.id}`)

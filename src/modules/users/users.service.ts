@@ -62,6 +62,10 @@ interface Actor {
 }
 
 const PRISMA_UNIQUE_VIOLATION = 'P2002';
+// Clave del bloqueo advisory que serializa la creacion del primer administrador.
+const FIRST_ADMIN_LOCK = 'arreglaloya:first-administrator';
+export const FIRST_ADMIN_EXISTS_MESSAGE =
+  'Ya existe un administrador: este procedimiento solo crea el primero.';
 const PRISMA_RECORD_NOT_FOUND = 'P2025';
 
 @Injectable()
@@ -83,6 +87,47 @@ export class UsersService {
         select: PUBLIC_USER_SELECT,
       });
       return toPublicUser(user);
+    } catch (error) {
+      if (isPrismaError(error, PRISMA_UNIQUE_VIOLATION)) {
+        throw new ConflictException('El correo electrónico ya está registrado');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Inicializacion del sistema (RF-04): crea la primera cuenta con rol
+   * ADMINISTRADOR. Solo la usa el comando interno de inicializacion; no hay
+   * endpoint. Falla si ya existe cualquier cuenta con ese rol (en cualquier
+   * estado), asi que no sirve para crear administradores adicionales.
+   *
+   * Un bloqueo advisory de PostgreSQL serializa ejecuciones simultaneas: la
+   * comprobacion y la creacion ocurren en la misma transaccion, de modo que
+   * dos ejecuciones a la vez no pueden crear dos administradores.
+   */
+  async createFirstAdministrator(dto: CreateUserDto): Promise<PublicUser> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${FIRST_ADMIN_LOCK}))`;
+        const administrators = await tx.userRole.count({
+          where: { role: RoleName.ADMINISTRADOR },
+        });
+        if (administrators > 0) {
+          throw new ConflictException(FIRST_ADMIN_EXISTS_MESSAGE);
+        }
+        const user = await tx.user.create({
+          data: {
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+            email: normalizeEmail(dto.email),
+            passwordHash: dto.passwordHash,
+            phone: dto.phone ?? null,
+            roles: { create: { role: RoleName.ADMINISTRADOR } },
+          },
+          select: PUBLIC_USER_SELECT,
+        });
+        return toPublicUser(user);
+      });
     } catch (error) {
       if (isPrismaError(error, PRISMA_UNIQUE_VIOLATION)) {
         throw new ConflictException('El correo electrónico ya está registrado');

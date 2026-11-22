@@ -85,8 +85,12 @@ export interface RegisterRequest {
   lastName: string;
   email: string;
   password: string;
-  phone?: string | null;
+  phone?: string | null; // '' o solo espacios = sin telefono (se guarda null)
 }
+// El formulario puede tener confirmPassword, pero NO se envia: el backend
+// responde 400 a cualquier propiedad no declarada. Ejemplo:
+//   const { confirmPassword, ...body } = form.getRawValue();
+//   this.http.post<AuthResponse>('/api/auth/register', body);
 export interface LoginRequest {
   email: string;
   password: string;
@@ -110,7 +114,7 @@ export interface AuthResponse {
 export interface UpdateUserRequest {
   firstName?: string;
   lastName?: string;
-  phone?: string | null; // null borra el telefono
+  phone?: string | null; // null, '' o solo espacios borran el telefono; omitirlo no lo cambia
 }
 export interface UpdateUserStatusRequest {
   status: UserStatus;

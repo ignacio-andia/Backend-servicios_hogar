@@ -30,7 +30,39 @@ Se documentan los **26 DTOs** que recibe la API por HTTP. `CreateUserDto` es int
 | `lastName` | string | Obligatoria | 1 a 100 | ídem | — |
 | `email` | string | Obligatoria | email válido, ≤ 255 | `@Trim @IsEmail @MaxLength(255)` | Se guarda en minúsculas; 409 si ya existe |
 | `password` | string | Obligatoria | ≥ 8 caracteres, ≤ 72 **bytes**, al menos una letra y un número | `@IsString @MinLength(8) @IsByteLength(0,72) @Matches(/(?=.*\p{L})(?=.*\d)/u)` | Sin `@Trim` (los espacios cuentan) |
-| `phone` | string | Omitible, admite null | `^\+?[1-9]\d{6,14}$` (7 a 15 dígitos, `+` opcional) | `@Trim @IsOptional @Matches` | Es necesario para enviar el perfil de trabajador a revisión |
+| `phone` | string | Omitible, admite null. `""` o solo espacios se tratan como **ausente** | `^\+?[1-9]\d{6,14}# 02. DTOs de entrada
+
+Se documentan los **26 DTOs** que recibe la API por HTTP. `CreateUserDto` es interno (lo usa AuthModule) y no se recibe por HTTP.
+
+## Columna "Omitir / null"
+
+| Valor | Significado |
+|---|---|
+| **Obligatoria** | No se puede omitir ni enviar `null` |
+| **Omitible, admite null** | `@IsOptional()`: se puede omitir o enviar `null` |
+| **Omitible, no admite null** | `@ValidateIf(v !== undefined)`: se puede omitir, pero `null` responde 400 |
+
+## Reglas globales
+
+- Toda propiedad no declarada responde 400 (`property X should not exist`).
+- `@Trim()` recorta los espacios antes de validar: `"  hola "` llega como `"hola"`.
+- En multipart todos los campos de texto llegan como strings.
+- Los query params se convierten con `@Type(() => Number)` o con un parser propio de booleanos (`"true"`/`"false"`).
+- Los parámetros de ruta `:id`, `:orderId`, `:imageId`, `:documentId` y `:requestId` deben ser UUID (`ParseUUIDPipe`); si no, responden 400 `"Validation failed (uuid is expected)"`.
+
+---
+
+## AuthModule
+
+### `RegisterDto`: `POST /api/auth/register` (JSON)
+
+| Propiedad | Tipo | Omitir / null | Restricciones | Validadores y transformaciones | Reglas de negocio |
+|---|---|---|---|---|---|
+| `firstName` | string | Obligatoria | 1 a 100 caracteres después de recortar | `@Trim @IsString @IsNotEmpty @MaxLength(100)` | — |
+| `lastName` | string | Obligatoria | 1 a 100 | ídem | — |
+| `email` | string | Obligatoria | email válido, ≤ 255 | `@Trim @IsEmail @MaxLength(255)` | Se guarda en minúsculas; 409 si ya existe |
+| `password` | string | Obligatoria | ≥ 8 caracteres, ≤ 72 **bytes**, al menos una letra y un número | `@IsString @MinLength(8) @IsByteLength(0,72) @Matches(/(?=.*\p{L})(?=.*\d)/u)` | Sin `@Trim` (los espacios cuentan) |
+ (7 a 15 dígitos, `+` opcional, sin espacios ni guiones) | `@TrimEmptyAs(undefined) @IsOptional @Matches` | Si no se envía un valor válido, se guarda `null`. Es necesario para enviar el perfil de trabajador a revisión |
 
 No se aceptan `roles` ni `status`: el registro siempre crea una cuenta `CLIENTE` y `ACTIVO`.
 
@@ -38,9 +70,15 @@ No se aceptan `roles` ni `status`: el registro siempre crea una cuenta `CLIENTE`
 { "firstName": "Ana", "lastName": "Pérez", "email": "ana@example.com", "password": "Clave1234", "phone": "70000000" }
 ```
 
+También es válido sin teléfono, o con `"phone": ""` o `"phone": "   "`: el usuario se registra con `phone: null`.
+
 Ejemplos inválidos:
 - `{ "password": "abcdefgh" }`: no tiene número y faltan campos.
 - `{ ..., "roles": ["ADMINISTRADOR"] }`: 400 `property roles should not exist`.
+- `{ ..., "confirmPassword": "Clave1234" }`: 400 `property confirmPassword should not exist`.
+- `{ ..., "phone": "7000-0000" }`: 400 (el teléfono no admite separadores).
+
+> **Angular no debe enviar `confirmPassword`** ni ningún otro campo propio del formulario. La confirmación de contraseña se valida solo en el cliente y se quita del objeto antes del `POST`.
 
 ### `LoginDto`: `POST /api/auth/login` (JSON)
 
@@ -72,13 +110,15 @@ No hay filtros ni búsqueda.
 |---|---|---|---|---|---|
 | `firstName` | string | Omitible, **no admite null** | 1 a 100 | `@Trim @ValidateIf(!==undefined) @IsString @IsNotEmpty @MaxLength(100)` | — |
 | `lastName` | string | Omitible, **no admite null** | 1 a 100 | ídem | — |
-| `phone` | string \| null | Omitible, **admite null** | patrón de teléfono | `@Trim @IsOptional @Matches` | `null` borra el teléfono |
+| `phone` | string \| null | Omitible, **admite null** | patrón de teléfono | `@TrimEmptyAs(null) @IsOptional @Matches` | `null`, `""` o solo espacios **borran** el teléfono (se guarda `null`). Si se omite, no cambia |
 
 Hay que enviar al menos una propiedad (400 si no). `email`, `roles`, `status` y la contraseña **no** se pueden modificar: 400.
 
 ```json
 { "phone": null }
 ```
+
+`{ "phone": "" }` tiene el mismo efecto. `{ "lastName": "Rojas" }` no modifica el teléfono.
 
 ### `UpdateUserStatusDto`: `PATCH /api/users/:id/status` (JSON)
 

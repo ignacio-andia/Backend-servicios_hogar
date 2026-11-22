@@ -11,7 +11,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 | RF-01 Registro, inicio y cierre de sesión | 🟡 | #1, #2, #3 (`RegisterDto`, `LoginDto` → `AuthResponse`, `PublicUser`) | El cierre de sesión es solo del lado del cliente (no hay endpoint ni revocación) |
 | RF-02 Trabajador que también es cliente | ✅ | Roles múltiples en `PublicUser.roles` | `POST /worker-profile` agrega `TRABAJADOR` sin quitar `CLIENTE` |
 | RF-03 Funciones de trabajador solo con perfil aprobado | ✅ | `ApprovedWorkerGuard` (#52–#54), #30 elegibilidad | No hay forma de llegar a `APROBADO` por la API (ver grupo 2) |
-| RF-04 Administradores creados internamente | ⛔ | — | No hay endpoint, script ni seed: se crean directamente en la BD |
+| RF-04 Administradores creados internamente | 🟡 | Sin contrato HTTP (a propósito) | El **primer** administrador se crea con el comando interno `npm run admin:create-first` (T2.1). No hay mecanismo para administradores adicionales |
 | RF-05 Recuperar contraseña | ⛔ | — | — |
 | Gestión de la propia cuenta | ✅ | #5, #6, #7 | Editar nombre y teléfono; desactivar la propia cuenta |
 | Gestión de usuarios (admin) | 🟡 | #4 (sin filtros), #5–#7 | No hay asignación ni retiro de roles |
