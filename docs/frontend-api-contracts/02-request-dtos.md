@@ -281,6 +281,15 @@ Ejemplos inválidos:
 - `{ "status": "RECHAZADO" }` o `{ "status": "RECHAZADO", "reason": "   " }`: 400, falta el motivo.
 - `{ "status": "PENDIENTE" }`: 400, estado no permitido.
 
+### `ReassignRejectedProfileZoneDto`: `PATCH /api/worker-profile/admin/profiles/:profileId/zone` (JSON)
+
+| Propiedad | Tipo | Omitir / null | Restricciones | Reglas |
+|---|---|---|---|---|
+| `zoneId` | string | **Obligatoria** | UUID | Debe existir (404), estar activa (400) y ser distinta de la zona actual (400) |
+| `justification` | string | **Obligatoria**, no admite null | 1 a 500 después de recortar; `""` o solo espacios responden 400 | Queda en la bitácora; no se envía al trabajador |
+
+No acepta otras propiedades (400): la operación no cambia el estado ni otros datos del perfil. Solo para perfiles `RECHAZADO` cuya zona actual está inactiva (T4.4).
+
 ### `ListInactiveZoneProfilesQueryDto`: `GET /api/worker-profile/admin/inactive-zone-profiles` (query)
 
 | Propiedad | Tipo | Omitir | Restricciones |

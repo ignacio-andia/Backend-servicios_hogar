@@ -61,7 +61,6 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | Administradores adicionales y gestión de roles (RF-04). El primero ya tiene comando interno (T2.1) | ⛔ | Decisión del equipo |
 | Verificación de perfiles (RF-10, RF-47) | ✅ Listado, detalle, documentos y decisión (#55–#60) | — |
 | Notificaciones de verificación de perfiles | ✅ (T3.2) Decisiones al trabajador y envíos a los administradores; tipos en 04 | — |
-| Cambio de zona: salida para perfiles `RECHAZADO` con la zona desactivada | ⛔ | Tareas siguientes de T4 (especificación v1.0 §4) |
 | Cambio de zona: bloqueo de ofertas con una solicitud pendiente (T4.3) | 🟡 Implementado en `lockApprovedWorker`, que usa `assertOpenForOffers`; no hay endpoints de ofertas que lo ejerzan | OffersModule: crear, modificar, aceptar o contraofertar debe llamar a `OrderVisibilityService.assertOpenForOffers` dentro de su transacción, y registrar la fuente `OFERTAS` en `WorkerActiveWorkRegistry` (sin ella, toda solicitud de cambio de zona sigue bloqueada con `VERIFICACION_NO_DISPONIBLE`) |
 | Notificaciones de pedidos, ofertas, visitas y reclamos | ⛔ | Sus módulos. Deben usar `NotificationsService.create` o `createForRole` con el cliente de su transacción |
 | Notificaciones por correo, SMS o push | ⛔ Fuera de alcance | — |
@@ -95,4 +94,3 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 **Del equipo**
 - Qué pasa con las ofertas enviadas si se desactiva un catálogo o se suspende al cliente.
 - Cómo se crean administradores adicionales. El primero ya está resuelto (T2.1).
-- Perfil `RECHAZADO` cuya zona se desactivó: no puede cambiar la zona ni pedir un cambio (`ZONE_REQUEST_ALLOWED_STATUSES`), y por eso tampoco puede reenviar (`pendingRequirements` pide una zona activa). Hoy necesita que un administrador reactive la zona.

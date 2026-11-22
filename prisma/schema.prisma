@@ -463,6 +463,9 @@ enum NotificationType {
   SOLICITUD_ZONA_CANCELADA
   /// Confirmacion al trabajador de que retiro su solicitud (T4.3).
   SOLICITUD_ZONA_RETIRADA
+  /// Para el trabajador RECHAZADO: un administrador reasigno su zona porque la
+  /// anterior fue desactivada (T4.4). No cambia el estado del perfil.
+  ZONA_REASIGNADA
 }
 
 /// Recurso al que apunta una notificacion (para navegar desde la interfaz).

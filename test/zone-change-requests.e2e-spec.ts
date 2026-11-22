@@ -88,11 +88,12 @@ describe('Cambio de zona: validaciones y decisiones (T4.2, e2e)', () => {
   const newWorker = async (
     name: string,
     until: WorkerProfileStatus = WorkerProfileStatus.APROBADO,
+    zoneId: string = zoneA.id,
   ): Promise<Worker> => {
     const user = await newUser(name);
     const profile = await profiles.create(user.id, {
       yearsOfExperience: 4,
-      zoneId: zoneA.id,
+      zoneId,
       categoryIds: [category.id],
       schedules: [
         { dayOfWeek: WeekDay.LUNES, startTime: '08:00', endTime: '12:00' },
@@ -887,6 +888,271 @@ describe('Cambio de zona: validaciones y decisiones (T4.2, e2e)', () => {
       await expect(gate(approved.worker)).resolves.toMatchObject({
         zoneId: zoneB.id,
       });
+    });
+  });
+  describe('reasignación administrativa de zona de un perfil RECHAZADO (T4.4)', () => {
+    const reassign = (profileId: string, body: object, user = admin) =>
+      http()
+        .patch(`${BASE}/admin/profiles/${profileId}/zone`)
+        .set('Authorization', auth(user))
+        .send(body);
+    const body = (zoneId = zoneB.id) => ({
+      zoneId,
+      justification: 'La zona del trabajador fue desactivada',
+    });
+    const newZone = (name: string) =>
+      app
+        .get(CatalogsService)
+        .create(CatalogKind.ZONE, admin.id, { name: `${name} ${RUN_ID}` });
+    /** Trabajador en `status` cuya zona propia se desactivo despues. */
+    const inDeactivatedZone = async (
+      name: string,
+      status: WorkerProfileStatus = WorkerProfileStatus.RECHAZADO,
+    ) => {
+      const zone = await newZone(`Zona ${name}`);
+      const worker = await newWorker(name, status, zone.id);
+      await app
+        .get(CatalogsService)
+        .deactivate(CatalogKind.ZONE, admin.id, zone.id);
+      return { worker, zone };
+    };
+    const profileRow = (worker: Worker) =>
+      prisma.workerProfile.findUniqueOrThrow({
+        where: { id: worker.profileId },
+      });
+    const reassignmentLogs = (worker: Worker) =>
+      prisma.adminAuditLog.findMany({
+        where: {
+          entityType: AuditEntityType.PERFIL_TRABAJADOR,
+          entityId: worker.profileId,
+          action: AuditAction.EDICION,
+        },
+      });
+    const reassignedNotices = (worker: Worker) =>
+      prisma.notification.findMany({
+        where: {
+          userId: worker.user.id,
+          type: NotificationType.ZONA_REASIGNADA,
+        },
+      });
+
+    it('reasigna la zona, audita y avisa; el perfil sigue RECHAZADO y puede reenviarse', async () => {
+      const { worker, zone } = await inDeactivatedZone('reasignado');
+      const before = await profileRow(worker);
+      const historyBefore = await prisma.workerProfileStatusHistory.count({
+        where: { profileId: worker.profileId },
+      });
+
+      const res = await reassign(worker.profileId, {
+        zoneId: zoneB.id,
+        justification: '  Zona cerrada por el equipo  ',
+      }).expect(200);
+
+      expect(res.body.profile).toMatchObject({
+        id: worker.profileId,
+        status: WorkerProfileStatus.RECHAZADO,
+        zone: { id: zoneB.id, isActive: true },
+        zoneRequiresChange: false,
+      });
+      // Solo cambio la zona: el resto del perfil queda igual.
+      const after = await profileRow(worker);
+      expect(after).toEqual({
+        ...before,
+        zoneId: zoneB.id,
+        updatedAt: after.updatedAt,
+      });
+      expect(
+        await prisma.workerProfileStatusHistory.count({
+          where: { profileId: worker.profileId },
+        }),
+      ).toBe(historyBefore);
+      // No es una solicitud de cambio de zona.
+      expect(
+        await prisma.zoneChangeRequest.count({
+          where: { profileId: worker.profileId },
+        }),
+      ).toBe(0);
+
+      const logs = await reassignmentLogs(worker);
+      expect(logs).toHaveLength(1);
+      expect(logs[0]).toMatchObject({
+        actorId: admin.id,
+        details: {
+          operation: 'REASIGNACION_ZONA',
+          workerUserId: worker.user.id,
+          profileStatus: WorkerProfileStatus.RECHAZADO,
+          fromZoneId: zone.id,
+          toZoneId: zoneB.id,
+          justification: 'Zona cerrada por el equipo',
+        },
+      });
+      expect(logs[0].createdAt).toBeInstanceOf(Date);
+      const notices = await reassignedNotices(worker);
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatchObject({
+        resourceType: NotificationResourceType.PERFIL_TRABAJADOR,
+        resourceId: worker.profileId,
+        message: `Su zona "${zone.name}" fue desactivada y un administrador le asignó la zona "${zoneB.name}". Puede corregir su perfil y volver a enviarlo a revisión.`,
+      });
+
+      // Con una zona activa vuelve a poder reenviar su perfil (T3.1).
+      const resubmitted = await http()
+        .post(`${BASE}/me/submit`)
+        .set('Authorization', auth(worker.user))
+        .expect(200);
+      expect(resubmitted.body.status).toBe(WorkerProfileStatus.PENDIENTE);
+    });
+
+    it.each([
+      WorkerProfileStatus.APROBADO,
+      WorkerProfileStatus.PENDIENTE,
+      WorkerProfileStatus.OBSERVADO,
+      WorkerProfileStatus.SUSPENDIDO,
+    ])('un perfil %s no puede usar esta operación (409)', async (status) => {
+      const { worker, zone } = await inDeactivatedZone(
+        `reasignar-${status.toLowerCase()}`,
+        status,
+      );
+
+      const res = await reassign(worker.profileId, body()).expect(409);
+
+      expect(res.body.message).toBe(
+        `Solo se puede reasignar la zona de un perfil RECHAZADO (estado actual: ${status})`,
+      );
+      expect((await profileRow(worker)).zoneId).toBe(zone.id);
+      expect(await reassignmentLogs(worker)).toHaveLength(0);
+    });
+
+    it('no sirve para cambiar una zona que sigue activa (409)', async () => {
+      const worker = await newWorker(
+        'reasignar-zona-activa',
+        WorkerProfileStatus.RECHAZADO,
+      );
+
+      const res = await reassign(worker.profileId, body()).expect(409);
+
+      expect(res.body.message).toBe(
+        `La zona actual "${zoneA.name}" sigue activa: la reasignación administrativa solo se usa cuando la zona del perfil fue desactivada`,
+      );
+      expect((await profileRow(worker)).zoneId).toBe(zoneA.id);
+    });
+
+    it('valida la zona destino y la justificación', async () => {
+      const { worker, zone } = await inDeactivatedZone('reasignar-validacion');
+
+      await reassign(worker.profileId, body(randomUUID())).expect(404);
+      const inactive = await reassign(
+        worker.profileId,
+        body(zoneOff.id),
+      ).expect(400);
+      expect(inactive.body.message).toBe('La zona seleccionada no está activa');
+      const same = await reassign(worker.profileId, body(zone.id)).expect(400);
+      expect(same.body.message).toBe(
+        'La zona nueva debe ser distinta de la zona actual',
+      );
+      await reassign(worker.profileId, {
+        zoneId: 'no-es-uuid',
+        justification: 'x',
+      }).expect(400);
+      for (const justification of [undefined, '', '    ']) {
+        await reassign(worker.profileId, {
+          zoneId: zoneB.id,
+          justification,
+        }).expect(400);
+      }
+      // No acepta cambiar otros datos (ni el estado) en la misma operación.
+      await reassign(worker.profileId, {
+        ...body(),
+        status: WorkerProfileStatus.APROBADO,
+      }).expect(400);
+      await reassign(randomUUID(), body()).expect(404);
+
+      const row = await profileRow(worker);
+      expect(row).toMatchObject({
+        zoneId: zone.id,
+        status: WorkerProfileStatus.RECHAZADO,
+      });
+      expect(await reassignmentLogs(worker)).toHaveLength(0);
+      expect(await reassignedNotices(worker)).toHaveLength(0);
+    });
+
+    it('solo administradores activos, y nunca sobre su propio perfil', async () => {
+      const { worker, zone } = await inDeactivatedZone('reasignar-permisos');
+
+      await http()
+        .patch(`${BASE}/admin/profiles/${worker.profileId}/zone`)
+        .send(body())
+        .expect(401);
+      await reassign(worker.profileId, body(), inactiveAdmin).expect(401);
+      await reassign(worker.profileId, body(), client).expect(403);
+      await reassign(worker.profileId, body(), worker.user).expect(403);
+
+      const own = await inDeactivatedZone('reasignar-propio');
+      const ownAdmin = await addRole(own.worker.user, RoleName.ADMINISTRADOR);
+      const res = await reassign(own.worker.profileId, body(), ownAdmin).expect(
+        403,
+      );
+      expect(res.body.message).toBe(
+        'No puede modificar su propio perfil de trabajador',
+      );
+      expect((await profileRow(own.worker)).zoneId).toBe(own.zone.id);
+      expect((await profileRow(worker)).zoneId).toBe(zone.id);
+    });
+
+    it('si falla la notificación, no queda ningún cambio', async () => {
+      const { worker, zone } = await inDeactivatedZone('reasignar-falla');
+      vi.spyOn(notifications, 'create').mockRejectedValueOnce(
+        new Error('falla simulada de notificaciones'),
+      );
+
+      await reassign(worker.profileId, body()).expect(500);
+
+      expect((await profileRow(worker)).zoneId).toBe(zone.id);
+      expect(await reassignmentLogs(worker)).toHaveLength(0);
+      expect(await reassignedNotices(worker)).toHaveLength(0);
+    });
+
+    it('dos reasignaciones simultáneas: solo una se aplica', async () => {
+      const { worker } = await inDeactivatedZone('reasignar-simultanea');
+
+      const responses = await Promise.all([
+        reassign(worker.profileId, body(zoneB.id)),
+        reassign(worker.profileId, body(zoneC.id)),
+      ]);
+
+      // La segunda encuentra la zona nueva, que esta activa.
+      expect(responses.map((r) => r.status).sort((a, b) => a - b)).toEqual([
+        200, 409,
+      ]);
+      const winner = responses.find((r) => r.status === 200)!;
+      expect((await profileRow(worker)).zoneId).toBe(
+        winner.body.profile.zone.id,
+      );
+      expect(await reassignmentLogs(worker)).toHaveLength(1);
+      expect(await reassignedNotices(worker)).toHaveLength(1);
+    });
+
+    it('con la zona destino desactivándose a la vez, el resultado es consistente', async () => {
+      const { worker, zone } = await inDeactivatedZone('reasignar-carrera');
+      const target = await newZone('Zona destino carrera');
+
+      const [reassignment] = await Promise.all([
+        reassign(worker.profileId, body(target.id)),
+        app
+          .get(CatalogsService)
+          .deactivate(CatalogKind.ZONE, admin.id, target.id),
+      ]);
+
+      if (reassignment.status === 200) {
+        // La reasignacion termino antes: la desactivacion espero su turno.
+        expect((await profileRow(worker)).zoneId).toBe(target.id);
+        expect(await reassignmentLogs(worker)).toHaveLength(1);
+      } else {
+        // La desactivacion termino antes: la zona destino ya no era valida.
+        expect(reassignment.status).toBe(400);
+        expect((await profileRow(worker)).zoneId).toBe(zone.id);
+        expect(await reassignmentLogs(worker)).toHaveLength(0);
+      }
     });
   });
 });

@@ -26,6 +26,7 @@ import {
 import { PublicUser, UsersService } from '../users/users.service.js';
 import { CreateWorkerProfileDto } from './dto/create-worker-profile.dto.js';
 import { ListAdminWorkerProfilesQueryDto } from './dto/list-admin-worker-profiles-query.dto.js';
+import { ReassignRejectedProfileZoneDto } from './dto/reassign-rejected-profile-zone.dto.js';
 import { UpdateSchedulesDto } from './dto/update-schedules.dto.js';
 import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
 import { UpdateWorkerProfileDto } from './dto/update-worker-profile.dto.js';
@@ -34,6 +35,7 @@ import { normalizeSchedules, toTime } from './schedules.js';
 import {
   decisionNotification,
   submissionNotification,
+  zoneReassignedNotification,
 } from './worker-profile.notifications.js';
 import {
   ADMIN_TRANSITIONS,
@@ -43,6 +45,7 @@ import {
   STATUSES_REQUIRING_REASON,
   SUBMITTABLE_STATUSES,
   ZONE_DIRECTLY_EDITABLE_STATUS,
+  ZONE_REASSIGNMENT_STATUS,
 } from './worker-profile.rules.js';
 import {
   assertActiveAdmin,
@@ -752,6 +755,127 @@ export class WorkerProfileService {
         select: PROFILE_SELECT,
       }),
     );
+  }
+
+  /**
+   * T4.4: reasignacion administrativa de zona de un perfil RECHAZADO cuya
+   * zona fue desactivada. Un RECHAZADO no puede pedir un cambio de zona ni
+   * editarla (RF-13), y sin una zona activa no puede reenviar su perfil: esta
+   * operacion le asigna otra zona activa. No es un mecanismo general de cambio
+   * de zona: exige que la zona actual este inactiva.
+   *
+   * No cambia el estado (sigue RECHAZADO) ni otros datos del perfil, y no crea
+   * una solicitud de cambio de zona. En una sola transaccion: cambia la zona,
+   * deja constancia en la bitacora (EDICION sobre PERFIL_TRABAJADOR, con zona
+   * anterior, nueva y justificacion) y avisa al trabajador.
+   *
+   * Concurrencia: bloquea la fila del perfil (como las decisiones, el envio y
+   * las solicitudes) y despues lee ambas zonas con FOR SHARE (orden del
+   * proyecto: trabajador y luego catalogos). Estado y zonas se validan con
+   * esos bloqueos: una desactivacion o un cambio de estado simultaneo espera
+   * o ya se ve aplicado.
+   */
+  async reassignZoneForRejected(
+    adminId: string,
+    profileId: string,
+    { zoneId, justification }: ReassignRejectedProfileZoneDto,
+  ): Promise<AdminWorkerProfileView> {
+    await assertActiveAdmin(this.users, adminId);
+    const owner = await this.prisma.workerProfile.findUnique({
+      where: { id: profileId },
+      select: { userId: true },
+    });
+    if (!owner) {
+      throw new NotFoundException('El perfil de trabajador no existe');
+    }
+    // La identidad sale del token: el administrador no modifica su propio perfil.
+    if (owner.userId === adminId) {
+      throw new ForbiddenException(
+        'No puede modificar su propio perfil de trabajador',
+      );
+    }
+    const cleanJustification = normalizeText(justification);
+    if (!cleanJustification) {
+      throw new BadRequestException(
+        'justification es obligatoria y no puede estar vacía',
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.activeWork.lockWorker(tx, owner.userId);
+      const profile = await tx.workerProfile.findUniqueOrThrow({
+        where: { id: profileId },
+        select: { id: true, userId: true, status: true, zoneId: true },
+      });
+      if (profile.status !== ZONE_REASSIGNMENT_STATUS) {
+        throw new ConflictException(
+          `Solo se puede reasignar la zona de un perfil ${ZONE_REASSIGNMENT_STATUS} (estado actual: ${profile.status})`,
+        );
+      }
+      if (zoneId === profile.zoneId) {
+        throw new BadRequestException(
+          'La zona nueva debe ser distinta de la zona actual',
+        );
+      }
+      const zones = await this.catalogs.findByIdsForShare(
+        tx,
+        CatalogKind.ZONE,
+        [profile.zoneId, zoneId],
+      );
+      const current = zones.find((zone) => zone.id === profile.zoneId);
+      const target = zones.find((zone) => zone.id === zoneId);
+      if (current?.isActive) {
+        throw new ConflictException(
+          `La zona actual "${current.name}" sigue activa: la reasignación administrativa solo se usa cuando la zona del perfil fue desactivada`,
+        );
+      }
+      if (!target) {
+        throw new NotFoundException('La zona no existe');
+      }
+      if (!target.isActive) {
+        throw new BadRequestException('La zona seleccionada no está activa');
+      }
+      // Solo cambia la zona, y solo si nada cambio desde la lectura bloqueada.
+      const { count } = await tx.workerProfile.updateMany({
+        where: {
+          id: profileId,
+          status: ZONE_REASSIGNMENT_STATUS,
+          zoneId: profile.zoneId,
+        },
+        data: { zoneId },
+      });
+      if (count === 0) {
+        throw new ConflictException(
+          'El perfil cambió mientras se procesaba la reasignación. Vuelva a intentarlo.',
+        );
+      }
+      await this.audit.record(
+        {
+          actorId: adminId,
+          action: AuditAction.EDICION,
+          entityType: AuditEntityType.PERFIL_TRABAJADOR,
+          entityId: profileId,
+          details: {
+            operation: 'REASIGNACION_ZONA',
+            workerUserId: profile.userId,
+            profileStatus: profile.status,
+            fromZoneId: profile.zoneId,
+            toZoneId: zoneId,
+            justification: cleanJustification,
+          },
+        },
+        tx,
+      );
+      await this.notifications.create(
+        profile.userId,
+        zoneReassignedNotification(profileId, {
+          fromZone: current?.name ?? '',
+          toZone: target.name,
+        }),
+        tx,
+      );
+    });
+    return this.getForAdmin(adminId, profileId);
   }
 
   // ---------------------------------------------------------------------

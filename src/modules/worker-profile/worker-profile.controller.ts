@@ -29,6 +29,7 @@ import { ListAdminWorkerProfilesQueryDto } from './dto/list-admin-worker-profile
 import { CreateZoneChangeRequestDto } from './dto/create-zone-change-request.dto.js';
 import { DecideZoneChangeRequestDto } from './dto/decide-zone-change-request.dto.js';
 import { ListInactiveZoneProfilesQueryDto } from './dto/list-inactive-zone-profiles-query.dto.js';
+import { ReassignRejectedProfileZoneDto } from './dto/reassign-rejected-profile-zone.dto.js';
 import { ListZoneChangeRequestsQueryDto } from './dto/list-zone-change-requests-query.dto.js';
 import { UpdateSchedulesDto } from './dto/update-schedules.dto.js';
 import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
@@ -328,6 +329,18 @@ export class WorkerProfileController {
     @Body() dto: ChangeWorkerProfileStatusDto,
   ): Promise<WorkerProfileView> {
     return this.profiles.changeStatusByAdmin(admin.id, profileId, dto);
+  }
+
+  // T4.4: reasignacion de zona de un perfil RECHAZADO cuya zona fue
+  // desactivada. Justificacion obligatoria; nunca sobre el propio perfil.
+  @Patch('admin/profiles/:profileId/zone')
+  @Auth(RoleName.ADMINISTRADOR)
+  reassignRejectedProfileZone(
+    @CurrentUser() admin: PublicUser,
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+    @Body() dto: ReassignRejectedProfileZoneDto,
+  ): Promise<AdminWorkerProfileView> {
+    return this.profiles.reassignZoneForRejected(admin.id, profileId, dto);
   }
 
   // RF-49: perfiles cuya zona fue desactivada (uso administrativo).

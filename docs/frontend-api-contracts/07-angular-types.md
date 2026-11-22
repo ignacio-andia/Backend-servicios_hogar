@@ -240,6 +240,12 @@ export interface ChangeWorkerProfileStatusRequest {
   status: AdminProfileDecision;
   reason?: string; // obligatorio y no vacio salvo APROBADO; no admite null
 }
+// Solo administradores: PATCH /worker-profile/admin/profiles/:profileId/zone (T4.4).
+// Perfil RECHAZADO con la zona actual inactiva. Responde AdminWorkerProfileView.
+export interface ReassignRejectedProfileZoneRequest {
+  zoneId: string;
+  justification: string; // obligatoria y no vacia
+}
 
 // Notificaciones internas (#61-#64). Se llama AppNotification para no chocar
 // con el tipo global Notification del navegador.
@@ -248,7 +254,7 @@ export type NotificationType =
   | 'PERFIL_REACTIVADO' | 'VERIFICACION_SOLICITADA'
   | 'VERIFICACION_REENVIADA_OBSERVACION' | 'VERIFICACION_REENVIADA_RECHAZO'
   | 'SOLICITUD_ZONA_APROBADA' | 'SOLICITUD_ZONA_RECHAZADA' | 'SOLICITUD_ZONA_CANCELADA'
-  | 'SOLICITUD_ZONA_RETIRADA';
+  | 'SOLICITUD_ZONA_RETIRADA' | 'ZONA_REASIGNADA';
 export type NotificationResourceType = 'PERFIL_TRABAJADOR' | 'SOLICITUD_CAMBIO_ZONA';
 export interface AppNotification {
   id: string;

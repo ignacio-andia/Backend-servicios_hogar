@@ -26,7 +26,10 @@ import {
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { PublicUser, UsersService } from '../users/users.service.js';
 import { WorkerActiveWorkRegistry } from './active-work.registry.js';
-import { WorkerProfileService } from './worker-profile.service.js';
+import {
+  AdminWorkerProfileView,
+  WorkerProfileService,
+} from './worker-profile.service.js';
 import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
 
 const USER_ID = '2b7e9d1c-3f4a-4b5c-8d6e-7f8091a2b3c4';
@@ -125,7 +128,7 @@ describe('WorkerProfileService', () => {
   };
   let users: Record<'findById' | 'grantWorkerRole', ReturnType<typeof vi.fn>>;
   let catalogs: Record<
-    'assertActive' | 'findById' | 'findByIds' | 'findAll',
+    'assertActive' | 'findById' | 'findByIds' | 'findAll' | 'findByIdsForShare',
     ReturnType<typeof vi.fn>
   >;
   let audit: { record: ReturnType<typeof vi.fn> };
@@ -169,7 +172,13 @@ describe('WorkerProfileService', () => {
       findById: vi.fn().mockResolvedValue(user()),
       grantWorkerRole: vi.fn().mockResolvedValue(undefined),
     };
-    catalogs = mockFns('assertActive', 'findById', 'findByIds', 'findAll');
+    catalogs = mockFns(
+      'assertActive',
+      'findById',
+      'findByIds',
+      'findAll',
+      'findByIdsForShare',
+    );
     catalogs.assertActive.mockImplementation((_kind, id: string) =>
       Promise.resolve(catalogItem(id)),
     );
@@ -757,6 +766,221 @@ describe('WorkerProfileService', () => {
         service.findApprovedWorkers({ categoryId: CATEGORY, zoneId: ZONE_A }),
       ).resolves.toEqual([]);
       expect(prisma.workerProfile.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reassignZoneForRejected (T4.4)', () => {
+    const dto = { zoneId: ZONE_B, justification: '  La zona A se cerró  ' };
+    const zonesFor = (current: boolean, target: boolean | null) =>
+      catalogs.findByIdsForShare.mockResolvedValue([
+        catalogItem(ZONE_A, { name: 'Zona A', isActive: current }),
+        ...(target === null
+          ? []
+          : [catalogItem(ZONE_B, { name: 'Zona B', isActive: target })]),
+      ]);
+
+    beforeEach(() => {
+      users.findById.mockResolvedValue(
+        user({ id: ADMIN_ID, roles: [RoleName.ADMINISTRADOR] }),
+      );
+      const rejected = profile({ status: WorkerProfileStatus.RECHAZADO });
+      prisma.workerProfile.findUnique.mockResolvedValue(rejected);
+      prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(rejected);
+      zonesFor(false, true);
+      // La vista final (detalle administrativo) ya tiene sus propias pruebas.
+      vi.spyOn(service, 'getForAdmin').mockResolvedValue(
+        {} as AdminWorkerProfileView,
+      );
+    });
+
+    it('cambia solo la zona, audita y avisa al trabajador; el perfil sigue RECHAZADO', async () => {
+      await service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto);
+
+      expect(prisma.workerProfile.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.workerProfile.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: PROFILE_ID,
+          status: WorkerProfileStatus.RECHAZADO,
+          zoneId: ZONE_A,
+        },
+        data: { zoneId: ZONE_B },
+      });
+      expect(audit.record).toHaveBeenCalledWith(
+        {
+          actorId: ADMIN_ID,
+          action: AuditAction.EDICION,
+          entityType: AuditEntityType.PERFIL_TRABAJADOR,
+          entityId: PROFILE_ID,
+          details: {
+            operation: 'REASIGNACION_ZONA',
+            workerUserId: USER_ID,
+            profileStatus: WorkerProfileStatus.RECHAZADO,
+            fromZoneId: ZONE_A,
+            toZoneId: ZONE_B,
+            justification: 'La zona A se cerró',
+          },
+        },
+        prisma,
+      );
+      expect(notifications.create).toHaveBeenCalledWith(
+        USER_ID,
+        {
+          type: NotificationType.ZONA_REASIGNADA,
+          title: 'Zona de atención reasignada',
+          message:
+            'Su zona "Zona A" fue desactivada y un administrador le asignó la zona "Zona B". Puede corregir su perfil y volver a enviarlo a revisión.',
+          resource: {
+            type: NotificationResourceType.PERFIL_TRABAJADOR,
+            id: PROFILE_ID,
+          },
+        },
+        prisma,
+      );
+      // Ni historial de estados, ni solicitud de cambio de zona, ni avisos a otros.
+      expect(prisma.workerProfileStatusHistory.create).not.toHaveBeenCalled();
+      expect(prisma.zoneChangeRequest.create).not.toHaveBeenCalled();
+      expect(notifications.createForRole).not.toHaveBeenCalled();
+    });
+
+    it('bloquea al trabajador y luego las dos zonas (FOR SHARE) antes de decidir', async () => {
+      await service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto);
+
+      expect(prisma.$queryRaw.mock.calls[0][1]).toBe(USER_ID);
+      expect(catalogs.findByIdsForShare).toHaveBeenCalledWith(
+        prisma,
+        CatalogKind.ZONE,
+        [ZONE_A, ZONE_B],
+      );
+      const lock = prisma.$queryRaw.mock.invocationCallOrder[0];
+      const reread =
+        prisma.workerProfile.findUniqueOrThrow.mock.invocationCallOrder[0];
+      const zones = catalogs.findByIdsForShare.mock.invocationCallOrder[0];
+      const update =
+        prisma.workerProfile.updateMany.mock.invocationCallOrder[0];
+      expect(lock).toBeLessThan(reread);
+      expect(reread).toBeLessThan(zones);
+      expect(zones).toBeLessThan(update);
+    });
+
+    it.each([
+      WorkerProfileStatus.BORRADOR,
+      WorkerProfileStatus.PENDIENTE,
+      WorkerProfileStatus.OBSERVADO,
+      WorkerProfileStatus.APROBADO,
+      WorkerProfileStatus.SUSPENDIDO,
+    ])('un perfil %s no usa esta operacion (409)', async (status) => {
+      prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(
+        profile({ status }),
+      );
+
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+      ).rejects.toThrow(
+        new ConflictException(
+          `Solo se puede reasignar la zona de un perfil RECHAZADO (estado actual: ${status})`,
+        ),
+      );
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('si la zona actual sigue activa, no es un cambio de zona general (409)', async () => {
+      zonesFor(true, true);
+
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+      ).rejects.toThrow(
+        new ConflictException(
+          'La zona actual "Zona A" sigue activa: la reasignación administrativa solo se usa cuando la zona del perfil fue desactivada',
+        ),
+      );
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('valida la zona destino: inexistente (404), inactiva (400) o la actual (400)', async () => {
+      zonesFor(false, null);
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+      ).rejects.toThrow(new NotFoundException('La zona no existe'));
+
+      zonesFor(false, false);
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+      ).rejects.toThrow(
+        new BadRequestException('La zona seleccionada no está activa'),
+      );
+
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, {
+          ...dto,
+          zoneId: ZONE_A,
+        }),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'La zona nueva debe ser distinta de la zona actual',
+        ),
+      );
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('exige una justificacion no vacia', async () => {
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, {
+          ...dto,
+          justification: '   ',
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('un administrador no modifica su propio perfil (403)', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ userId: ADMIN_ID, status: WorkerProfileStatus.RECHAZADO }),
+      );
+
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          'No puede modificar su propio perfil de trabajador',
+        ),
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('solo un administrador activo (403) y sobre un perfil existente (404)', async () => {
+      users.findById.mockResolvedValue(user());
+      await expect(
+        service.reassignZoneForRejected(USER_ID, PROFILE_ID, dto),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+
+      users.findById.mockResolvedValue(
+        user({ id: ADMIN_ID, roles: [RoleName.ADMINISTRADOR] }),
+      );
+      prisma.workerProfile.findUnique.mockResolvedValue(null);
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('si el perfil cambio entre la lectura y la escritura, responde 409 sin auditar', async () => {
+      prisma.workerProfile.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalled();
+    });
+
+    it('si la bitacora o la notificacion fallan, la operacion falla (misma transaccion)', async () => {
+      notifications.create.mockRejectedValue(new Error('sin conexion'));
+
+      await expect(
+        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+      ).rejects.toThrow('sin conexion');
     });
   });
 

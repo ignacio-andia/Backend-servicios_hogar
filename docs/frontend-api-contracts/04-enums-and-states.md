@@ -39,7 +39,7 @@ Si el estado no cambia, responde 200 sin modificar nada.
 | `PENDIENTE` | Enviado a revisión | ✘ | ✘ | ✘ |
 | `OBSERVADO` | Con observaciones que corregir | ✔ | ✘ | ✘ |
 | `APROBADO` | Habilitado | ✘ | ✔ | ✔ |
-| `RECHAZADO` | Rechazado; puede corregir y reenviar | ✔ (salvo la zona) | ✘ | ✘ |
+| `RECHAZADO` | Rechazado; puede corregir y reenviar | ✔ (salvo la zona) | ✘ | ✘ (si su zona se desactiva, un administrador le asigna otra: #66) |
 | `SUSPENDIDO` | Suspendido | ✘ | ✘ | ✘ (al suspender se cancela la pendiente) |
 
 "Editable" se refiere a datos, especialidades y documentos. Los horarios se pueden reemplazar en **cualquier** estado.
@@ -55,7 +55,7 @@ Transiciones:
 
 `OBSERVADO`, `RECHAZADO` y `SUSPENDIDO` exigen un motivo no vacío (`STATUSES_REQUIRING_REASON`). Cualquier otra transición responde 409. Rechazar o suspender un perfil **no** cambia los roles ni el estado de la cuenta: el usuario sigue siendo `CLIENTE` y `ACTIVO`.
 
-`RECHAZADO` **no es terminal** (v1.0 §5, T3.1): el trabajador ve el motivo en `/me/status` y `/me/eligibility`, corrige datos, especialidades, horarios y documentos, y reenvía con `POST /me/submit`. La zona sigue fija (RF-13): no puede cambiarla ni pedir un cambio de zona. Mientras esté `RECHAZADO` o `PENDIENTE` no recibe pedidos; vuelve a recibirlos solo con una nueva aprobación.
+`RECHAZADO` **no es terminal** (v1.0 §5, T3.1): el trabajador ve el motivo en `/me/status` y `/me/eligibility`, corrige datos, especialidades, horarios y documentos, y reenvía con `POST /me/submit`. La zona sigue fija (RF-13): no puede cambiarla ni pedir un cambio de zona. Si su zona fue desactivada, solo un administrador puede asignarle otra zona activa (#66, T4.4), con justificación y sin cambiar el estado. Mientras esté `RECHAZADO` o `PENDIENTE` no recibe pedidos; vuelve a recibirlos solo con una nueva aprobación.
 
 ### `WeekDay`
 
@@ -139,6 +139,7 @@ Notificaciones internas (T3.2, migración `20261122100000_create_notifications`)
 | `SOLICITUD_ZONA_RECHAZADA` | El trabajador | Su solicitud se rechazó (#40) | Sí (obligatorio) |
 | `SOLICITUD_ZONA_CANCELADA` | El trabajador | Su solicitud pendiente se canceló al suspender su perfil (#55) | No (la suspensión llega en su propia notificación `PERFIL_SUSPENDIDO`) |
 | `SOLICITUD_ZONA_RETIRADA` | El trabajador | Confirma que retiró su solicitud (#65, T4.3) | No |
+| `ZONA_REASIGNADA` | El trabajador `RECHAZADO` | Un administrador reasignó su zona desactivada (#66, T4.4; `resourceType: PERFIL_TRABAJADOR`; migración `20261122400000_zone_reassignment_notification`) | No (la justificación queda en la bitácora) |
 
 Cada notificación se crea **en la misma transacción** que el evento: si falla, el cambio de estado o el envío tampoco se confirma. `NotificationResourceType`: `PERFIL_TRABAJADOR` (eventos de verificación) o `SOLICITUD_CAMBIO_ZONA` (T4.2).
 

@@ -186,6 +186,23 @@ export function zoneRequestCancelledBySuspensionNotification(
   };
 }
 
+/**
+ * Aviso al trabajador RECHAZADO de que un administrador le asigno otra zona
+ * porque la suya fue desactivada (T4.4). La justificacion queda en la
+ * bitacora; el aviso solo informa el cambio y como seguir.
+ */
+export function zoneReassignedNotification(
+  profileId: string,
+  { fromZone, toZone }: ZoneRequestNames,
+): NewNotification {
+  return {
+    type: NotificationType.ZONA_REASIGNADA,
+    title: 'Zona de atención reasignada',
+    message: `Su zona "${fromZone}" fue desactivada y un administrador le asignó la zona "${toZone}". Puede corregir su perfil y volver a enviarlo a revisión.`,
+    resource: profileResource(profileId),
+  };
+}
+
 /** Confirmacion al trabajador de que retiro su solicitud pendiente (T4.3). */
 export function zoneRequestWithdrawnNotification(
   requestId: string,

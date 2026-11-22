@@ -32,6 +32,7 @@ Cada modelo se obtuvo de lo que **construye el service** (selects explícitos, f
 | #39, #40 solicitud (admin) | `AdminZoneChangeRequestView` |
 | #41 perfiles con zona inactiva | `AffectedProfile[]` |
 | #55 decisión administrativa sobre un perfil | `WorkerProfileView` (el perfil ya actualizado; **sin** el motivo ni el historial) |
+| #66 reasignar la zona de un perfil `RECHAZADO` | `AdminWorkerProfileView` (el detalle de #57, con la zona nueva y el estado `RECHAZADO`) |
 | #56 perfiles para revisar (admin) | `Paginated<AdminWorkerProfileSummary>` |
 | #57 detalle de un perfil (admin) | `AdminWorkerProfileView` |
 | #58 documentos de un perfil (admin) | `WorkerDocumentView[]` (los mismos metadatos que ve el trabajador) |
@@ -188,6 +189,7 @@ Formas de `details` que escribe el código hoy:
 | `PERFIL_TRABAJADOR` / `CONSULTA_DOCUMENTOS` | `{ documentCount: number }`. `entityId` = id del perfil |
 | `PERFIL_TRABAJADOR` / `VISUALIZACION_DOCUMENTO` o `DESCARGA_DOCUMENTO` | `{ documentId, documentType: WorkerDocumentType }`. `entityId` = id del perfil |
 | `PERFIL_TRABAJADOR` / `CAMBIO_ESTADO` | `{ from, to, reason: string \| null }`. Lo genera la decisión administrativa (#55) |
+| `PERFIL_TRABAJADOR` / `EDICION` | Reasignación de zona de un perfil `RECHAZADO` (#66, T4.4): `{ operation: 'REASIGNACION_ZONA', workerUserId, profileStatus: 'RECHAZADO', fromZoneId, toZoneId, justification }`. `actor` = administrador; `createdAt` = fecha |
 
 ---
 

@@ -3,7 +3,7 @@
 Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí no existe: ver [09](09-gaps-and-pending-contracts.md).
 
 - Base: `http://localhost:3000/api`. Todas las rutas siguientes incluyen el prefijo `/api`.
-- Total: **65 endpoints**.
+- Total: **66 endpoints**.
 
 | Módulo | Endpoints |
 |---|---|
@@ -11,7 +11,7 @@ Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí 
 | UsersModule | 4 |
 | CatalogsModule | 14 |
 | AuditModule | 1 |
-| WorkerProfileModule | 26 |
+| WorkerProfileModule | 27 |
 | OrdersModule | 13 |
 | NotificationsModule | 4 |
 
@@ -110,11 +110,14 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 | 58 | GET | `/api/worker-profile/admin/profiles/:profileId/documents` | ✅ | Admin activo; **no su propio perfil** | `profileId` | — | `WorkerDocumentView[]` (solo metadatos) | 200, 400, 401, 403, 404 | Registra `CONSULTA_DOCUMENTOS` en la bitácora. 403 `"No puede consultar los documentos de su propio perfil de trabajador"`; 404 perfil inexistente |
 | 59 | GET | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/view` | ✅ | Igual que #58; el documento debe pertenecer a ese perfil | `profileId`, `documentId` | — | Binario (`inline`) | 200, 400, 401, 403, 404 | Registra `VISUALIZACION_DOCUMENTO`. 404 `"El documento no existe"` si es de otro perfil, no existe o falta el archivo |
 | 60 | GET | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/download` | ✅ | Igual que #59 | `profileId`, `documentId` | — | Binario (`attachment`) | 200, 400, 401, 403, 404 | Registra `DESCARGA_DOCUMENTO`. Mismos 404 que #59 |
+| 66 | PATCH | `/api/worker-profile/admin/profiles/:profileId/zone` | ✅ | Admin activo; **no sobre su propio perfil**; perfil `RECHAZADO` con la zona actual **inactiva** | `profileId` (UUID) | `ReassignRejectedProfileZoneDto` (JSON) | `AdminWorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 justificación ausente o vacía, `zoneId` no UUID, propiedad no permitida, `"La zona seleccionada no está activa"` o `"La zona nueva debe ser distinta de la zona actual"`; 403 `"No puede modificar su propio perfil de trabajador"`; 404 perfil o zona inexistente; 409 `"Solo se puede reasignar la zona de un perfil RECHAZADO (estado actual: X)"`; 409 `"La zona actual \"…\" sigue activa: …"`. T4.4 |
 | 55 | PATCH | `/api/worker-profile/admin/profiles/:profileId/status` | ✅ | Admin activo; **no sobre su propio perfil** | `profileId` (UUID) | `ChangeWorkerProfileStatusDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 motivo ausente o vacío (`OBSERVADO`, `RECHAZADO`, `SUSPENDIDO`) o estado no permitido; 403 `"No puede revisar ni decidir sobre su propio perfil de trabajador"`; 404 `"El perfil de trabajador no existe"`; 409 transición inválida (`"No se puede pasar un perfil de X a Y"`); 409 requisitos de aprobación no cumplidos (arreglo); 409 cambio de estado concurrente |
 
 > **Nota (#36):** hoy la solicitud de cambio de zona **siempre se bloquea** con el motivo `VERIFICACION_NO_DISPONIBLE`, porque la fuente de trabajo activo `OFERTAS` todavía no existe (OffersModule no está implementado). El endpoint, sus validaciones y la decisión del administrador funcionan.
 >
 > **Nota (T4.3): trabajo nuevo con una solicitud pendiente.** Mientras el trabajador tenga una solicitud de cambio de zona `PENDIENTE`, `WorkerProfileService.lockApprovedWorker` responde 409 `"Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire."`. Lo usan la asignación de un pedido (`OrdersService.transition` a `ACORDADO`) y `OrderVisibilityService.assertOpenForOffers`, que debe usar el futuro módulo de ofertas. Tampoco aparece en `findApprovedWorkers`. Puede seguir consultando pedidos (#52–#54) y sus trabajos ya acordados no cambian. **No existen endpoints de ofertas**: el bloqueo de ofertas queda listo en ese punto de integración, pero no hay una ruta HTTP que lo ejerza todavía.
+>
+> **Nota (#66, T4.4): reasignación de zona de un perfil `RECHAZADO`.** Un perfil `RECHAZADO` no puede cambiar su zona ni pedir un cambio, y sin una zona activa no puede reenviarse. Si su zona fue desactivada, un administrador le asigna otra zona activa con una justificación obligatoria. **No** es un cambio de zona general (exige que la zona actual esté inactiva), no cambia el estado (sigue `RECHAZADO`) ni otros datos, y no crea una solicitud de cambio de zona. En una sola transacción cambia la zona, deja constancia en la bitácora (`EDICION` sobre `PERFIL_TRABAJADOR`) y notifica al trabajador (`ZONA_REASIGNADA`). Bloquea la fila del perfil y lee las dos zonas con `FOR SHARE`: un cambio de estado o una desactivación simultánea espera o ya se ve aplicada.
 >
 > **Nota (#40 y #55, T4.2):** suspender un perfil (#55) **cancela** su solicitud de cambio de zona pendiente en la misma transacción: queda `CANCELADA` con `cancellationCause: "SUSPENSION_PERFIL"` (no es un rechazo), el administrador que suspendió queda como `decidedBy`, la zona no cambia, se registra en la bitácora y se notifica al trabajador.
 >

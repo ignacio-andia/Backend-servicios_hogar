@@ -107,6 +107,13 @@ export const ADMIN_TARGET_STATUSES = [
 export const PENDING_ZONE_CHANGE_BLOCKS_NEW_WORK_MESSAGE =
   'Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire.';
 
+/**
+ * Unico estado en el que un administrador puede reasignar la zona de un
+ * perfil, y solo si su zona actual fue desactivada (T4.4). El perfil sigue
+ * en ese estado despues de la reasignacion.
+ */
+export const ZONE_REASSIGNMENT_STATUS = WorkerProfileStatus.RECHAZADO;
+
 // Decisiones que deben explicarse al trabajador (RF-10 y CU-03 A1).
 export const STATUSES_REQUIRING_REASON: readonly WorkerProfileStatus[] = [
   WorkerProfileStatus.OBSERVADO,
