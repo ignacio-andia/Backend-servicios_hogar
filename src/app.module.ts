@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CatalogsModule } from './modules/catalogs/catalogs.module.js';
+import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { WorkerProfileModule } from './modules/worker-profile/worker-profile.module.js';
@@ -16,6 +17,7 @@ import { WorkerProfileModule } from './modules/worker-profile/worker-profile.mod
     UsersModule,
     AuthModule,
     AuditModule,
+    NotificationsModule,
     CatalogsModule,
     WorkerProfileModule,
     OrdersModule,

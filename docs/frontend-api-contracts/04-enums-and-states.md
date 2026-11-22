@@ -39,7 +39,7 @@ Si el estado no cambia, responde 200 sin modificar nada.
 | `PENDIENTE` | Enviado a revisión | ✘ | ✘ | ✔ (❓ pendiente con el docente) |
 | `OBSERVADO` | Con observaciones que corregir | ✔ | ✘ | ✔ (❓) |
 | `APROBADO` | Habilitado | ✘ | ✔ | ✔ |
-| `RECHAZADO` | Rechazado | ✘ | ✘ | ✘ |
+| `RECHAZADO` | Rechazado; puede corregir y reenviar | ✔ (salvo la zona) | ✘ | ✘ |
 | `SUSPENDIDO` | Suspendido | ✘ | ✘ | ✔ (❓) |
 
 "Editable" se refiere a datos, especialidades y documentos. Los horarios se pueden reemplazar en **cualquier** estado.
@@ -49,12 +49,13 @@ Transiciones:
 | Transición | Quién | ¿Disponible por HTTP? |
 |---|---|---|
 | (nuevo) → `BORRADOR` | Trabajador, `POST /worker-profile` | ✅ |
-| `BORRADOR` → `PENDIENTE`, `OBSERVADO` → `PENDIENTE` | Trabajador, `POST /me/submit` | ✅ |
+| `BORRADOR` → `PENDIENTE`, `OBSERVADO` → `PENDIENTE`, `RECHAZADO` → `PENDIENTE` (reenvío) | Trabajador, `POST /me/submit` | ✅ Exige los mismos requisitos que el primer envío (400 con la lista). Cada envío agrega una entrada al historial (`changedBy: TRABAJADOR`); no se registra en la bitácora administrativa |
 | `PENDIENTE` → `APROBADO` / `OBSERVADO` / `RECHAZADO` | Administrador (`ADMIN_TRANSITIONS`), nunca sobre su propio perfil | ✅ `PATCH /worker-profile/admin/profiles/:profileId/status` (#55). Aprobar exige que el perfil siga cumpliendo los requisitos de envío |
 | `APROBADO` → `SUSPENDIDO`, `SUSPENDIDO` → `APROBADO` | Administrador, nunca sobre su propio perfil | ✅ #55. La reactivación (`SUSPENDIDO` → `APROBADO`) no vuelve a exigir los requisitos de envío (decisión previa del equipo) |
-| `RECHAZADO` → `PENDIENTE` (nueva presentación) | Trabajador | ⛔ **Pendiente (T3.1).** Un perfil `RECHAZADO` no es terminal (v1.0 §5), pero hoy no se puede editar ni reenviar |
 
 `OBSERVADO`, `RECHAZADO` y `SUSPENDIDO` exigen un motivo no vacío (`STATUSES_REQUIRING_REASON`). Cualquier otra transición responde 409. Rechazar o suspender un perfil **no** cambia los roles ni el estado de la cuenta: el usuario sigue siendo `CLIENTE` y `ACTIVO`.
+
+`RECHAZADO` **no es terminal** (v1.0 §5, T3.1): el trabajador ve el motivo en `/me/status` y `/me/eligibility`, corrige datos, especialidades, horarios y documentos, y reenvía con `POST /me/submit`. La zona sigue fija (RF-13): no puede cambiarla ni pedir un cambio de zona. Mientras esté `RECHAZADO` o `PENDIENTE` no recibe pedidos; vuelve a recibirlos solo con una nueva aprobación.
 
 ### `WeekDay`
 
@@ -114,6 +115,23 @@ Todo cambio de estado queda en `order_status_history`, pero **no hay endpoint pa
 |---|---|---|
 | `AuditAction` | `CREACION`, `EDICION`, `DESACTIVACION`, `CAMBIO_ESTADO`, `APROBACION`, `RECHAZO`, `CONSULTA_DOCUMENTOS`, `VISUALIZACION_DOCUMENTO`, `DESCARGA_DOCUMENTO` | Catálogos (las tres primeras); solicitudes de zona (`APROBACION`, `RECHAZO`); decisiones sobre perfiles (`CAMBIO_ESTADO`, #55); acceso administrativo a documentos (las tres últimas, #58–#60; migración `20261122000000_audit_document_access`) |
 | `AuditEntityType` | `CATEGORIA_SERVICIO`, `ZONA`, `PERFIL_TRABAJADOR`, `SOLICITUD_CAMBIO_ZONA` | Filtro de `GET /audit-logs` |
+
+### `NotificationType` y `NotificationResourceType`
+
+Notificaciones internas (T3.2, migración `20261122100000_create_notifications`). Por ahora solo hay eventos de la verificación de perfiles:
+
+| Tipo | Destinatario | Evento que lo genera | ¿Incluye el motivo? |
+|---|---|---|---|
+| `PERFIL_APROBADO` | El trabajador | `PENDIENTE` → `APROBADO` (#55) | Solo si el administrador escribió un comentario |
+| `PERFIL_OBSERVADO` | El trabajador | `PENDIENTE` → `OBSERVADO` (#55) | Sí |
+| `PERFIL_RECHAZADO` | El trabajador | `PENDIENTE` → `RECHAZADO` (#55) | Sí |
+| `PERFIL_SUSPENDIDO` | El trabajador | `APROBADO` → `SUSPENDIDO` (#55) | Sí |
+| `PERFIL_REACTIVADO` | El trabajador | `SUSPENDIDO` → `APROBADO` (#55) | Solo si el administrador escribió un comentario |
+| `VERIFICACION_SOLICITADA` | Cada administrador activo, salvo quien envía | `BORRADOR` → `PENDIENTE` (#28) | No (sin datos personales del trabajador) |
+| `VERIFICACION_REENVIADA_OBSERVACION` | Ídem | `OBSERVADO` → `PENDIENTE` (#28) | No |
+| `VERIFICACION_REENVIADA_RECHAZO` | Ídem | `RECHAZADO` → `PENDIENTE` (#28) | No |
+
+Cada notificación se crea **en la misma transacción** que el evento: si falla, el cambio de estado o el envío tampoco se confirma. `NotificationResourceType` hoy solo tiene `PERFIL_TRABAJADOR`.
 
 ## Literales de la API (no son enums de la BD)
 

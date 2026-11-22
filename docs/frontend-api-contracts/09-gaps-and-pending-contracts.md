@@ -6,7 +6,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 
 | # | Hallazgo | Impacto en Angular | Prioridad |
 |---|---|---|---|
-| A1 | **Resuelto salvo notificaciones (T2.2 y T2.3).** Listado (#56), detalle (#57), documentos con bitácora (#58–#60) y decisión (#55). Falta la **notificación** al trabajador | La verificación funciona de punta a punta; el trabajador se entera del resultado consultando `/me/status` | Media |
+| A1 | **Resuelto (T2.2, T2.3 y T3.2).** Listado (#56), detalle (#57), documentos con bitácora (#58–#60), decisión (#55) y notificaciones internas (#61–#64) | La verificación funciona de punta a punta, con avisos al trabajador y a los administradores | — |
 | A2 | El commit `207f2cb` (OrdersModule, cambio de zona, cola de archivos y 2 migraciones) **no está publicado** en `origin/main` | Quien clone el repositorio remoto no tiene esos endpoints | **Alta** (se resuelve con un push) |
 | A3 | **Resuelto (T2.1).** El primer `ADMINISTRADOR` se crea con el comando interno `npm run admin:create-first` (README, sección H, paso 5). Sigue sin existir un mecanismo para administradores adicionales | Para probar las pantallas de administración basta con ejecutar el comando una vez | Baja |
 | A4 | Descargas (fotos y documentos) solo con Bearer | `<img src>` no funciona: hay que descargar como Blob (ver 06) | Media |
@@ -60,16 +60,17 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | Logout, refresh, recuperación o cambio de contraseña (RF-01, RF-05) | ⛔ | — |
 | Administradores adicionales y gestión de roles (RF-04). El primero ya tiene comando interno (T2.1) | ⛔ | Decisión del equipo |
 | Verificación de perfiles (RF-10, RF-47) | ✅ Listado, detalle, documentos y decisión (#55–#60) | — |
-| Notificaciones de verificación al trabajador (aprobado, observado, rechazado y suspendido, con motivo privado) | ⛔ No existe módulo de notificaciones | Módulo de notificaciones internas (v1.0 §6); punto de integración: `WorkerProfileService.changeStatusByAdmin`, dentro de su transacción |
-| Nueva presentación tras un rechazo | ⛔ | T3.1 |
+| Notificaciones de verificación de perfiles | ✅ (T3.2) Decisiones al trabajador y envíos a los administradores; tipos en 04 | — |
+| Notificaciones de pedidos, ofertas, visitas y reclamos | ⛔ | Sus módulos. Deben usar `NotificationsService.create` o `createForRole` con el cliente de su transacción |
+| Notificaciones por correo, SMS o push | ⛔ Fuera de alcance | — |
 | Indicación de perfil revisado (RF-12) | ❓ | Texto del docente |
 | Perfil público y búsqueda de trabajadores (RF-11, RF-16) | ⛔ | Calificaciones; decisión sobre datos públicos |
 | **Ofertas y negociación (RF-19 a RF-24)** | 📐 (solo integración interna) | OffersModule |
 | Visitas, presupuesto adicional y ejecución (RF-25 a RF-28) | ⛔ | Ofertas |
 | Agenda de trabajos y cruces (RF-30, RF-31) | ⛔ | Ofertas |
-| Línea de tiempo y avisos (RF-32, RF-33) | 🟡 / ⛔ | Endpoint de historial; módulo de notificaciones |
+| Línea de tiempo y avisos (RF-32, RF-33) | 🟡 | Endpoint de historial; avisos de pedidos (la bandeja #61–#64 ya existe) |
 | Cancelar trabajo (RF-34), inasistencia (RF-36), reclamos (RF-37, RF-38, RF-51) | ⛔ ❓ | Decisiones del docente |
-| Aviso de vencimiento (RF-35) | 🟡 | Notificaciones |
+| Aviso de vencimiento (RF-35) | 🟡 | Integrarlo con `NotificationsService` (la bandeja ya existe) |
 | Pagos y constancias (RF-39 a RF-43) | ⛔ | Ofertas y acuerdos |
 | Calificaciones (RF-44 a RF-46) | ⛔ | Trabajo terminado |
 | Supervisión de pedidos y reportes (RF-50, RF-52) | ⛔ | — |
@@ -94,3 +95,4 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 **Del equipo**
 - Qué pasa con las ofertas enviadas si se desactiva un catálogo o se suspende al cliente.
 - Cómo se crean administradores adicionales. El primero ya está resuelto (T2.1).
+- Perfil `RECHAZADO` cuya zona se desactivó: no puede cambiar la zona ni pedir un cambio (`ZONE_REQUEST_ALLOWED_STATUSES`), y por eso tampoco puede reenviar (`pendingRequirements` pide una zona activa). Hoy necesita que un administrador reactive la zona.

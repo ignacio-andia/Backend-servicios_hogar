@@ -42,6 +42,10 @@ Cada modelo se obtuvo de lo que **construye el service** (selects explícitos, f
 | #46, #54 fotos | Binario `image/webp` |
 | #52 pedidos disponibles | `Paginated<WorkerOrderView>` |
 | #53 pedido disponible | `WorkerOrderView` |
+| #61 notificaciones | `Paginated<NotificationView>` |
+| #62 no leídas | `{ unread: number }` |
+| #63 marcar como leída | `NotificationView` |
+| #64 marcar todas como leídas | `{ updated: number }` (cuántas cambiaron; 0 si no había) |
 | Cualquier error | `ApiError` |
 
 ---
@@ -203,7 +207,7 @@ Formas de `details` que escribe el código hoy:
 | `specialties` | `CatalogRef[]` | no | | Ordenadas por nombre |
 | `schedules` | `ScheduleView[]` | no | | Por día (LUNES→DOMINGO) y hora de inicio |
 | `pendingRequirements` | `PendingRequirement[]` | no | ✔ | Lo que falta para enviar a revisión |
-| `canEdit` | boolean | no | ✔ | Estado `BORRADOR` u `OBSERVADO` (afecta a datos, especialidades y documentos; **no** a los horarios) |
+| `canEdit` | boolean | no | ✔ | Estado `BORRADOR`, `OBSERVADO` o `RECHAZADO` (afecta a datos, especialidades y documentos; **no** a los horarios ni a la zona fuera de `BORRADOR`) |
 | `canSubmit` | boolean | no | ✔ | `canEdit` y sin requisitos pendientes |
 
 `ScheduleView`:
@@ -249,7 +253,7 @@ Condiciones de cada requisito:
 | Propiedad | Tipo | Nullable | Notas |
 |---|---|---|---|
 | `status` | `WorkerProfileStatus` | no | |
-| `statusReason` | string | **sí** | Motivo del cambio más reciente al estado vigente (observación, rechazo o suspensión) |
+| `statusReason` | string | **sí** | Motivo del cambio más reciente al estado vigente (observación, rechazo o suspensión). Tras un reenvío vuelve a `null` (el estado vigente es `PENDIENTE`); el motivo anterior sigue en `history` |
 | `history` | `StatusHistoryEntry[]` | no | Más reciente primero |
 
 `StatusHistoryEntry`:
@@ -497,6 +501,25 @@ Al editar (#47) los avisos solo se calculan si cambió la descripción; si no, `
 ```json
 { "warnings": [{ "code": "POSIBLE_DUPLICADO", "message": "Ya tiene un pedido activo muy parecido…", "orderIds": ["e5f6a7b8-c9d0-4e1f-8a2b-3c4d5e6f7a8b"] }] }
 ```
+
+---
+
+## Notificaciones
+
+### `NotificationView`
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `id` | string | no | |
+| `type` | `NotificationType` | no | Ver 04 |
+| `title` | string | no | ≤ 150 caracteres, en español, listo para mostrar |
+| `message` | string | no | ≤ 2000 caracteres. En las decisiones incluye `Motivo: …` (o `Comentario: …` al aprobar o reactivar si lo hubo) |
+| `resourceType` | `NotificationResourceType` | **sí** | Hoy siempre `PERFIL_TRABAJADOR`. Si viene, también viene `resourceId` |
+| `resourceId` | string | **sí** | Id del perfil. El administrador lo abre con #57; el trabajador, con `/me` |
+| `readAt` | string | **sí** | `null` = no leída |
+| `createdAt` | string | no | Orden del listado: más reciente primero |
+
+No incluye `userId`. La lista usa `Paginated<T>` (`{ data, meta: { page, limit, total, totalPages } }`).
 
 ---
 

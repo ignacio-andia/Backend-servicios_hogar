@@ -26,7 +26,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 | RF-07 Documentación de respaldo | ✅ | #31–#34 (`UploadDocumentDto` → `WorkerDocumentView`) | Solo el propio trabajador ve y descarga sus documentos |
 | RF-08 Estados del perfil | ✅ (consulta) | #29 `WorkerStatusView` | — |
 | RF-09 No aprobado no recibe pedidos | ✅ | Guard en #52–#54 | Búsqueda de trabajadores: ver RF-16 |
-| RF-10 Revisión administrativa (aprobar, observar, rechazar) | 🟡 | Listado #56, detalle #57 y decisión #55 (`ChangeWorkerProfileStatusDto` → `WorkerProfileView`): transiciones, motivo obligatorio, requisitos de aprobación, historial y bitácora; nunca sobre el propio perfil | Faltan la consulta de documentos por el administrador y la notificación al trabajador. La nueva presentación tras un rechazo es T3.1 |
+| RF-10 Revisión administrativa (aprobar, observar, rechazar) | 🟡 | Listado #56, detalle #57 y decisión #55 (`ChangeWorkerProfileStatusDto` → `WorkerProfileView`): transiciones, motivo obligatorio, requisitos de aprobación, historial y bitácora; nunca sobre el propio perfil | Documentos #58–#60 (T2.3). Tras un rechazo, el trabajador corrige y reenvía con #28 (T3.1). Cada decisión notifica al trabajador y cada envío a los administradores (T3.2, #61–#64) |
 | RF-11 Perfil público (especialidades, zona, calificación, opiniones) | ⛔ | — | Depende de calificaciones (grupo 10) |
 | RF-12 Indicación de perfil revisado | ❓ | — | Texto pendiente con el docente |
 | RF-13 Zona fija y cambio por solicitud | 🟡 | #35–#41 (`CreateZoneChangeRequestDto`, `DecideZoneChangeRequestDto` → `ZoneStatusView`, `ZoneChangeRequestView`, `AdminZoneChangeRequestView`) | La solicitud se bloquea siempre (`VERIFICACION_NO_DISPONIBLE`) hasta que exista la fuente `OFERTAS` |
@@ -91,7 +91,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF | Estado | Contrato |
 |---|---|---|
 | RF-32 Línea de tiempo del pedido | 🟡 | El historial se **registra** (`order_status_history`, actor `USUARIO` o `SISTEMA`), pero **no hay endpoint** para consultarlo |
-| RF-33 Avisos dentro de la plataforma | ⛔ | Solo existe el punto de integración `OrderLifecycleRegistry`; no hay módulo ni endpoint de notificaciones |
+| RF-33 Avisos dentro de la plataforma | 🟡 | Bandeja #61–#64 (`NotificationView`). Hoy solo hay avisos de la verificación de perfiles; los de pedidos, ofertas, visitas y reclamos están pendientes (punto de integración de pedidos: `OrderLifecycleRegistry`) |
 
 ## 8. Cancelaciones y situaciones especiales (RF-34 a RF-38)
 

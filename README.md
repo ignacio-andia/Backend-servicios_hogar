@@ -463,10 +463,10 @@ Todas las rutas `me` actúan sobre el perfil del usuario del JWT y exigen el rol
 |---|---|---|
 | `POST` | `/api/worker-profile` | Crea el perfil propio en estado `BORRADOR` y otorga el rol TRABAJADOR. Lo pueden usar cuentas con rol CLIENTE o TRABAJADOR. Body: `{ yearsOfExperience, description?, zoneId, categoryIds[], schedules?[] }`. Responde `409` si la cuenta ya tiene un perfil. |
 | `GET` | `/api/worker-profile/me` | Perfil con zona (`isActive`, `zoneRequiresChange`), especialidades, horarios, `pendingRequirements`, `canEdit` y `canSubmit`. |
-| `PATCH` | `/api/worker-profile/me` | Edita `yearsOfExperience` y `description` en `BORRADOR` u `OBSERVADO`. `zoneId` solo se acepta en `BORRADOR`; después responde `403`. |
+| `PATCH` | `/api/worker-profile/me` | Edita `yearsOfExperience` y `description` en `BORRADOR`, `OBSERVADO` o `RECHAZADO`. `zoneId` solo se acepta en `BORRADOR`; después responde `403`. |
 | `PUT` | `/api/worker-profile/me/specialties` | Reemplaza las especialidades: `{ categoryIds[] }`, solo con categorías activas. |
 | `PUT` | `/api/worker-profile/me/schedules` | Reemplaza los horarios: `{ schedules: [{ dayOfWeek, startTime: "HH:mm", endTime: "HH:mm", isActive? }] }`. Admite varios intervalos por día, sin superposiciones. |
-| `POST` | `/api/worker-profile/me/submit` | Envía o reenvía a revisión desde `BORRADOR` u `OBSERVADO`: pasa a `PENDIENTE`. Si falta algo responde `400` con la lista. |
+| `POST` | `/api/worker-profile/me/submit` | Envía o reenvía a revisión desde `BORRADOR`, `OBSERVADO` o `RECHAZADO`: pasa a `PENDIENTE`. Si falta algo responde `400` con la lista. |
 | `GET` | `/api/worker-profile/me/status` | Estado vigente, observación (`statusReason`) e historial de cambios. |
 | `GET` | `/api/worker-profile/me/eligibility` | Indica si la cuenta puede usar funciones de trabajador (solo con perfil `APROBADO`). |
 | `POST` | `/api/worker-profile/me/documents` | `multipart/form-data` con `type` (`IDENTIDAD`, `ANTECEDENTES`, `CERTIFICADO` o `REFERENCIA`) y `file` (PDF, JPG o PNG). |
@@ -487,7 +487,8 @@ Todas las rutas `me` actúan sobre el perfil del usuario del JWT y exigen el rol
 | `GET` | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/download` | **Solo administradores.** Descarga el documento (`attachment`). Queda en la bitácora (`DESCARGA_DOCUMENTO`). |
 | `PATCH` | `/api/worker-profile/admin/profiles/:profileId/status` | **Solo administradores.** `{ status: "APROBADO" \| "OBSERVADO" \| "RECHAZADO" \| "SUSPENDIDO", reason? }`. El motivo es obligatorio y no puede estar vacío salvo al aprobar. Responde `409` si la transición no está permitida o si el perfil no cumple los requisitos para aprobarse, y `403` si el perfil es del propio administrador. Queda en el historial y en la bitácora. No cambia los roles ni el estado de la cuenta. |
 
-- **Estados:** `BORRADOR` → `PENDIENTE` → (`APROBADO` / `OBSERVADO` / `RECHAZADO`); `APROBADO` ↔ `SUSPENDIDO`. El trabajador solo puede enviar su perfil; los demás cambios los hace un administrador con `PATCH /api/worker-profile/admin/profiles/:profileId/status`. Un perfil `PENDIENTE` solo se aprueba si sigue cumpliendo los requisitos de envío (zona y especialidades activas, teléfono, horario activo); si no, responde `409` con lo que falta. La reactivación `SUSPENDIDO` → `APROBADO` no exige esos requisitos.
+- **Estados:** `BORRADOR` → `PENDIENTE` → (`APROBADO` / `OBSERVADO` / `RECHAZADO`); `OBSERVADO` y `RECHAZADO` → `PENDIENTE` (reenvío); `APROBADO` ↔ `SUSPENDIDO`. El trabajador solo puede enviar o reenviar su perfil; los demás cambios los hace un administrador con `PATCH /api/worker-profile/admin/profiles/:profileId/status`. Un perfil `PENDIENTE` solo se aprueba si sigue cumpliendo los requisitos de envío (zona y especialidades activas, teléfono, horario activo); si no, responde `409` con lo que falta. La reactivación `SUSPENDIDO` → `APROBADO` no exige esos requisitos.
+- **Perfil rechazado (T3.1):** `RECHAZADO` no es terminal. El trabajador ve el motivo, corrige datos, especialidades, horarios y documentos, y reenvía con `POST /api/worker-profile/me/submit` (mismos requisitos que el primer envío). La zona sigue fija. El reenvío agrega una entrada al historial de estados y conserva la decisión anterior con su motivo; no se registra en la bitácora administrativa. No cambia los roles ni el estado de la cuenta, y el perfil no recibe pedidos hasta una nueva aprobación.
 - **Documentos:** el formato se detecta por el contenido del archivo, no por su extensión. Un archivo demasiado grande responde `413` y un formato no permitido, `400`. Los archivos se guardan en `FILE_STORAGE_DIR` con nombres aleatorios y nunca se exponen sus rutas. Los administradores los consultan por las rutas `admin/profiles/:profileId/documents…`. Cada acceso exitoso queda en la bitácora; los intentos rechazados no.
 - **Para otros módulos:** `WorkerProfileService.assertWorkerApproved(userId)`, `lockApprovedWorker(tx, userId)` (dentro de una transacción: bloquea al trabajador y relee su perfil aprobado), `findApprovedWorkers({ categoryId, zoneId })`, `findProfilesWithInactiveZone(zoneId?)`, `ZoneChangeRequestsService.decide(...)` y el guard `ApprovedWorkerGuard`. Para usarlos, el módulo debe importar `WorkerProfileModule`.
 - **Estados que pueden pedir un cambio de zona:** `APROBADO` (CU-13), y `PENDIENTE`, `OBSERVADO` y `SUSPENDIDO` (admitidos desde el módulo 3, pendientes de confirmar). No pueden `BORRADOR` (elige la zona directamente) ni `RECHAZADO`. Lista en `ZONE_REQUEST_ALLOWED_STATUSES`.
@@ -496,6 +497,23 @@ Todas las rutas `me` actúan sobre el perfil del usuario del JWT y exigen el rol
   1. Registrar la consulta `OFERTAS` en `onModuleInit`: `registry.register({ kind: ActiveWorkKind.OFERTAS, countActive: (workerUserId, db) => db.<modelo>.count({ ... }) })`. Debe leer con `db`, la transacción que recibe. La fuente `PEDIDOS` ya la registra OrdersModule. Al registrar la fuente real, la prueba e2e de worker-profile que hoy registra una fuente `OFERTAS` de prueba debe ajustarse.
   2. **Orden de bloqueos: primero el trabajador, después el pedido.** Al crear una oferta, usar `OrderVisibilityService.assertOpenForOffers(tx, workerUserId, orderId)`, que respeta ese orden. Para asignar, `OrdersService.transition(...)` también lo respeta. Ningún hook de pedido puede llamar a `lockWorker`.
 - **Pendiente del docente:** si el rechazo exige motivo (hoy es opcional), si aprobar un cambio de zona devuelve el perfil a revisión (hoy no) y si al aprobar se vuelve a verificar el trabajo activo (implementado pero desactivado: `recheckActiveWorkOnApproval`). Todo está centralizado en `ZONE_CHANGE_POLICY` y en `ZoneChangeRequestsService.applyApprovedChange`.
+
+### Notificaciones internas (T3.2)
+
+| Método | Ruta | JWT | Descripción y permisos |
+|---|---|---|---|
+| `GET` | `/api/notifications` | Sí | Notificaciones propias, de la más reciente a la más antigua. Query: `unread` (`true` o `false`, opcional), `page`, `limit` (máximo 100). |
+| `GET` | `/api/notifications/unread-count` | Sí | `{ unread }`: cantidad de notificaciones propias no leídas. |
+| `PATCH` | `/api/notifications/:notificationId/read` | Sí | Marca una notificación propia como leída (idempotente). `404` si es ajena o no existe. |
+| `PATCH` | `/api/notifications/read-all` | Sí | Marca como leídas todas las propias. Responde `{ updated }`. |
+
+- **Solo internas:** se guardan en la tabla `notifications`. No hay correo, SMS ni push, y no se borran automáticamente.
+- **Permisos:** cualquier cuenta `ACTIVO`, con cualquier rol. El destinatario sale siempre del token: no se acepta `userId`.
+- **Respuesta:** `{ id, type, title, message, resourceType, resourceId, readAt, createdAt }`. El listado usa `{ data, meta: { page, limit, total, totalPages } }`.
+- **Eventos integrados:** cada decisión administrativa sobre un perfil notifica al trabajador (`PERFIL_APROBADO`, `PERFIL_OBSERVADO`, `PERFIL_RECHAZADO`, `PERFIL_SUSPENDIDO`, `PERFIL_REACTIVADO`, con el motivo). Cada envío a verificación notifica a los administradores activos, salvo a quien envía (`VERIFICACION_SOLICITADA`, `VERIFICACION_REENVIADA_OBSERVACION`, `VERIFICACION_REENVIADA_RECHAZO`, sin datos personales).
+- **Consistencia:** la notificación se crea en la misma transacción que el evento. Si falla, el cambio de estado o el envío tampoco se guarda.
+- **Para otros módulos:** importe `NotificationsModule` y use `NotificationsService.create(userId, notificacion, tx)` o `createForRole(rol, notificacion, { excludeUserIds }, tx)`. El texto lo arma el módulo que origina el evento.
+- **Pendientes:** notificaciones de pedidos, ofertas, visitas y reclamos.
 
 ### Pedidos (RF-14 a RF-18)
 
@@ -594,6 +612,7 @@ src/
 │   ├── audit/             # Bitácora de acciones administrativas: registro y consulta (solo administradores)
 │   ├── auth/              # Registro, login, JWT (Passport), JwtAuthGuard, RolesGuard, @Auth, @CurrentUser
 │   ├── catalogs/          # Categorías de servicio y zonas de Cochabamba
+│   ├── notifications/     # Notificaciones internas: bandeja del usuario y servicio para los demás módulos
 │   ├── orders/            # Pedidos: publicación, fotos, visibilidad, edición, cancelación y vencimiento
 │   ├── users/             # Cuentas, datos personales, estado y roles
 │   └── worker-profile/    # Perfil del trabajador, documentos, estados y zona fija

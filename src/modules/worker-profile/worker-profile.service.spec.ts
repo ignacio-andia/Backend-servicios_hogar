@@ -7,6 +7,8 @@ import {
 import {
   AuditAction,
   AuditEntityType,
+  NotificationResourceType,
+  NotificationType,
   Prisma,
   RoleName,
   UserStatus,
@@ -20,6 +22,7 @@ import {
   CatalogKind,
   CatalogsService,
 } from '../catalogs/catalogs.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import { PublicUser, UsersService } from '../users/users.service.js';
 import { WorkerActiveWorkRegistry } from './active-work.registry.js';
 import { WorkerProfileService } from './worker-profile.service.js';
@@ -118,6 +121,10 @@ describe('WorkerProfileService', () => {
     ReturnType<typeof vi.fn>
   >;
   let audit: { record: ReturnType<typeof vi.fn> };
+  let notifications: Record<
+    'create' | 'createForRole',
+    ReturnType<typeof vi.fn>
+  >;
   let service: WorkerProfileService;
 
   beforeEach(() => {
@@ -160,12 +167,17 @@ describe('WorkerProfileService', () => {
       Promise.resolve(ids.map((id) => catalogItem(id))),
     );
     audit = { record: vi.fn().mockResolvedValue(undefined) };
+    notifications = {
+      create: vi.fn().mockResolvedValue(undefined),
+      createForRole: vi.fn().mockResolvedValue(1),
+    };
     service = new WorkerProfileService(
       prisma as unknown as PrismaService,
       users as unknown as UsersService,
       catalogs as unknown as CatalogsService,
       audit as unknown as AuditService,
       new WorkerActiveWorkRegistry(),
+      notifications as unknown as NotificationsService,
     );
   });
 
@@ -443,7 +455,6 @@ describe('WorkerProfileService', () => {
     it.each([
       WorkerProfileStatus.PENDIENTE,
       WorkerProfileStatus.APROBADO,
-      WorkerProfileStatus.RECHAZADO,
       WorkerProfileStatus.SUSPENDIDO,
     ])('no permite enviar desde %s', async (status) => {
       prisma.workerProfile.findUnique.mockResolvedValue(profile({ status }));
@@ -451,6 +462,138 @@ describe('WorkerProfileService', () => {
       await expect(service.submit(USER_ID)).rejects.toBeInstanceOf(
         ConflictException,
       );
+    });
+
+    it('reenvia un perfil RECHAZADO a PENDIENTE con una entrada nueva de historial (T3.1)', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.RECHAZADO }),
+      );
+
+      await service.submit(USER_ID);
+
+      expect(prisma.workerProfile.updateMany.mock.calls[0][0]).toMatchObject({
+        where: { id: PROFILE_ID, status: WorkerProfileStatus.RECHAZADO },
+        data: { status: WorkerProfileStatus.PENDIENTE },
+      });
+      // Se agrega una entrada; el rechazo anterior no se modifica.
+      expect(prisma.workerProfileStatusHistory.create).toHaveBeenCalledWith({
+        data: {
+          profileId: PROFILE_ID,
+          fromStatus: WorkerProfileStatus.RECHAZADO,
+          toStatus: WorkerProfileStatus.PENDIENTE,
+          changedById: USER_ID,
+        },
+      });
+      // Decision del equipo: el reenvio va al historial, no a la bitacora
+      // administrativa.
+      expect(audit.record).not.toHaveBeenCalled();
+    });
+
+    it('no reenvia un perfil RECHAZADO con requisitos pendientes', async () => {
+      users.findById.mockResolvedValue(user({ phone: null }));
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.RECHAZADO }),
+      );
+
+      await expect(service.submit(USER_ID)).rejects.toMatchObject({
+        response: {
+          message: ['Registre un teléfono de contacto en su cuenta'],
+        },
+      });
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+      expect(prisma.workerProfileStatusHistory.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('notificaciones del envio a verificacion (T3.2)', () => {
+    it.each([
+      [WorkerProfileStatus.BORRADOR, NotificationType.VERIFICACION_SOLICITADA],
+      [
+        WorkerProfileStatus.OBSERVADO,
+        NotificationType.VERIFICACION_REENVIADA_OBSERVACION,
+      ],
+      [
+        WorkerProfileStatus.RECHAZADO,
+        NotificationType.VERIFICACION_REENVIADA_RECHAZO,
+      ],
+    ])(
+      'desde %s avisa a los administradores activos con %s, sin incluir a quien envia',
+      async (from, type) => {
+        prisma.workerProfile.findUnique.mockResolvedValue(
+          profile({ status: from }),
+        );
+
+        await service.submit(USER_ID);
+
+        expect(notifications.createForRole).toHaveBeenCalledTimes(1);
+        expect(notifications.createForRole).toHaveBeenCalledWith(
+          RoleName.ADMINISTRADOR,
+          expect.objectContaining({
+            type,
+            resource: {
+              type: NotificationResourceType.PERFIL_TRABAJADOR,
+              id: PROFILE_ID,
+            },
+          }),
+          { excludeUserIds: [USER_ID] },
+          // El cliente de la transaccion del envio.
+          prisma,
+        );
+        // El trabajador no recibe aviso de su propio envio.
+        expect(notifications.create).not.toHaveBeenCalled();
+      },
+    );
+
+    it('si la notificacion falla, el envio falla (misma transaccion)', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(profile());
+      notifications.createForRole.mockRejectedValue(new Error('sin conexion'));
+
+      await expect(service.submit(USER_ID)).rejects.toThrow('sin conexion');
+    });
+
+    it('no notifica si el envio no procede', async () => {
+      users.findById.mockResolvedValue(user({ phone: null }));
+      prisma.workerProfile.findUnique.mockResolvedValue(profile());
+
+      await expect(service.submit(USER_ID)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(notifications.createForRole).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('correccion de un perfil RECHAZADO (T3.1)', () => {
+    beforeEach(() => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.RECHAZADO }),
+      );
+    });
+
+    it('permite editar los datos y las especialidades', async () => {
+      await service.updateOwn(USER_ID, { yearsOfExperience: 8 });
+      await service.replaceSpecialties(USER_ID, { categoryIds: [CATEGORY] });
+
+      expect(prisma.workerProfile.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: PROFILE_ID, status: WorkerProfileStatus.RECHAZADO },
+        }),
+      );
+      expect(prisma.workerSpecialty.createMany).toHaveBeenCalled();
+    });
+
+    it('la zona sigue fija (403, RF-13)', async () => {
+      await expect(
+        service.updateOwn(USER_ID, { zoneId: ZONE_B }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('la vista indica que se puede editar y reenviar', async () => {
+      const view = await service.getOwn(USER_ID);
+      expect(view).toMatchObject({
+        status: WorkerProfileStatus.RECHAZADO,
+        canEdit: true,
+        canSubmit: true,
+      });
     });
   });
 
@@ -596,6 +739,87 @@ describe('WorkerProfileService', () => {
         },
         prisma,
       );
+    });
+
+    it.each([
+      [
+        WorkerProfileStatus.PENDIENTE,
+        WorkerProfileStatus.OBSERVADO,
+        NotificationType.PERFIL_OBSERVADO,
+      ],
+      [
+        WorkerProfileStatus.PENDIENTE,
+        WorkerProfileStatus.RECHAZADO,
+        NotificationType.PERFIL_RECHAZADO,
+      ],
+      [
+        WorkerProfileStatus.APROBADO,
+        WorkerProfileStatus.SUSPENDIDO,
+        NotificationType.PERFIL_SUSPENDIDO,
+      ],
+    ])(
+      '%s -> %s notifica al trabajador (%s) con el motivo (T3.2)',
+      async (from, to, type) => {
+        prisma.workerProfile.findUnique.mockResolvedValue(
+          profile({ status: from }),
+        );
+
+        await service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
+          status: to,
+          reason: '  Documento ilegible  ',
+        });
+
+        expect(notifications.create).toHaveBeenCalledTimes(1);
+        const [recipient, notification, db] = notifications.create.mock
+          .calls[0] as [string, { type: string; message: string }, unknown];
+        expect(recipient).toBe(USER_ID);
+        expect(notification).toMatchObject({
+          type,
+          resource: {
+            type: NotificationResourceType.PERFIL_TRABAJADOR,
+            id: PROFILE_ID,
+          },
+        });
+        expect(notification.message).toContain('Motivo: Documento ilegible');
+        expect(db).toBe(prisma);
+        expect(notifications.createForRole).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      [WorkerProfileStatus.PENDIENTE, NotificationType.PERFIL_APROBADO],
+      [WorkerProfileStatus.SUSPENDIDO, NotificationType.PERFIL_REACTIVADO],
+    ])(
+      'aprobar desde %s notifica al trabajador con %s (T3.2)',
+      async (from, type) => {
+        prisma.workerProfile.findUnique.mockResolvedValue(
+          profile({ status: from }),
+        );
+
+        await service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
+          status: WorkerProfileStatus.APROBADO,
+        });
+
+        expect(notifications.create).toHaveBeenCalledWith(
+          USER_ID,
+          expect.objectContaining({ type }),
+          prisma,
+        );
+      },
+    );
+
+    it('si la notificacion falla, la decision falla (misma transaccion)', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.PENDIENTE }),
+      );
+      notifications.create.mockRejectedValue(new Error('sin conexion'));
+
+      await expect(
+        service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
+          status: WorkerProfileStatus.RECHAZADO,
+          reason: 'x',
+        }),
+      ).rejects.toThrow('sin conexion');
     });
 
     it('solo lo puede hacer un administrador', async () => {

@@ -3,12 +3,17 @@ import { ActiveWorkKind } from './active-work.registry.js';
 
 // Estados en los que el trabajador puede corregir datos, especialidades y
 // documentos (CU-06 A2 y CU-07: completando o corrigiendo su perfil).
+// RECHAZADO no es terminal (v1.0 §5): el trabajador corrige y vuelve a
+// enviar; el rechazo y su motivo quedan en el historial. La zona sigue fija
+// fuera de BORRADOR (RF-13, decision del equipo).
 export const EDITABLE_STATUSES: readonly WorkerProfileStatus[] = [
   WorkerProfileStatus.BORRADOR,
   WorkerProfileStatus.OBSERVADO,
+  WorkerProfileStatus.RECHAZADO,
 ];
 
-// Estados desde los que el trabajador puede enviar el perfil a revision.
+// Estados desde los que el trabajador puede enviar el perfil a revision
+// (BORRADOR -> PENDIENTE; OBSERVADO o RECHAZADO -> PENDIENTE, como reenvio).
 export const SUBMITTABLE_STATUSES = EDITABLE_STATUSES;
 
 // La zona solo se elige directamente antes del primer envio (RF-13).
@@ -107,6 +112,6 @@ export const NOT_APPROVED_MESSAGES: Readonly<
     'Su perfil de trabajador tiene observaciones. Corríjalo y vuelva a enviarlo.',
   APROBADO: 'Su perfil de trabajador está aprobado.',
   RECHAZADO:
-    'Su perfil de trabajador fue rechazado y no puede ofrecer servicios.',
+    'Su perfil de trabajador fue rechazado y no puede ofrecer servicios. Puede corregirlo y volver a enviarlo a revisión.',
   SUSPENDIDO: 'Su perfil de trabajador está suspendido.',
 };

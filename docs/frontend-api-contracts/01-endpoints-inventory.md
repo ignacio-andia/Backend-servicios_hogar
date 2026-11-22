@@ -3,7 +3,7 @@
 Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí no existe: ver [09](09-gaps-and-pending-contracts.md).
 
 - Base: `http://localhost:3000/api`. Todas las rutas siguientes incluyen el prefijo `/api`.
-- Total: **60 endpoints**.
+- Total: **64 endpoints**.
 
 | Módulo | Endpoints |
 |---|---|
@@ -13,6 +13,7 @@ Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí 
 | AuditModule | 1 |
 | WorkerProfileModule | 25 |
 | OrdersModule | 13 |
+| NotificationsModule | 4 |
 
 ## Códigos comunes (no se repiten en cada fila)
 
@@ -86,15 +87,15 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 |---|---|---|---|---|---|---|---|---|---|
 | 23 | POST | `/api/worker-profile` | ✅ | `CLIENTE` o `TRABAJADOR`; cuenta `ACTIVO` | — | `CreateWorkerProfileDto` (JSON) | `WorkerProfileView` (estado `BORRADOR`) | 201, 400, 401, 403, 404, 409 | 409 `"Esta cuenta ya tiene un perfil de trabajador"`; 404 zona inexistente; 400 zona inactiva; 400 categorías inexistentes o inactivas (mensaje en arreglo); 400 horarios superpuestos o inválidos (arreglo). **Otorga el rol `TRABAJADOR`.** |
 | 24 | GET | `/api/worker-profile/me` | ✅ | `TRABAJADOR` | — | — | `WorkerProfileView` | 200, 401, 403, 404 | 404 `"Aún no tiene un perfil de trabajador"` |
-| 25 | PATCH | `/api/worker-profile/me` | ✅ | `TRABAJADOR`; perfil `BORRADOR` u `OBSERVADO` | — | `UpdateWorkerProfileDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 `"Debe enviar al menos un dato a modificar"`; 403 cambiar `zoneId` fuera de `BORRADOR`; 409 `"No se puede modificar el perfil en estado X"`; 409 cambio de estado concurrente |
-| 26 | PUT | `/api/worker-profile/me/specialties` | ✅ | `TRABAJADOR`; perfil `BORRADOR` u `OBSERVADO` | — | `UpdateSpecialtiesDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 categorías inexistentes o inactivas (arreglo); 409 estado no editable |
+| 25 | PATCH | `/api/worker-profile/me` | ✅ | `TRABAJADOR`; perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO` | — | `UpdateWorkerProfileDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 `"Debe enviar al menos un dato a modificar"`; 403 cambiar `zoneId` fuera de `BORRADOR`; 409 `"No se puede modificar el perfil en estado X"`; 409 cambio de estado concurrente |
+| 26 | PUT | `/api/worker-profile/me/specialties` | ✅ | `TRABAJADOR`; perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO` | — | `UpdateSpecialtiesDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 categorías inexistentes o inactivas (arreglo); 409 estado no editable |
 | 27 | PUT | `/api/worker-profile/me/schedules` | ✅ | `TRABAJADOR`; **cualquier estado del perfil** | — | `UpdateSchedulesDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404 | 400 horarios inválidos o superpuestos (arreglo) |
-| 28 | POST | `/api/worker-profile/me/submit` | ✅ | `TRABAJADOR`; perfil `BORRADOR` u `OBSERVADO` | — | — (sin cuerpo) | `WorkerProfileView` (estado `PENDIENTE`) | 200, 401, 403, 404, 400, 409 | 400 con un arreglo de requisitos faltantes; 409 `"No se puede enviar a revisión un perfil en estado X"` |
+| 28 | POST | `/api/worker-profile/me/submit` | ✅ | `TRABAJADOR`; perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO` | — | — (sin cuerpo) | `WorkerProfileView` (estado `PENDIENTE`) | 200, 401, 403, 404, 400, 409 | 400 con un arreglo de requisitos faltantes; 409 `"No se puede enviar a revisión un perfil en estado X"`. Desde `OBSERVADO` o `RECHAZADO` es un reenvío: el historial conserva la decisión anterior y su motivo |
 | 29 | GET | `/api/worker-profile/me/status` | ✅ | `TRABAJADOR` | — | — | `WorkerStatusView` | 200, 401, 403, 404 | — |
 | 30 | GET | `/api/worker-profile/me/eligibility` | ✅ | `TRABAJADOR` | — | — | `WorkerEligibility` | 200, 401, 403 | — (nunca responde 404: sin perfil devuelve `eligible: false`) |
 | 31 | GET | `/api/worker-profile/me/documents` | ✅ | `TRABAJADOR` | — | — | `WorkerDocumentView[]` | 200, 401, 403, 404 | — |
-| 32 | POST | `/api/worker-profile/me/documents` | ✅ | `TRABAJADOR`; perfil `BORRADOR` u `OBSERVADO` | — | `multipart/form-data`: `type` + `file` | `WorkerDocumentView` | 201, 400, 401, 403, 404, 409, 413 | 400 archivo vacío o ausente, o formato no permitido; 409 estado no editable; 413 tamaño |
-| 33 | POST | `/api/worker-profile/me/documents/:documentId/replace` | ✅ | `TRABAJADOR`; perfil `BORRADOR` u `OBSERVADO`; documento propio y vigente | `documentId` | `multipart/form-data`: `file` | `WorkerDocumentView` (el nuevo) | **201**, 400, 401, 403, 404, 409, 413 | 404 `"El documento no existe"`; 409 `"Ese documento ya fue reemplazado; reemplace la versión vigente"` |
+| 32 | POST | `/api/worker-profile/me/documents` | ✅ | `TRABAJADOR`; perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO` | — | `multipart/form-data`: `type` + `file` | `WorkerDocumentView` | 201, 400, 401, 403, 404, 409, 413 | 400 archivo vacío o ausente, o formato no permitido; 409 estado no editable; 413 tamaño |
+| 33 | POST | `/api/worker-profile/me/documents/:documentId/replace` | ✅ | `TRABAJADOR`; perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO`; documento propio y vigente | `documentId` | `multipart/form-data`: `file` | `WorkerDocumentView` (el nuevo) | **201**, 400, 401, 403, 404, 409, 413 | 404 `"El documento no existe"`; 409 `"Ese documento ya fue reemplazado; reemplace la versión vigente"` |
 | 34 | GET | `/api/worker-profile/me/documents/:documentId/download` | ✅ | `TRABAJADOR`; documento propio (cualquier estado) | `documentId` | — | Binario (`attachment`) | 200, 400, 401, 403, 404 | 404 documento ajeno o inexistente |
 | 35 | GET | `/api/worker-profile/me/zone` | ✅ | `TRABAJADOR` | — | — | `ZoneStatusView` | 200, 401, 403, 404 | — |
 | 36 | POST | `/api/worker-profile/me/zone-change-requests` | 🟡 (hoy siempre 409, ver nota) | `TRABAJADOR`; perfil `APROBADO`, `PENDIENTE`, `OBSERVADO` o `SUSPENDIDO` | — | `CreateZoneChangeRequestDto` (JSON) | `ZoneChangeRequestView` | 201, 400, 401, 403, 404, 409 | 400 `"La zona solicitada es su zona actual"`; 400 zona inactiva; 409 con un **arreglo** de motivos (ver `ZoneChangeBlocker`); 409 `"Ya tiene una solicitud de cambio de zona pendiente"` |
@@ -135,3 +136,14 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 > **Nota (#42):** con más de 10 archivos en total, multer rechaza la petición con 400 (`LIMIT_FILE_COUNT`, mensaje de multer en inglés). Entre 4 y 10 fotos, el service responde 400 con el mensaje en español.
 >
 > **No existen** endpoints de ofertas, historial de estados del pedido, vista administrativa de pedidos, asignación de trabajador ni "Cancelar trabajo".
+
+## NotificationsModule (`/api/notifications`)
+
+| # | Método | Ruta | Estado | Acceso | Params / Query | Entrada | Respuesta | Códigos | Errores de negocio |
+|---|---|---|---|---|---|---|---|---|---|
+| 61 | GET | `/api/notifications` | ✅ | JWT (cualquier rol); solo las propias | Query: `unread?` (`true` o `false`), `page?`, `limit?` (≤ 100) | `ListNotificationsQueryDto` | `Paginated<NotificationView>` | 200, 400, 401 | 400 `"unread debe ser true o false"`; 400 si se envía `userId` u otra propiedad no declarada |
+| 62 | GET | `/api/notifications/unread-count` | ✅ | JWT; solo las propias | — | — | `{ unread: number }` | 200, 401 | — |
+| 63 | PATCH | `/api/notifications/:notificationId/read` | ✅ | JWT; notificación propia | `notificationId` (UUID) | — (sin cuerpo) | `NotificationView` | 200, 400, 401, 404 | 404 `"La notificación no existe"` si es ajena o no existe. Idempotente: conserva el primer `readAt` |
+| 64 | PATCH | `/api/notifications/read-all` | ✅ | JWT; solo las propias | — | — (sin cuerpo) | `{ updated: number }` | 200, 401 | — |
+
+> **Nota (#61–#64):** el destinatario sale siempre del token; ninguna ruta acepta un `userId`. Una cuenta `SUSPENDIDO` o `INACTIVO` responde 401, como en el resto de la API. **No hay** endpoints para crear ni borrar notificaciones: las genera el backend junto con el evento que las origina (ver 04) y se conservan todas.

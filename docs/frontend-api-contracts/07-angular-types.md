@@ -240,6 +240,31 @@ export interface ChangeWorkerProfileStatusRequest {
   reason?: string; // obligatorio y no vacio salvo APROBADO; no admite null
 }
 
+// Notificaciones internas (#61-#64). Se llama AppNotification para no chocar
+// con el tipo global Notification del navegador.
+export type NotificationType =
+  | 'PERFIL_APROBADO' | 'PERFIL_OBSERVADO' | 'PERFIL_RECHAZADO' | 'PERFIL_SUSPENDIDO'
+  | 'PERFIL_REACTIVADO' | 'VERIFICACION_SOLICITADA'
+  | 'VERIFICACION_REENVIADA_OBSERVACION' | 'VERIFICACION_REENVIADA_RECHAZO';
+export type NotificationResourceType = 'PERFIL_TRABAJADOR';
+export interface AppNotification {
+  id: string;
+  type: NotificationType;
+  title: string;
+  message: string;
+  resourceType: NotificationResourceType | null;
+  resourceId: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+export interface ListNotificationsQuery {
+  unread?: boolean;
+  page?: number;
+  limit?: number; // 1 a 100, por defecto 20
+}
+export interface UnreadNotificationsCount { unread: number; }
+export interface MarkAllNotificationsReadResponse { updated: number; }
+
 export interface Schedule {
   id: string;
   dayOfWeek: WeekDay;
@@ -450,8 +475,9 @@ export interface DuplicateCheckResponse {
 | `WorkerDocumentView` | `WorkerDocument` |
 | `ZoneStatusView`, `ZoneChangeRequestView`, `AdminZoneChangeRequestView` | `ZoneStatus`, `ZoneChangeRequest`, `AdminZoneChangeRequest` |
 | `WorkerOrderView`, `OwnerOrderView`, `OrderImageView` | `WorkerOrder`, `OwnerOrder`, `OrderImage` |
-| `PaginatedOrders<T>`, `PaginatedUsers`, `PaginatedAuditLogs`, `PaginatedZoneChangeRequests` | `PaginatedResponse<T>` (misma forma) |
+| `NotificationView` | `AppNotification` (evita el `Notification` global del navegador) |
+| `PaginatedOrders<T>`, `PaginatedUsers`, `PaginatedAuditLogs`, `PaginatedZoneChangeRequests`, `PaginatedNotifications` | `PaginatedResponse<T>` (misma forma) |
 
 ## Tipos que no deben crearse todavía
 
-`Offer`, `Negotiation`, `Visit`, `AdditionalBudget`, `Schedule` de agenda (no confundir con el horario de atención), `Claim`, `Payment`, `Receipt`, `Rating`, `Notification`, `PublicWorkerProfile`, `OrderTimeline`/historial de pedido, `AdminOrder`. **No tienen contrato** (ver 09).
+`Offer`, `Negotiation`, `Visit`, `AdditionalBudget`, `Schedule` de agenda (no confundir con el horario de atención), `Claim`, `Payment`, `Receipt`, `Rating`, `PublicWorkerProfile`, `OrderTimeline`/historial de pedido, `AdminOrder`. **No tienen contrato** (ver 09).

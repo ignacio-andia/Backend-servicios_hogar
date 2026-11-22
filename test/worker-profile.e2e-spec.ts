@@ -1891,5 +1891,262 @@ describe('WorkerProfileModule (e2e)', () => {
         expect(await accessLogs()).toHaveLength(before);
       });
     });
+
+    describe('T3.1: corrección y reenvío de un perfil RECHAZADO', () => {
+      const REASON = `Antecedentes ilegibles ${RUN_ID}`;
+      let rejected: Awaited<ReturnType<typeof newCandidate>>;
+      let docId: string;
+      const asWorker = (
+        method: 'get' | 'patch' | 'put' | 'post',
+        url: string,
+      ) => http()[method](url).set('Authorization', auth(rejected.user));
+      const statusOf = async () =>
+        (
+          await prisma.workerProfile.findUniqueOrThrow({
+            where: { id: rejected.profileId },
+          })
+        ).status;
+
+      beforeAll(async () => {
+        rejected = await newCandidate('rechazado-reenvio');
+        await decide(rejected.profileId, {
+          status: WorkerProfileStatus.RECHAZADO,
+          reason: REASON,
+        }).expect(200);
+      });
+
+      it('el trabajador ve el motivo del rechazo y que puede corregir y reenviar', async () => {
+        const status = await asWorker('get', `${BASE}/me/status`).expect(200);
+        expect(status.body).toMatchObject({
+          status: WorkerProfileStatus.RECHAZADO,
+          statusReason: REASON,
+        });
+        const eligibility = await asWorker(
+          'get',
+          `${BASE}/me/eligibility`,
+        ).expect(200);
+        expect(eligibility.body).toMatchObject({
+          eligible: false,
+          status: WorkerProfileStatus.RECHAZADO,
+          reason: REASON,
+        });
+        expect(eligibility.body.message).toContain(
+          'Puede corregirlo y volver a enviarlo a revisión',
+        );
+        const profile = await asWorker('get', `${BASE}/me`).expect(200);
+        expect(profile.body).toMatchObject({ canEdit: true, canSubmit: true });
+      });
+
+      it('rechazado no recibe pedidos', async () => {
+        await asWorker('get', '/api/orders/available').expect(403);
+      });
+
+      it('corrige datos, especialidades, horarios y documentos; la zona sigue fija', async () => {
+        await asWorker('patch', `${BASE}/me`)
+          .send({ yearsOfExperience: 9, description: 'Corregí mis datos' })
+          .expect(200);
+        await asWorker('put', `${BASE}/me/specialties`)
+          .send({ categoryIds: [catA.id, catB.id] })
+          .expect(200);
+        await asWorker('put', `${BASE}/me/schedules`)
+          .send({
+            schedules: [
+              { dayOfWeek: 'MARTES', startTime: '09:00', endTime: '13:00' },
+            ],
+          })
+          .expect(200);
+        const uploaded = await upload(
+          rejected.user,
+          'ANTECEDENTES',
+          PDF,
+          'antecedentes.pdf',
+        ).expect(201);
+        docId = uploaded.body.id;
+        await asWorker('post', `${BASE}/me/documents/${docId}/replace`)
+          .attach('file', PNG, { filename: 'antecedentes-legibles.png' })
+          .expect(201);
+        // La zona solo se cambia en BORRADOR (RF-13).
+        await asWorker('patch', `${BASE}/me`)
+          .send({ zoneId: zoneB.id })
+          .expect(403);
+
+        const profile = await asWorker('get', `${BASE}/me`).expect(200);
+        expect(profile.body).toMatchObject({
+          status: WorkerProfileStatus.RECHAZADO,
+          yearsOfExperience: 9,
+          zone: { id: zoneA.id },
+        });
+        expect(
+          profile.body.specialties.map((s: { id: string }) => s.id).sort(),
+        ).toEqual([catA.id, catB.id].sort());
+      });
+
+      it('no puede cambiar su estado ni decidir sobre su perfil', async () => {
+        await asWorker('patch', `${BASE}/me`)
+          .send({ status: WorkerProfileStatus.APROBADO })
+          .expect(400);
+        await asWorker(
+          'patch',
+          `${BASE}/admin/profiles/${rejected.profileId}/status`,
+        )
+          .send({ status: WorkerProfileStatus.APROBADO })
+          .expect(403);
+        expect(await statusOf()).toBe(WorkerProfileStatus.RECHAZADO);
+      });
+
+      it('otro usuario no puede modificar el perfil ni sus documentos', async () => {
+        // Otro trabajador tambien RECHAZADO (editable): asi el 404 viene de la
+        // pertenencia del documento y no del estado de su propio perfil.
+        const other = await newCandidate('otro-reenvio');
+        await decide(other.profileId, {
+          status: WorkerProfileStatus.RECHAZADO,
+          reason: 'Otro motivo',
+        }).expect(200);
+        // Las rutas `me` actúan sobre el perfil del token: un cliente sin
+        // rol de trabajador no entra y otro trabajador no ve este documento.
+        await http()
+          .patch(`${BASE}/me`)
+          .set('Authorization', auth(client))
+          .send({ yearsOfExperience: 1 })
+          .expect(403);
+        await http()
+          .post(`${BASE}/me/documents/${docId}/replace`)
+          .set('Authorization', auth(other.user))
+          .attach('file', PDF, { filename: 'intruso.pdf' })
+          .expect(404);
+        const profile = await prisma.workerProfile.findUniqueOrThrow({
+          where: { id: rejected.profileId },
+        });
+        expect(profile.yearsOfExperience).toBe(9);
+      });
+
+      it('no reenvía un perfil incompleto (400) y sigue RECHAZADO', async () => {
+        await http()
+          .patch(`/api/users/${rejected.user.id}`)
+          .set('Authorization', auth(rejected.user))
+          .send({ phone: '' })
+          .expect(200);
+
+        const res = await asWorker('post', `${BASE}/me/submit`).expect(400);
+        expect(res.body.message).toEqual([
+          'Registre un teléfono de contacto en su cuenta',
+        ]);
+        expect(await statusOf()).toBe(WorkerProfileStatus.RECHAZADO);
+
+        await http()
+          .patch(`/api/users/${rejected.user.id}`)
+          .set('Authorization', auth(rejected.user))
+          .send({ phone: '70000011' })
+          .expect(200);
+      });
+
+      it('reenvía a PENDIENTE conservando el rechazo en el historial', async () => {
+        const auditBefore = await prisma.adminAuditLog.count({
+          where: { entityId: rejected.profileId },
+        });
+
+        const res = await asWorker('post', `${BASE}/me/submit`).expect(200);
+        expect(res.body.status).toBe(WorkerProfileStatus.PENDIENTE);
+
+        const status = await asWorker('get', `${BASE}/me/status`).expect(200);
+        expect(status.body.status).toBe(WorkerProfileStatus.PENDIENTE);
+        // El motivo vigente ya no es el del rechazo, pero el rechazo sigue.
+        expect(status.body.statusReason).toBeNull();
+        expect(status.body.history.slice(0, 2)).toMatchObject([
+          {
+            fromStatus: WorkerProfileStatus.RECHAZADO,
+            toStatus: WorkerProfileStatus.PENDIENTE,
+            reason: null,
+            changedBy: 'TRABAJADOR',
+          },
+          {
+            fromStatus: WorkerProfileStatus.PENDIENTE,
+            toStatus: WorkerProfileStatus.RECHAZADO,
+            reason: REASON,
+            changedBy: 'ADMINISTRADOR',
+          },
+        ]);
+
+        // Entrada nueva en el historial, con quien envia y la fecha.
+        const resubmission =
+          await prisma.workerProfileStatusHistory.findFirstOrThrow({
+            where: {
+              profileId: rejected.profileId,
+              fromStatus: WorkerProfileStatus.RECHAZADO,
+            },
+          });
+        expect(resubmission).toMatchObject({
+          toStatus: WorkerProfileStatus.PENDIENTE,
+          changedById: rejected.user.id,
+        });
+        expect(resubmission.createdAt).toBeInstanceOf(Date);
+        // La decision de rechazo sigue intacta en la bitacora administrativa
+        // y el reenvio no se registra alli (decision del equipo).
+        expect(
+          await prisma.adminAuditLog.count({
+            where: { entityId: rejected.profileId },
+          }),
+        ).toBe(auditBefore);
+        expect(
+          await prisma.adminAuditLog.findFirst({
+            where: {
+              entityId: rejected.profileId,
+              action: AuditAction.CAMBIO_ESTADO,
+            },
+          }),
+        ).toMatchObject({
+          details: {
+            from: WorkerProfileStatus.PENDIENTE,
+            to: WorkerProfileStatus.RECHAZADO,
+            reason: REASON,
+          },
+        });
+      });
+
+      it('pendiente de revisión no recibe pedidos y conserva su cuenta', async () => {
+        await asWorker('get', '/api/orders/available').expect(403);
+        const account = await app.get(UsersService).findById(rejected.user.id);
+        expect(account.status).toBe(UserStatus.ACTIVO);
+        expect(account.roles).toEqual(
+          expect.arrayContaining([RoleName.CLIENTE, RoleName.TRABAJADOR]),
+        );
+      });
+
+      it('el rechazo y su motivo no son visibles para otros usuarios', async () => {
+        const other = await newCandidate('mirador');
+        for (const path of ['/me', '/me/status', '/me/eligibility']) {
+          const res = await http()
+            .get(`${BASE}${path}`)
+            .set('Authorization', auth(other.user))
+            .expect(200);
+          expect(JSON.stringify(res.body)).not.toContain(REASON);
+        }
+        await http()
+          .get(`${BASE}/admin/profiles/${rejected.profileId}`)
+          .set('Authorization', auth(client))
+          .expect(403);
+        // El administrador sí ve el historial completo para la nueva revisión.
+        const detail = await http()
+          .get(`${BASE}/admin/profiles/${rejected.profileId}`)
+          .set('Authorization', auth(admin))
+          .expect(200);
+        expect(detail.body.history[1]).toMatchObject({
+          toStatus: WorkerProfileStatus.RECHAZADO,
+          reason: REASON,
+        });
+        expect(detail.body.allowedDecisions).toEqual([
+          WorkerProfileStatus.APROBADO,
+          WorkerProfileStatus.OBSERVADO,
+          WorkerProfileStatus.RECHAZADO,
+        ]);
+      });
+
+      it('una nueva aprobación lo habilita para recibir pedidos', async () => {
+        await decide(rejected.profileId, {
+          status: WorkerProfileStatus.APROBADO,
+        }).expect(200);
+        await asWorker('get', '/api/orders/available').expect(200);
+      });
+    });
   });
 });

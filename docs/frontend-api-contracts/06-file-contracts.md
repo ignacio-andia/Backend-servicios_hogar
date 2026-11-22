@@ -14,7 +14,7 @@
 | Tamaño máximo | 5 MB por defecto (`WORKER_DOCUMENT_MAX_MB`, tope 20) | 10 MB por foto (`ORDER_IMAGE_MAX_MB`, tope 25) y 50 megapíxeles |
 | Cantidad | 1 por petición | Al crear, 1 a 3 (`ORDER_MIN_IMAGES` y `ORDER_MAX_IMAGES`). Total del pedido entre el mínimo y el máximo |
 | Procesamiento | Se guarda tal cual, con nombre aleatorio | Se reorienta según EXIF, se convierte a **WebP sRGB** (máximo 1600 px de lado, calidad 80) más una miniatura de 400 px. Se eliminan EXIF, GPS, XMP e ICC |
-| Estado requerido | Perfil `BORRADOR` u `OBSERVADO` para subir o reemplazar (409). Descargar en cualquier estado | Pedido `PUBLICADO` (sin vencer) o `EN_NEGOCIACION` para subir, reemplazar o borrar (409) |
+| Estado requerido | Perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO` para subir o reemplazar (409). Descargar en cualquier estado | Pedido `PUBLICADO` (sin vencer) o `EN_NEGOCIACION` para subir, reemplazar o borrar (409) |
 | Respuesta de la subida | `WorkerDocumentView` (201) | Crear: `OrderWithWarnings` (201). Agregar: `OwnerOrderView` (201). Reemplazar: `OwnerOrderView` (200). Borrar: `OwnerOrderView` (200) |
 
 ## Errores

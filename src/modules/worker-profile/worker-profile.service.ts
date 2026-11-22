@@ -17,6 +17,7 @@ import {
 import type { WeekDay } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import {
   CatalogItem,
   CatalogKind,
@@ -30,6 +31,10 @@ import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
 import { UpdateWorkerProfileDto } from './dto/update-worker-profile.dto.js';
 import { WorkerActiveWorkRegistry } from './active-work.registry.js';
 import { normalizeSchedules, toTime } from './schedules.js';
+import {
+  decisionNotification,
+  submissionNotification,
+} from './worker-profile.notifications.js';
 import {
   ADMIN_TRANSITIONS,
   EDITABLE_STATUSES,
@@ -239,6 +244,7 @@ export class WorkerProfileService {
     private readonly catalogs: CatalogsService,
     private readonly audit: AuditService,
     private readonly activeWork: WorkerActiveWorkRegistry,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -400,7 +406,11 @@ export class WorkerProfileService {
     return this.getOwn(userId);
   }
 
-  /** Envia (o reenvia tras una observacion) el perfil: pasa a PENDIENTE. */
+  /**
+   * Envia (o reenvia tras una observacion o un rechazo) el perfil: pasa a
+   * PENDIENTE. En la misma transaccion avisa a los administradores activos,
+   * salvo a quien envia (no se notifica a si mismo).
+   */
   async submit(userId: string): Promise<WorkerProfileView> {
     const profile = await this.getOwnRecord(this.prisma, userId);
     if (!SUBMITTABLE_STATUSES.includes(profile.status)) {
@@ -428,6 +438,12 @@ export class WorkerProfileService {
           changedById: userId,
         },
       });
+      await this.notifications.createForRole(
+        RoleName.ADMINISTRADOR,
+        submissionNotification(profile.id, profile.status),
+        { excludeUserIds: [userId] },
+        tx,
+      );
     });
     return this.getOwn(userId);
   }
@@ -631,7 +647,8 @@ export class WorkerProfileService {
   /**
    * Cambio de estado administrativo (aprobar, observar, rechazar, suspender,
    * reactivar). Lo usara el modulo de verificacion; aqui no tiene endpoint.
-   * Registra historial y bitacora en la misma transaccion.
+   * Registra historial, bitacora y la notificacion al trabajador en la misma
+   * transaccion: si alguno falla, el cambio de estado se revierte.
    */
   async changeStatusByAdmin(
     adminId: string,
@@ -690,6 +707,11 @@ export class WorkerProfileService {
           entityId: profileId,
           details: { from: profile.status, to: status, reason: cleanReason },
         },
+        tx,
+      );
+      await this.notifications.create(
+        profile.userId,
+        decisionNotification(profileId, profile.status, status, cleanReason),
         tx,
       );
     });

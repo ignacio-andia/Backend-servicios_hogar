@@ -44,6 +44,7 @@ model User {
   ordersAsClient       Order[]                      @relation("OrderClient")
   ordersAsWorker       Order[]                      @relation("OrderAssignedWorker")
   orderStatusChanges   OrderStatusHistory[]
+  notifications        Notification[]
 
   @@index([status])
   @@map("users")
@@ -424,4 +425,45 @@ model PendingFileDeletion {
 
   @@index([nextAttemptAt])
   @@map("pending_file_deletions")
+}
+
+/// Tipos de notificacion interna (T3.2). Por ahora solo eventos de la
+/// verificacion de perfiles de trabajador.
+enum NotificationType {
+  /// Para el trabajador: decision administrativa sobre su perfil.
+  PERFIL_APROBADO
+  PERFIL_OBSERVADO
+  PERFIL_RECHAZADO
+  PERFIL_SUSPENDIDO
+  PERFIL_REACTIVADO
+  /// Para los administradores: perfil enviado a verificacion.
+  VERIFICACION_SOLICITADA
+  VERIFICACION_REENVIADA_OBSERVACION
+  VERIFICACION_REENVIADA_RECHAZO
+}
+
+/// Recurso al que apunta una notificacion (para navegar desde la interfaz).
+enum NotificationResourceType {
+  PERFIL_TRABAJADOR
+}
+
+/// Notificacion interna de un usuario (v1.0 §6). Se conservan todas: no hay
+/// borrado automatico. Solo cambia readAt al marcarla como leida.
+model Notification {
+  id           String                    @id @default(uuid()) @db.Uuid
+  userId       String                    @map("user_id") @db.Uuid
+  type         NotificationType
+  title        String                    @db.VarChar(150)
+  message      String                    @db.VarChar(2000)
+  resourceType NotificationResourceType? @map("resource_type")
+  resourceId   String?                   @map("resource_id") @db.Uuid
+  readAt       DateTime?                 @map("read_at") @db.Timestamptz(3)
+  createdAt    DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  // Listado del usuario ordenado por fecha y conteo o filtro de no leidas.
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, readAt])
+  @@map("notifications")
 }

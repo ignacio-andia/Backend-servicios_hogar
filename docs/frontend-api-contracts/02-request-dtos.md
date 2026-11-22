@@ -194,7 +194,7 @@ Ejemplo inválido: `"schedules": [{ "dayOfWeek": "LUNES", "startTime": "10:00", 
 | `description` | string \| null | Omitible, admite null | ≤ 1000 | `null` o `""` borra la descripción |
 | `zoneId` | string | Omitible, **no admite null** | UUID | Solo se puede **cambiar** en `BORRADOR` (403 en otro estado); enviar la misma zona no cuenta como cambio |
 
-Hay que enviar al menos una propiedad (400). El perfil debe estar en `BORRADOR` u `OBSERVADO` (409).
+Hay que enviar al menos una propiedad (400). El perfil debe estar en `BORRADOR`, `OBSERVADO` o `RECHAZADO` (409). En `RECHAZADO` se corrigen los datos, pero la zona sigue fija (403), igual que en `OBSERVADO`.
 
 ### `UpdateSpecialtiesDto`: `PUT /api/worker-profile/me/specialties` (JSON)
 
@@ -355,3 +355,17 @@ Ejemplos inválidos de `budgetAmount`: `"0"`, `"0.00"`, `"-5"`, `"150,50"`, `"1.
 | Propiedad | Tipo | Omitir | Valores |
 |---|---|---|---|
 | `variant` | `'full' \| 'thumb'` | Omitible (`full`) | Otro valor responde 400 `"variant debe ser full o thumb"` |
+
+---
+
+## NotificationsModule
+
+### `ListNotificationsQueryDto`: `GET /api/notifications` (query)
+
+| Propiedad | Tipo | Omitir | Restricciones |
+|---|---|---|---|
+| `unread` | boolean | Omitible (todas) | `true`: solo no leídas; `false`: solo leídas. Otro valor responde 400 `"unread debe ser true o false"` |
+| `page` | number | Omitible (1) | ≥ 1 |
+| `limit` | number | Omitible (20) | 1 a 100 |
+
+No acepta `userId` ni otras propiedades (400). `PATCH /api/notifications/:notificationId/read` y `PATCH /api/notifications/read-all` no llevan cuerpo.

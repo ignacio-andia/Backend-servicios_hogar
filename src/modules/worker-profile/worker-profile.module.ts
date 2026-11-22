@@ -5,6 +5,7 @@ import { PrismaModule } from '../../prisma/prisma.module.js';
 import { StorageModule } from '../../storage/storage.module.js';
 import { AuditModule } from '../audit/audit.module.js';
 import { CatalogsModule } from '../catalogs/catalogs.module.js';
+import { NotificationsModule } from '../notifications/notifications.module.js';
 import { UsersModule } from '../users/users.module.js';
 import { WorkerActiveWorkRegistry } from './active-work.registry.js';
 import { ApprovedWorkerGuard } from './approved-worker.guard.js';
@@ -21,6 +22,7 @@ import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
     UsersModule,
     CatalogsModule,
     AuditModule,
+    NotificationsModule,
     StorageModule,
     // Archivos en memoria y con limite de tamano: multer corta la subida
     // antes de leer de mas. El almacenamiento definitivo es FileStorage.

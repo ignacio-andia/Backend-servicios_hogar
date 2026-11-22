@@ -52,6 +52,7 @@ Columnas:
 | `GET /catalogs/{categories,zones}[/:id]` | ✔ | ✔ | ✔ | ✔ | ✔ | Solo activos |
 | `/catalogs/admin/*`, `POST/PATCH /catalogs/*` | ✘ | ✘ | ✘ | ✘ | ✔ | — |
 | `GET /audit-logs` | ✘ | ✘ | ✘ | ✘ | ✔ | — |
+| `/notifications/*` | ✘ | propio | propio | propio | propio | El destinatario sale del token (no se acepta `userId`). Una notificación ajena responde 404 |
 | `POST /worker-profile` | ✘ | ✔ | ✔ | — | ✘ (salvo que también tenga `CLIENTE`) | Cuenta `ACTIVO`; un solo perfil por cuenta |
 | `/worker-profile/me/*` | ✘ | ✘ (403 hasta tener el rol) | propio | propio | ✘ (salvo que también tenga `TRABAJADOR`) | Ver los estados en 04 |
 | `/worker-profile/admin/*` | ✘ | ✘ | ✘ | ✘ | ✔ | Un administrador no resuelve su propia solicitud de zona ni decide sobre su propio perfil (403) |
@@ -67,7 +68,7 @@ Columnas:
 | Datos de una cuenta (`PublicUser`) | ✘ | la propia | ✘ | la propia | todas |
 | Teléfono y correo de un trabajador | ✘ | ✘ | ✘ | el propio | ✔ (en solicitudes de zona y usuarios) |
 | Perfil de trabajador completo | ✘ | — | ✘ | el propio | ✔ listado (#56) y detalle (#57), **salvo el propio** |
-| Motivo de observación, rechazo o suspensión | ✘ | — | ✘ | solo el propio (`/me/status`, `/me/eligibility`) | lo escribe; lo ve en el detalle (#57) y en la bitácora (#22) |
+| Motivo de observación, rechazo o suspensión | ✘ | — | ✘ | solo el propio (`/me/status`, `/me/eligibility` y su notificación) | lo escribe; lo ve en el detalle (#57) y en la bitácora (#22) |
 | Quién decidió cada cambio de estado | ✘ | — | ✘ | solo `TRABAJADOR` o `ADMINISTRADOR` | nombre e id (#57) |
 | Documentos del trabajador | ✘ | — | ✘ | los propios (listar y descargar) | ✔ listar, ver y descargar (#58–#60), **salvo los de su propio perfil**; cada acceso queda en la bitácora |
 | Pedido (datos generales) | ✘ | ✔ | ✘ | solo los visibles | ✘ (**no hay endpoint**) |
@@ -76,6 +77,7 @@ Columnas:
 | Fotos del pedido | ✘ | ✔ | ✘ | solo de pedidos visibles | ✘ |
 | Historial de estados del pedido | ✘ | ✘ (no expuesto) | ✘ | ✘ | ✘ |
 | Bitácora | ✘ | ✘ | ✘ | ✘ | ✔ |
+| Notificaciones | ✘ | las propias | ✘ | las propias | las propias (las de verificación no incluyen datos personales del trabajador ni el motivo) |
 
 ### Regla de visibilidad de pedidos para trabajadores (RF-17)
 
@@ -94,9 +96,9 @@ Si no se cumple alguna condición, responde **404** (igual que un pedido inexist
 
 | Acción | Estado requerido | Respuesta si no se cumple |
 |---|---|---|
-| Editar el perfil, especialidades o documentos | Perfil `BORRADOR` u `OBSERVADO` | 409 |
+| Editar el perfil, especialidades o documentos | Perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO` | 409 |
 | Cambiar la zona directamente | Perfil `BORRADOR` | 403 (hay que usar una solicitud) |
-| Enviar a revisión | `BORRADOR` u `OBSERVADO`, sin requisitos pendientes | 409 o 400 |
+| Enviar a revisión (o reenviar) | `BORRADOR`, `OBSERVADO` o `RECHAZADO`, sin requisitos pendientes | 409 o 400 |
 | Solicitar cambio de zona | Perfil `APROBADO`, `PENDIENTE`, `OBSERVADO` o `SUSPENDIDO`; sin solicitud pendiente; sin trabajo activo; fuentes de verificación disponibles | 409 con un arreglo de motivos |
 | Editar un pedido o sus fotos, cancelarlo | Estado efectivo `PUBLICADO` o `EN_NEGOCIACION` | 409 (mensaje según el estado) |
 | Decidir una solicitud de zona | `PENDIENTE`; al aprobar, zona destino activa y zona del perfil sin cambios | 409 |
