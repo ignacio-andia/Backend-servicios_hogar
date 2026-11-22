@@ -6,7 +6,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 
 | # | Hallazgo | Impacto en Angular | Prioridad |
 |---|---|---|---|
-| A1 | **Parcialmente resuelto (T2.2).** Ya existen el listado (#56), el detalle (#57) y la decisión (#55). Faltan la **consulta y descarga de documentos** por el administrador (con bitácora, RF-56) y la **notificación** al trabajador | La pantalla de verificación funciona, pero el administrador todavía no puede abrir los documentos del trabajador | **Alta** |
+| A1 | **Resuelto salvo notificaciones (T2.2 y T2.3).** Listado (#56), detalle (#57), documentos con bitácora (#58–#60) y decisión (#55). Falta la **notificación** al trabajador | La verificación funciona de punta a punta; el trabajador se entera del resultado consultando `/me/status` | Media |
 | A2 | El commit `207f2cb` (OrdersModule, cambio de zona, cola de archivos y 2 migraciones) **no está publicado** en `origin/main` | Quien clone el repositorio remoto no tiene esos endpoints | **Alta** (se resuelve con un push) |
 | A3 | **Resuelto (T2.1).** El primer `ADMINISTRADOR` se crea con el comando interno `npm run admin:create-first` (README, sección H, paso 5). Sigue sin existir un mecanismo para administradores adicionales | Para probar las pantallas de administración basta con ejecutar el comando una vez | Baja |
 | A4 | Descargas (fotos y documentos) solo con Bearer | `<img src>` no funciona: hay que descargar como Blob (ver 06) | Media |
@@ -46,7 +46,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | D1 | Historial de estados del pedido (se guarda, no se expone) | Línea de tiempo (RF-32) |
 | D2 | `assignedWorkerId` u otro dato del trabajador asignado en `OwnerOrderView` | Mostrar con quién se acordó (cuando existan acuerdos) |
 | D3 | Datos del trabajador para el cliente o un perfil público | RF-11, RF-16 |
-| D4 | Vista de un perfil y sus documentos para el administrador | RF-10, RF-47, RF-56 |
+| D4 | **Resuelto (T2.2 y T2.3).** Vista de un perfil y sus documentos para el administrador | RF-10, RF-47, RF-56 |
 | D5 | Vista administrativa de pedidos y reportes | RF-50, RF-52 |
 | D6 | Filtros o búsqueda en `GET /users` | Administración de usuarios |
 | D7 | Configuración pública (mínimo y máximo de fotos, tamaños, vencimiento) | Hoy hay que reproducir los valores en el frontend (1–3 fotos, 10 MB, 48 h); si el backend cambia su configuración, el frontend no se entera |
@@ -59,7 +59,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 |---|---|---|
 | Logout, refresh, recuperación o cambio de contraseña (RF-01, RF-05) | ⛔ | — |
 | Administradores adicionales y gestión de roles (RF-04). El primero ya tiene comando interno (T2.1) | ⛔ | Decisión del equipo |
-| Verificación de perfiles (RF-10, RF-47) | 🟡 Listado, detalle y decisión implementados (#55–#57); faltan los documentos | Siguiente tarea de administración (T2.3) |
+| Verificación de perfiles (RF-10, RF-47) | ✅ Listado, detalle, documentos y decisión (#55–#60) | — |
 | Notificaciones de verificación al trabajador (aprobado, observado, rechazado y suspendido, con motivo privado) | ⛔ No existe módulo de notificaciones | Módulo de notificaciones internas (v1.0 §6); punto de integración: `WorkerProfileService.changeStatusByAdmin`, dentro de su transacción |
 | Nueva presentación tras un rechazo | ⛔ | T3.1 |
 | Indicación de perfil revisado (RF-12) | ❓ | Texto del docente |
@@ -94,4 +94,3 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 **Del equipo**
 - Qué pasa con las ofertas enviadas si se desactiva un catálogo o se suspende al cliente.
 - Cómo se crean administradores adicionales. El primero ya está resuelto (T2.1).
-- Qué consultas de documentos por el administrador se registran en la bitácora (ver la lista, ver o descargar).

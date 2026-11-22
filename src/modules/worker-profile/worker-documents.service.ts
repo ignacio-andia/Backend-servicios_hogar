@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -7,6 +8,8 @@ import { ConfigService } from '@nestjs/config';
 import { isUUID } from 'class-validator';
 import type { Readable } from 'node:stream';
 import {
+  AuditAction,
+  AuditEntityType,
   Prisma,
   WorkerDocumentType,
   WorkerProfileStatus,
@@ -14,6 +17,8 @@ import {
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { FileDeletionService } from '../../storage/file-deletion.service.js';
 import { FileStorage } from '../../storage/file-storage.js';
+import { AuditService } from '../audit/audit.service.js';
+import { UsersService } from '../users/users.service.js';
 import {
   documentMaxBytes,
   UploadedDocumentFile,
@@ -21,6 +26,7 @@ import {
   ValidatedDocumentFile,
 } from './document-file.js';
 import { EDITABLE_STATUSES } from './worker-profile.rules.js';
+import { assertActiveAdmin } from './worker-profile.utils.js';
 
 // Espacio del almacenamiento privado reservado a estos documentos.
 const STORAGE_NAMESPACE = 'worker-documents';
@@ -41,6 +47,11 @@ export type WorkerDocumentView = Prisma.WorkerDocumentGetPayload<{
   select: typeof DOCUMENT_SELECT;
 }>;
 
+/** Como abre un administrador un documento: queda asi en la bitacora. */
+export type AdminDocumentAccess =
+  | typeof AuditAction.VISUALIZACION_DOCUMENTO
+  | typeof AuditAction.DESCARGA_DOCUMENTO;
+
 export interface DocumentDownload {
   stream: Readable;
   mimeType: string;
@@ -60,6 +71,8 @@ export class WorkerDocumentsService {
     private readonly prisma: PrismaService,
     private readonly storage: FileStorage,
     private readonly fileDeletion: FileDeletionService,
+    private readonly users: UsersService,
+    private readonly audit: AuditService,
     config: ConfigService,
   ) {
     this.maxSizeBytes = documentMaxBytes(config);
@@ -140,22 +153,16 @@ export class WorkerDocumentsService {
     return this.open(documentId);
   }
 
-  /**
-   * Abre cualquier documento. Sin endpoint propio: lo usara el modulo de
-   * verificacion, con su propio control de acceso de administrador.
-   */
-  async open(documentId: string): Promise<DocumentDownload> {
-    const document = isUUID(documentId)
-      ? await this.prisma.workerDocument.findUnique({
-          where: { id: documentId },
-          select: {
-            storageKey: true,
-            mimeType: true,
-            originalName: true,
-            sizeBytes: true,
-          },
-        })
-      : null;
+  private async open(documentId: string): Promise<DocumentDownload> {
+    const document = await this.prisma.workerDocument.findUnique({
+      where: { id: documentId },
+      select: {
+        storageKey: true,
+        mimeType: true,
+        originalName: true,
+        sizeBytes: true,
+      },
+    });
     if (!document) {
       throw documentNotFound();
     }
@@ -165,6 +172,93 @@ export class WorkerDocumentsService {
       fileName: document.originalName,
       sizeBytes: document.sizeBytes,
     };
+  }
+
+  // ---------------------------------------------------------------------
+  // RF-56: acceso administrativo (con bitacora)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Lista los documentos (solo metadatos) de un perfil para verificarlo. La
+   * lectura y el registro en la bitacora van en la misma transaccion: si no
+   * se puede registrar el acceso, no se entregan los datos.
+   */
+  async listForAdmin(
+    adminId: string,
+    profileId: string,
+  ): Promise<WorkerDocumentView[]> {
+    await this.assertAdminCanAccess(adminId, profileId);
+    return this.prisma.$transaction(async (tx) => {
+      const documents = await tx.workerDocument.findMany({
+        where: { profileId },
+        select: DOCUMENT_SELECT,
+        orderBy: [{ type: 'asc' }, { uploadedAt: 'desc' }],
+      });
+      await this.audit.record(
+        {
+          actorId: adminId,
+          action: AuditAction.CONSULTA_DOCUMENTOS,
+          entityType: AuditEntityType.PERFIL_TRABAJADOR,
+          entityId: profileId,
+          details: { documentCount: documents.length },
+        },
+        tx,
+      );
+      return documents;
+    });
+  }
+
+  /**
+   * Abre un documento del perfil para verlo o descargarlo. El acceso se
+   * registra solo cuando ya se comprobo todo (permisos, pertenencia al perfil
+   * y que el archivo exista): un intento fallido nunca queda como exitoso.
+   * Si no se puede registrar, el archivo no se entrega.
+   */
+  async openForAdmin(
+    adminId: string,
+    profileId: string,
+    documentId: string,
+    access: AdminDocumentAccess,
+  ): Promise<DocumentDownload> {
+    await this.assertAdminCanAccess(adminId, profileId);
+    const document = await this.findOwnDocument(profileId, documentId);
+    const download = await this.open(document.id);
+    try {
+      await this.audit.record({
+        actorId: adminId,
+        action: access,
+        entityType: AuditEntityType.PERFIL_TRABAJADOR,
+        entityId: profileId,
+        details: { documentId: document.id, documentType: document.type },
+      });
+    } catch (error) {
+      download.stream.destroy();
+      throw error;
+    }
+    return download;
+  }
+
+  /**
+   * Solo un administrador activo, sobre un perfil existente que no sea el
+   * suyo (v1.0 §5). La identidad sale del token.
+   */
+  private async assertAdminCanAccess(
+    adminId: string,
+    profileId: string,
+  ): Promise<void> {
+    await assertActiveAdmin(this.users, adminId);
+    const profile = await this.prisma.workerProfile.findUnique({
+      where: { id: profileId },
+      select: { userId: true },
+    });
+    if (!profile) {
+      throw new NotFoundException('El perfil de trabajador no existe');
+    }
+    if (profile.userId === adminId) {
+      throw new ForbiddenException(
+        'No puede consultar los documentos de su propio perfil de trabajador',
+      );
+    }
   }
 
   private async getOwnProfile(

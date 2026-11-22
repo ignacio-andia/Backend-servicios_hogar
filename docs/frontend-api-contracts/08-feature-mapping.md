@@ -121,7 +121,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF-50 Supervisar pedidos | ⛔ | No hay vista administrativa de pedidos |
 | RF-51 Atender reclamos | ⛔ | — |
 | RF-52 Reportes | ⛔ | — |
-| RF-53 Bitácora | ✅ | #22 (catálogos, decisiones de zona y decisiones sobre perfiles, `CAMBIO_ESTADO`) |
+| RF-53 Bitácora | ✅ | #22 (catálogos, decisiones de zona, decisiones sobre perfiles con `CAMBIO_ESTADO`, y accesos a documentos) |
 | Gestión de usuarios | 🟡 | #4–#7 (sin roles ni filtros) |
 
 ## 12. Privacidad (RF-54 a RF-56)
@@ -130,6 +130,6 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 |---|---|---|
 | RF-54 Visitante solo ve información pública | 🟡 | Hoy lo único público son los catálogos (#8–#11). Todo lo demás exige sesión |
 | RF-55 Dirección exacta a quien la necesita | 🟡 ❓ | Solo la ve el cliente dueño. Para el trabajador, pendiente con el docente (no hay acuerdos todavía) |
-| RF-56 Documentación solo para administradores | 🟡 | La ve y descarga **solo el propio trabajador**; el administrador no tiene endpoint. Ningún otro rol accede |
+| RF-56 Documentación solo para administradores | ✅ | Administradores: #58–#60, con bitácora y nunca sobre su propio perfil. El trabajador ve los suyos (v1.0 §5; ❓ contradicción X2 con el texto de RF-56). Ningún otro rol accede |
 | Protección de datos en pedidos | ✅ | `WorkerOrderView` excluye la dirección, el cliente y `clientId`; aviso `POSIBLE_DATO_PERSONAL` |
 | Privacidad de fotos | ✅ | Sin metadatos; rutas autorizadas; borrado físico al cancelar |

@@ -69,7 +69,7 @@ Columnas:
 | Perfil de trabajador completo | ✘ | — | ✘ | el propio | ✔ listado (#56) y detalle (#57), **salvo el propio** |
 | Motivo de observación, rechazo o suspensión | ✘ | — | ✘ | solo el propio (`/me/status`, `/me/eligibility`) | lo escribe; lo ve en el detalle (#57) y en la bitácora (#22) |
 | Quién decidió cada cambio de estado | ✘ | — | ✘ | solo `TRABAJADOR` o `ADMINISTRADOR` | nombre e id (#57) |
-| Documentos del trabajador | ✘ | — | ✘ | los propios (listar y descargar) | ✘ (**no hay endpoint**; RF-56 pendiente) |
+| Documentos del trabajador | ✘ | — | ✘ | los propios (listar y descargar) | ✔ listar, ver y descargar (#58–#60), **salvo los de su propio perfil**; cada acceso queda en la bitácora |
 | Pedido (datos generales) | ✘ | ✔ | ✘ | solo los visibles | ✘ (**no hay endpoint**) |
 | Dirección exacta del pedido | ✘ | ✔ | ✘ | ✘ (❓ RF-55, pendiente con el docente) | ✘ |
 | Datos del cliente en el pedido | ✘ | — | ✘ | ✘ | ✘ |

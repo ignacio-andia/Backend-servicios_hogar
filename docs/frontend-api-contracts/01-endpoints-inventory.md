@@ -3,7 +3,7 @@
 Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí no existe: ver [09](09-gaps-and-pending-contracts.md).
 
 - Base: `http://localhost:3000/api`. Todas las rutas siguientes incluyen el prefijo `/api`.
-- Total: **57 endpoints**.
+- Total: **60 endpoints**.
 
 | Módulo | Endpoints |
 |---|---|
@@ -11,7 +11,7 @@ Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí 
 | UsersModule | 4 |
 | CatalogsModule | 14 |
 | AuditModule | 1 |
-| WorkerProfileModule | 22 |
+| WorkerProfileModule | 25 |
 | OrdersModule | 13 |
 
 ## Códigos comunes (no se repiten en cada fila)
@@ -105,11 +105,14 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 | 41 | GET | `/api/worker-profile/admin/inactive-zone-profiles` | ✅ | Admin | Query: `zoneId?` | `ListInactiveZoneProfilesQueryDto` | `AffectedProfile[]` | 200, 400, 401, 403 | — |
 | 56 | GET | `/api/worker-profile/admin/profiles` | ✅ | Admin activo | Query: `status?`, `zoneId?`, `categoryId?`, `page?`, `limit?` (≤ 100) | `ListAdminWorkerProfilesQueryDto` | `Paginated<AdminWorkerProfileSummary>` | 200, 400, 401, 403 | **Nunca incluye el perfil del propio administrador**. Orden: primero los enviados a revisión hace más tiempo; los nunca enviados al final |
 | 57 | GET | `/api/worker-profile/admin/profiles/:profileId` | ✅ | Admin activo; **no su propio perfil** | `profileId` (UUID) | — | `AdminWorkerProfileView` | 200, 400, 401, 403, 404 | 403 `"No puede revisar ni decidir sobre su propio perfil de trabajador"`; 404 `"El perfil de trabajador no existe"` |
+| 58 | GET | `/api/worker-profile/admin/profiles/:profileId/documents` | ✅ | Admin activo; **no su propio perfil** | `profileId` | — | `WorkerDocumentView[]` (solo metadatos) | 200, 400, 401, 403, 404 | Registra `CONSULTA_DOCUMENTOS` en la bitácora. 403 `"No puede consultar los documentos de su propio perfil de trabajador"`; 404 perfil inexistente |
+| 59 | GET | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/view` | ✅ | Igual que #58; el documento debe pertenecer a ese perfil | `profileId`, `documentId` | — | Binario (`inline`) | 200, 400, 401, 403, 404 | Registra `VISUALIZACION_DOCUMENTO`. 404 `"El documento no existe"` si es de otro perfil, no existe o falta el archivo |
+| 60 | GET | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/download` | ✅ | Igual que #59 | `profileId`, `documentId` | — | Binario (`attachment`) | 200, 400, 401, 403, 404 | Registra `DESCARGA_DOCUMENTO`. Mismos 404 que #59 |
 | 55 | PATCH | `/api/worker-profile/admin/profiles/:profileId/status` | ✅ | Admin activo; **no sobre su propio perfil** | `profileId` (UUID) | `ChangeWorkerProfileStatusDto` (JSON) | `WorkerProfileView` | 200, 400, 401, 403, 404, 409 | 400 motivo ausente o vacío (`OBSERVADO`, `RECHAZADO`, `SUSPENDIDO`) o estado no permitido; 403 `"No puede revisar ni decidir sobre su propio perfil de trabajador"`; 404 `"El perfil de trabajador no existe"`; 409 transición inválida (`"No se puede pasar un perfil de X a Y"`); 409 requisitos de aprobación no cumplidos (arreglo); 409 cambio de estado concurrente |
 
 > **Nota (#36):** hoy la solicitud de cambio de zona **siempre se bloquea** con el motivo `VERIFICACION_NO_DISPONIBLE`, porque la fuente de trabajo activo `OFERTAS` todavía no existe (OffersModule no está implementado). El endpoint, sus validaciones y la decisión del administrador funcionan.
 >
-> **Nota (#55–#57):** el flujo de revisión es listar (#56), ver el detalle (#57) y decidir (#55). Todavía **no hay** endpoints para que el administrador **vea o descargue** los documentos de un trabajador (con registro en la bitácora, RF-56): el detalle no los incluye (ver 08 y 09).
+> **Nota (#55–#60):** el flujo de revisión es listar (#56), ver el detalle (#57), revisar los documentos (#58–#60) y decidir (#55). Cada acceso **exitoso** a documentos queda en la bitácora; un intento rechazado (401, 403, 404) no deja registro.
 
 ## OrdersModule (`/api/orders`)
 

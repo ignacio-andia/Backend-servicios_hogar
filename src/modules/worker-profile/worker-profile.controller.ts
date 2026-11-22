@@ -17,7 +17,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { RoleName } from '../../generated/prisma/enums.js';
+import { AuditAction, RoleName } from '../../generated/prisma/enums.js';
 import { Auth } from '../auth/decorators/auth.decorator.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import type { PublicUser } from '../users/users.service.js';
@@ -34,7 +34,10 @@ import { UpdateSchedulesDto } from './dto/update-schedules.dto.js';
 import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
 import { UpdateWorkerProfileDto } from './dto/update-worker-profile.dto.js';
 import { UploadDocumentDto } from './dto/upload-document.dto.js';
-import type { WorkerDocumentView } from './worker-documents.service.js';
+import type {
+  DocumentDownload,
+  WorkerDocumentView,
+} from './worker-documents.service.js';
 import { WorkerDocumentsService } from './worker-documents.service.js';
 import type {
   AdminWorkerProfileView,
@@ -173,12 +176,10 @@ export class WorkerProfileController {
     @CurrentUser() user: PublicUser,
     @Param('documentId', ParseUUIDPipe) documentId: string,
   ): Promise<StreamableFile> {
-    const file = await this.documents.openOwn(user.id, documentId);
-    return new StreamableFile(file.stream, {
-      type: file.mimeType,
-      length: file.sizeBytes,
-      disposition: contentDisposition(file.fileName),
-    });
+    return toStreamable(
+      await this.documents.openOwn(user.id, documentId),
+      'attachment',
+    );
   }
 
   // RF-13: la zona es fija; los cambios se piden y los decide un administrador.
@@ -253,6 +254,57 @@ export class WorkerProfileController {
     return this.profiles.getForAdmin(admin.id, profileId);
   }
 
+  // RF-56: documentos privados de un perfil, solo para administradores y
+  // nunca los del propio perfil. Cada acceso exitoso queda en la bitacora.
+  @Get('admin/profiles/:profileId/documents')
+  @Auth(RoleName.ADMINISTRADOR)
+  listProfileDocumentsForAdmin(
+    @CurrentUser() admin: PublicUser,
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+  ): Promise<WorkerDocumentView[]> {
+    return this.documents.listForAdmin(admin.id, profileId);
+  }
+
+  @Get('admin/profiles/:profileId/documents/:documentId/view')
+  @Auth(RoleName.ADMINISTRADOR)
+  @Header('Cache-Control', 'private, no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async viewProfileDocumentForAdmin(
+    @CurrentUser() admin: PublicUser,
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+  ): Promise<StreamableFile> {
+    return toStreamable(
+      await this.documents.openForAdmin(
+        admin.id,
+        profileId,
+        documentId,
+        AuditAction.VISUALIZACION_DOCUMENTO,
+      ),
+      'inline',
+    );
+  }
+
+  @Get('admin/profiles/:profileId/documents/:documentId/download')
+  @Auth(RoleName.ADMINISTRADOR)
+  @Header('Cache-Control', 'private, no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async downloadProfileDocumentForAdmin(
+    @CurrentUser() admin: PublicUser,
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+    @Param('documentId', ParseUUIDPipe) documentId: string,
+  ): Promise<StreamableFile> {
+    return toStreamable(
+      await this.documents.openForAdmin(
+        admin.id,
+        profileId,
+        documentId,
+        AuditAction.DESCARGA_DOCUMENTO,
+      ),
+      'attachment',
+    );
+  }
+
   // RF-10 y RF-47: el administrador aprueba, observa, rechaza o suspende un
   // perfil. Reutiliza changeStatusByAdmin: transiciones validas, motivo
   // obligatorio, requisitos de aprobacion, historial y bitacora. El
@@ -277,8 +329,23 @@ export class WorkerProfileController {
   }
 }
 
-/** Descarga como adjunto, con nombre ASCII de respaldo y nombre UTF-8. */
-function contentDisposition(fileName: string): string {
+/** Respuesta binaria del documento: en linea (ver) o como adjunto (descargar). */
+function toStreamable(
+  file: DocumentDownload,
+  disposition: 'inline' | 'attachment',
+): StreamableFile {
+  return new StreamableFile(file.stream, {
+    type: file.mimeType,
+    length: file.sizeBytes,
+    disposition: contentDisposition(disposition, file.fileName),
+  });
+}
+
+/** Nombre ASCII de respaldo y nombre UTF-8. */
+function contentDisposition(
+  disposition: 'inline' | 'attachment',
+  fileName: string,
+): string {
   const ascii = fileName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
-  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+  return `${disposition}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }

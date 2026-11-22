@@ -99,6 +99,8 @@ model Zone {
   @@map("zones")
 }
 
+/// Acciones de la bitacora. Las tres ultimas registran el acceso de un
+/// administrador a los documentos privados de un trabajador (RF-56).
 enum AuditAction {
   CREACION
   EDICION
@@ -106,6 +108,9 @@ enum AuditAction {
   CAMBIO_ESTADO
   APROBACION
   RECHAZO
+  CONSULTA_DOCUMENTOS
+  VISUALIZACION_DOCUMENTO
+  DESCARGA_DOCUMENTO
 }
 
 enum AuditEntityType {

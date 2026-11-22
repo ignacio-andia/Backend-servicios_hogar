@@ -49,7 +49,8 @@ Si la operación falla después de guardar el archivo (por ejemplo, un error de 
 - Los archivos se guardan en una carpeta privada (`FILE_STORAGE_DIR`) con nombres aleatorios. **Ninguna respuesta expone rutas ni claves de almacenamiento.**
 - Solo se descargan por las rutas autorizadas anteriores, que verifican el token, el rol y la pertenencia o visibilidad. Un recurso que no corresponde responde 404.
 - Las fotos de un pedido cancelado se borran físicamente. Las de un pedido vencido se conservan (❓ retención pendiente con el docente).
-- Los administradores **no** pueden descargar documentos de trabajadores: no hay endpoint (RF-56 pendiente).
+- Los administradores consultan los documentos con `GET /api/worker-profile/admin/profiles/:profileId/documents` y los abren con `…/documents/:documentId/view` (`inline`) o `…/download` (`attachment`). Nunca los de su propio perfil (403). El documento debe pertenecer a ese perfil (404 si no). Cada acceso exitoso queda en la bitácora (`CONSULTA_DOCUMENTOS`, `VISUALIZACION_DOCUMENTO`, `DESCARGA_DOCUMENTO`); un intento rechazado, o un archivo que falta en el almacenamiento (404), no deja registro.
+- Para Angular, `view` y `download` se piden igual (con `HttpClient` y `responseType: 'blob'`). Use `view` para mostrar el documento en pantalla y `download` para guardarlo: cada uno queda registrado con su acción.
 
 ## Implicaciones para Angular
 

@@ -15,6 +15,7 @@ import {
   RoleName,
   UserStatus,
   WeekDay,
+  WorkerDocumentType,
   WorkerProfileStatus,
   ZoneChangeRequestStatus,
 } from '../src/generated/prisma/client.js';
@@ -1631,6 +1632,263 @@ describe('WorkerProfileModule (e2e)', () => {
       it('responde 404 si el perfil no existe y 400 si el id no es UUID', async () => {
         await detail(randomUUID()).expect(404);
         await detail('no-es-uuid').expect(400);
+      });
+    });
+
+    describe('RF-56: documentos del trabajador para administradores', () => {
+      const ACCESS_ACTIONS = [
+        AuditAction.CONSULTA_DOCUMENTOS,
+        AuditAction.VISUALIZACION_DOCUMENTO,
+        AuditAction.DESCARGA_DOCUMENTO,
+      ];
+      const docsUrl = (profileId: string) =>
+        `${BASE}/admin/profiles/${profileId}/documents`;
+      const getAs = (url: string, user: PublicUser | null = admin) => {
+        const req = http().get(url).responseType('blob');
+        return user ? req.set('Authorization', auth(user)) : req;
+      };
+      /** Registros de acceso a documentos (de cualquier perfil) en la bitácora. */
+      const accessLogs = (entityId?: string) =>
+        prisma.adminAuditLog.findMany({
+          where: {
+            action: { in: ACCESS_ACTIONS },
+            ...(entityId ? { entityId } : {}),
+          },
+          orderBy: { createdAt: 'asc' },
+        });
+
+      /** Candidato con documentos subidos antes de enviar a revisión. */
+      const newCandidateWithDocs = async (
+        name: string,
+        docs: { type: string; content: Buffer; file: string }[],
+      ) => {
+        const user = await app.get(UsersService).create({
+          firstName: name,
+          lastName: 'E2E',
+          email: `docs-${name}-${RUN_ID}${EMAIL_DOMAIN}`,
+          passwordHash: 'hash',
+          phone: '70000012',
+        });
+        created.push(user);
+        const profile = await profiles.create(user.id, {
+          ...validProfile(),
+          schedules: [
+            { dayOfWeek: WeekDay.LUNES, startTime: '08:00', endTime: '12:00' },
+          ],
+        });
+        const docIds: string[] = [];
+        for (const doc of docs) {
+          const res = await upload(
+            user,
+            doc.type,
+            doc.content,
+            doc.file,
+          ).expect(201);
+          docIds.push(res.body.id);
+        }
+        await profiles.submit(user.id);
+        return { user, profileId: profile.id, docIds };
+      };
+
+      let owner: Awaited<ReturnType<typeof newCandidateWithDocs>>;
+      let other: Awaited<ReturnType<typeof newCandidateWithDocs>>;
+
+      beforeAll(async () => {
+        owner = await newCandidateWithDocs('duenio', [
+          { type: 'IDENTIDAD', content: PDF, file: 'cédula.pdf' },
+          { type: 'ANTECEDENTES', content: PNG, file: 'antecedentes.png' },
+        ]);
+        other = await newCandidateWithDocs('otro', [
+          { type: 'IDENTIDAD', content: PDF, file: 'otro.pdf' },
+        ]);
+      });
+
+      it('exige sesión (401) en las tres rutas, sin registro', async () => {
+        const before = (await accessLogs()).length;
+        const [pdfId] = owner.docIds;
+        await getAs(docsUrl(owner.profileId), null).expect(401);
+        await getAs(`${docsUrl(owner.profileId)}/${pdfId}/view`, null).expect(
+          401,
+        );
+        await getAs(
+          `${docsUrl(owner.profileId)}/${pdfId}/download`,
+          null,
+        ).expect(401);
+        expect(await accessLogs()).toHaveLength(before);
+      });
+
+      it('clientes y trabajadores (incluido el dueño) no usan las rutas administrativas (403)', async () => {
+        const before = (await accessLogs()).length;
+        const [pdfId] = owner.docIds;
+        for (const intruder of [client, owner.user, other.user]) {
+          await getAs(docsUrl(owner.profileId), intruder).expect(403);
+          await getAs(
+            `${docsUrl(owner.profileId)}/${pdfId}/download`,
+            intruder,
+          ).expect(403);
+        }
+        expect(await accessLogs()).toHaveLength(before);
+      });
+
+      it('lista solo metadatos seguros y registra la consulta', async () => {
+        const res = await http()
+          .get(docsUrl(owner.profileId))
+          .set('Authorization', auth(admin))
+          .expect(200);
+
+        expect(res.body.map((doc: { id: string }) => doc.id).sort()).toEqual(
+          [...owner.docIds].sort(),
+        );
+        for (const doc of res.body) {
+          expect(Object.keys(doc).sort()).toEqual([
+            'id',
+            'mimeType',
+            'originalName',
+            'replacedAt',
+            'replacedById',
+            'sizeBytes',
+            'type',
+            'uploadedAt',
+          ]);
+        }
+        expect(JSON.stringify(res.body)).not.toMatch(
+          /storage|sha256|worker-documents|private/i,
+        );
+        expect(await accessLogs(owner.profileId)).toMatchObject([
+          {
+            actorId: admin.id,
+            action: AuditAction.CONSULTA_DOCUMENTOS,
+            entityType: AuditEntityType.PERFIL_TRABAJADOR,
+            entityId: owner.profileId,
+            details: { documentCount: 2 },
+          },
+        ]);
+      });
+
+      it('visualiza en línea y descarga como adjunto, y registra cada acceso', async () => {
+        const [pdfId, pngId] = owner.docIds;
+        const before = (await accessLogs(owner.profileId)).length;
+
+        const view = await getAs(
+          `${docsUrl(owner.profileId)}/${pdfId}/view`,
+        ).expect(200);
+        expect(view.headers['content-type']).toContain('application/pdf');
+        expect(view.headers['content-disposition']).toMatch(/^inline;/);
+        expect(view.headers['cache-control']).toBe('private, no-store');
+        expect(view.headers['x-content-type-options']).toBe('nosniff');
+        expect(Buffer.compare(view.body as Buffer, PDF)).toBe(0);
+
+        const download = await getAs(
+          `${docsUrl(owner.profileId)}/${pngId}/download`,
+        ).expect(200);
+        expect(download.headers['content-type']).toContain('image/png');
+        expect(download.headers['content-disposition']).toMatch(/^attachment;/);
+        expect(Buffer.compare(download.body as Buffer, PNG)).toBe(0);
+
+        const logs = (await accessLogs(owner.profileId)).slice(before);
+        expect(logs).toMatchObject([
+          {
+            actorId: admin.id,
+            action: AuditAction.VISUALIZACION_DOCUMENTO,
+            entityType: AuditEntityType.PERFIL_TRABAJADOR,
+            entityId: owner.profileId,
+            details: {
+              documentId: pdfId,
+              documentType: WorkerDocumentType.IDENTIDAD,
+            },
+          },
+          {
+            actorId: admin.id,
+            action: AuditAction.DESCARGA_DOCUMENTO,
+            entityId: owner.profileId,
+            details: {
+              documentId: pngId,
+              documentType: WorkerDocumentType.ANTECEDENTES,
+            },
+          },
+        ]);
+        for (const log of logs) expect(log.createdAt).toBeInstanceOf(Date);
+      });
+
+      it('no entrega un documento de otro perfil por la ruta de este perfil (404, sin registro)', async () => {
+        const before = (await accessLogs()).length;
+        const [otherDocId] = other.docIds;
+
+        await getAs(`${docsUrl(owner.profileId)}/${otherDocId}/view`).expect(
+          404,
+        );
+        await getAs(
+          `${docsUrl(owner.profileId)}/${otherDocId}/download`,
+        ).expect(404);
+        expect(await accessLogs()).toHaveLength(before);
+      });
+
+      it('documento o perfil inexistentes e ids inválidos no dejan registro', async () => {
+        const before = (await accessLogs()).length;
+        await getAs(`${docsUrl(owner.profileId)}/${randomUUID()}/view`).expect(
+          404,
+        );
+        await getAs(docsUrl(randomUUID())).expect(404);
+        await getAs(
+          `${docsUrl(randomUUID())}/${owner.docIds[0]}/download`,
+        ).expect(404);
+        await getAs(`${docsUrl(owner.profileId)}/no-es-uuid/view`).expect(400);
+        await getAs(docsUrl('no-es-uuid')).expect(400);
+        expect(await accessLogs()).toHaveLength(before);
+      });
+
+      it('un administrador no consulta los documentos de su propio perfil (403, sin registro)', async () => {
+        const before = (await accessLogs()).length;
+        const res = await http()
+          .get(docsUrl(adminWorkerProfileId))
+          .set('Authorization', auth(adminWorker))
+          .expect(403);
+        expect(res.body.message).toBe(
+          'No puede consultar los documentos de su propio perfil de trabajador',
+        );
+        await getAs(
+          `${docsUrl(adminWorkerProfileId)}/${randomUUID()}/download`,
+          adminWorker,
+        ).expect(403);
+        expect(await accessLogs()).toHaveLength(before);
+      });
+
+      it('si falta el archivo en el almacenamiento responde 404 y no registra el acceso', async () => {
+        const lost = await newCandidateWithDocs('archivo-perdido', [
+          { type: 'IDENTIDAD', content: PDF, file: 'perdido.pdf' },
+        ]);
+        const [docId] = lost.docIds;
+        const { storageKey } = await prisma.workerDocument.findUniqueOrThrow({
+          where: { id: docId },
+        });
+        await rm(path.join(storageDir, storageKey));
+
+        await getAs(`${docsUrl(lost.profileId)}/${docId}/view`).expect(404);
+        expect(await accessLogs(lost.profileId)).toHaveLength(0);
+      });
+
+      it('el trabajador conserva el acceso a sus propios documentos, sin bitácora administrativa', async () => {
+        const before = (await accessLogs()).length;
+        const [pdfId] = owner.docIds;
+
+        const own = await http()
+          .get(`${BASE}/me/documents`)
+          .set('Authorization', auth(owner.user))
+          .expect(200);
+        expect(own.body.map((doc: { id: string }) => doc.id).sort()).toEqual(
+          [...owner.docIds].sort(),
+        );
+        const file = await getAs(
+          `${BASE}/me/documents/${pdfId}/download`,
+          owner.user,
+        ).expect(200);
+        expect(Buffer.compare(file.body as Buffer, PDF)).toBe(0);
+        // Otro trabajador no descarga documentos ajenos por su ruta propia.
+        await getAs(
+          `${BASE}/me/documents/${pdfId}/download`,
+          other.user,
+        ).expect(404);
+        expect(await accessLogs()).toHaveLength(before);
       });
     });
   });

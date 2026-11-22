@@ -33,6 +33,8 @@ Cada modelo se obtuvo de lo que **construye el service** (selects explícitos, f
 | #55 decisión administrativa sobre un perfil | `WorkerProfileView` (el perfil ya actualizado; **sin** el motivo ni el historial) |
 | #56 perfiles para revisar (admin) | `Paginated<AdminWorkerProfileSummary>` |
 | #57 detalle de un perfil (admin) | `AdminWorkerProfileView` |
+| #58 documentos de un perfil (admin) | `WorkerDocumentView[]` (los mismos metadatos que ve el trabajador) |
+| #59, #60 ver o descargar un documento (admin) | Binario |
 | #42 crear pedido, #47 editar pedido | `OrderWithWarnings` |
 | #43 aviso de duplicados | `DuplicateCheckResponse` |
 | #44 mis pedidos | `Paginated<OwnerOrderView>` |
@@ -177,6 +179,8 @@ Formas de `details` que escribe el código hoy:
 | `CATEGORIA_SERVICIO` o `ZONA` / `EDICION` | `{ before: { name?, description? }, after: { name?, description? } }` (solo los campos cambiados) |
 | `CATEGORIA_SERVICIO` o `ZONA` / `DESACTIVACION` | `{ name: string }` |
 | `SOLICITUD_CAMBIO_ZONA` / `APROBACION` o `RECHAZO` | `{ profileId, workerUserId, fromZoneId, toZoneId, comment: string \| null }` |
+| `PERFIL_TRABAJADOR` / `CONSULTA_DOCUMENTOS` | `{ documentCount: number }`. `entityId` = id del perfil |
+| `PERFIL_TRABAJADOR` / `VISUALIZACION_DOCUMENTO` o `DESCARGA_DOCUMENTO` | `{ documentId, documentType: WorkerDocumentType }`. `entityId` = id del perfil |
 | `PERFIL_TRABAJADOR` / `CAMBIO_ESTADO` | `{ from, to, reason: string \| null }`. Lo genera la decisión administrativa (#55) |
 
 ---
@@ -336,7 +340,7 @@ Orden: `submittedAt` ascendente (los nunca enviados al final) y luego `createdAt
 
 `AdminStatusHistoryEntry` = `StatusHistoryEntry` (ver arriba) más `changedByUser: { id, firstName, lastName }`, que muestra quién hizo el cambio. Esa identidad solo la ve el administrador; el trabajador solo ve `changedBy`.
 
-**No incluye los documentos:** su consulta administrativa (con bitácora) es una tarea pendiente.
+**No incluye los documentos:** se consultan con #58–#60, que dejan registro en la bitácora.
 
 ---
 
@@ -501,6 +505,8 @@ Al editar (#47) los avisos solo se calculan si cambió la descripción; si no, `
 | Endpoint | Content-Type | Content-Disposition | Otros headers |
 |---|---|---|---|
 | #34 descarga de documento | El `mimeType` del documento | `attachment; filename="<ascii>"; filename*=UTF-8''<utf8>` | `Content-Length`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff` |
+| #59 ver documento (admin) | El `mimeType` del documento | `inline; filename="<ascii>"; filename*=UTF-8''<utf8>` | Los mismos |
+| #60 descargar documento (admin) | El `mimeType` del documento | `attachment; …` (igual que #34) | Los mismos |
 | #46, #54 fotos de pedido | `image/webp` | `inline` | Los mismos |
 
 Desde Angular, `Content-Disposition` **no es legible**: CORS no expone headers. Ver [06](06-file-contracts.md).
