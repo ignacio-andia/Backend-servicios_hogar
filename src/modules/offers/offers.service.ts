@@ -31,6 +31,7 @@ import {
   offerNotFound,
   otherParty,
   partyOf,
+  slotsOverlap,
 } from './offer-negotiation.js';
 import type {
   ListOffersQueryDto,
@@ -50,9 +51,11 @@ import {
   toReceivedOfferView,
 } from './offer-views.js';
 import {
+  OFFER_ACCEPTANCE_PROCESS,
   OFFER_CLOSING_EVENT,
   OFFER_EXPIRATION_PROCESS,
   OFFER_REOFFER_BLOCKING_STATUSES,
+  OFFER_SUPERSEDED_REASON,
   OFFER_VALIDITY_HOURS,
 } from './offers.rules.js';
 
@@ -208,6 +211,205 @@ export class OffersService {
     return party === OfferParty.CLIENTE
       ? this.getReceived(userId, offerId)
       : this.getOwn(userId, offerId);
+  }
+
+  // ---------------------------------------------------------------------
+  // T6.4.2: aceptacion y asignacion del trabajador
+  // ---------------------------------------------------------------------
+
+  /**
+   * El cliente dueno del pedido acepta la oferta en su turno. En una sola
+   * transaccion:
+   * 1. valida cliente y trabajador (cuentas activas, perfil aprobado, sin
+   *    cambio de zona pendiente), pedido EN_NEGOCIACION y sin vencer, oferta
+   *    VIGENTE en el turno del cliente, zona y categoria activas. No exige
+   *    la especialidad de la categoria actual (decision 12);
+   * 2. RF-30: el horario de la oferta no se cruza con otro trabajo activo
+   *    del trabajador (OrdersService.findActiveAssignedOrderIds);
+   * 3. asigna al trabajador con OrdersService.transition (EN_NEGOCIACION ->
+   *    ACORDADO, assignWorkerId);
+   * 4. cierra la oferta como ACEPTADA y las demas VIGENTES del pedido como
+   *    SIN_EFECTO, cada una con su evento.
+   *
+   * Orden de bloqueos: cuenta del cliente (FOR SHARE), trabajador, pedido,
+   * oferta y catalogos (transition vuelve a tomar trabajador y pedido, ya
+   * bloqueados). Con el trabajador bloqueado ninguna otra asignacion suya se
+   * confirma en paralelo; con el pedido bloqueado, ninguna otra operacion de
+   * sus ofertas. Respaldos de la BD: una sola ACEPTADA por pedido y un solo
+   * cierre por oferta.
+   */
+  async accept(
+    clientId: string,
+    offerId: string,
+  ): Promise<OfferDetail<OfferView>> {
+    const target = await this.prisma.offer.findUnique({
+      where: { id: offerId },
+      select: {
+        workerId: true,
+        orderId: true,
+        order: { select: { clientId: true } },
+      },
+    });
+    const party = target ? partyOf(target, clientId) : null;
+    if (!target || !party) {
+      throw offerNotFound();
+    }
+    if (party !== OfferParty.CLIENTE) {
+      throw new ForbiddenException(
+        'Solo el cliente del pedido puede aceptar la oferta.',
+      );
+    }
+    const { orderId, workerId } = target;
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const client = await this.users.findByIdForShare(tx, clientId);
+        if (client.status !== UserStatus.ACTIVO) {
+          throw new ConflictException(
+            'La cuenta del cliente no está activa: la oferta ya no es válida.',
+          );
+        }
+        await this.workerProfiles.lockApprovedWorker(tx, workerId);
+        const order = await lockOrder(tx, orderId);
+        if (!order) {
+          throw offerNotFound();
+        }
+        if (order.effectiveStatus !== OrderStatus.EN_NEGOCIACION) {
+          throw new ConflictException(
+            `El pedido ya no admite aceptar ofertas (estado ${order.effectiveStatus}).`,
+          );
+        }
+        if (order.assignedWorkerId !== null) {
+          throw new ConflictException(
+            'El pedido ya tiene un trabajador asignado.',
+          );
+        }
+        const offer = await lockOffer(tx, offerId);
+        if (!offer) {
+          throw offerNotFound();
+        }
+        const now = await dbNow(tx);
+        assertCanClose(offer, OfferParty.CLIENTE, now, 'aceptar');
+        await this.assertOrderCatalogsActive(tx, orderId);
+        await this.assertNoScheduleConflict(tx, offerId, workerId);
+
+        await this.orders.transition(tx, {
+          orderId,
+          from: OrderStatus.EN_NEGOCIACION,
+          to: OrderStatus.ACORDADO,
+          assignWorkerId: workerId,
+          actor: clientActor(clientId),
+        });
+
+        await tx.offer.update({
+          where: { id: offerId },
+          data: { status: OfferStatus.ACEPTADA, closedAt: now },
+        });
+        await tx.offerEvent.create({
+          data: {
+            offerId,
+            orderId,
+            type: OfferEventType.ACEPTADA,
+            round: offer.round,
+            actorType: OrderActorType.USUARIO,
+            changedById: clientId,
+            actorRole: RoleName.CLIENTE,
+          },
+        });
+        await this.supersedeOtherOffers(tx, orderId, offerId, now);
+      });
+    } catch (error) {
+      // Respaldos de la BD: offers_one_accepted_per_order_key y
+      // offer_events_offer_closing_key.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === PRISMA_UNIQUE_VIOLATION
+      ) {
+        throw new ConflictException(
+          'El pedido o la oferta cambiaron mientras se aceptaba. Vuelva a consultarlos.',
+        );
+      }
+      throw error;
+    }
+    return this.getReceived(clientId, offerId);
+  }
+
+  /**
+   * RF-30 y RF-31: el trabajo de la oferta no puede cruzarse en el tiempo
+   * con otro trabajo activo del trabajador. Que pedidos son trabajo activo
+   * lo decide OrdersModule; el horario de cada uno es el de su oferta
+   * aceptada (inicio propuesto y duracion estimada). 409 con los cruces.
+   */
+  private async assertNoScheduleConflict(
+    tx: Prisma.TransactionClient,
+    offerId: string,
+    workerId: string,
+  ): Promise<void> {
+    const activeOrderIds = await this.orders.findActiveAssignedOrderIds(
+      tx,
+      workerId,
+    );
+    if (activeOrderIds.length === 0) {
+      return;
+    }
+    const slot = { proposedStartAt: true, estimatedDurationMinutes: true };
+    const [candidate, jobs] = await Promise.all([
+      tx.offer.findUniqueOrThrow({ where: { id: offerId }, select: slot }),
+      tx.offer.findMany({
+        where: {
+          workerId,
+          status: OfferStatus.ACEPTADA,
+          orderId: { in: activeOrderIds },
+        },
+        select: { orderId: true, ...slot },
+      }),
+    ]);
+    const conflicts = jobs.filter((job) => slotsOverlap(candidate, job));
+    if (conflicts.length > 0) {
+      throw new ConflictException(
+        `El trabajador ya tiene un trabajo acordado en ese horario (pedido ${conflicts
+          .map((job) => job.orderId)
+          .join(', ')}).`,
+      );
+    }
+  }
+
+  /** Decision 6: las demas ofertas vigentes del pedido quedan SIN_EFECTO. */
+  private async supersedeOtherOffers(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    acceptedOfferId: string,
+    now: Date,
+  ): Promise<void> {
+    const others = await tx.offer.findMany({
+      where: {
+        orderId,
+        id: { not: acceptedOfferId },
+        status: OfferStatus.VIGENTE,
+      },
+      select: { id: true, round: true },
+    });
+    if (others.length === 0) {
+      return;
+    }
+    await tx.offer.updateMany({
+      where: {
+        id: { in: others.map((other) => other.id) },
+        status: OfferStatus.VIGENTE,
+      },
+      data: { status: OfferStatus.SIN_EFECTO, closedAt: now },
+    });
+    await tx.offerEvent.createMany({
+      data: others.map((other) => ({
+        offerId: other.id,
+        orderId,
+        type: OfferEventType.SIN_EFECTO,
+        round: other.round,
+        actorType: OrderActorType.SISTEMA,
+        systemProcess: OFFER_ACCEPTANCE_PROCESS,
+        reason: OFFER_SUPERSEDED_REASON,
+      })),
+    });
   }
 
   // ---------------------------------------------------------------------

@@ -91,8 +91,10 @@ export function assertCanClose(
   offer: LockedOffer,
   party: OfferParty,
   now: Date,
+  action: 'rechazar' | 'retirar' | 'aceptar' = party === OfferParty.CLIENTE
+    ? 'rechazar'
+    : 'retirar',
 ): void {
-  const action = party === OfferParty.CLIENTE ? 'rechazar' : 'retirar';
   if (offer.status !== OfferStatus.VIGENTE) {
     throw new ConflictException(
       `La oferta ya está cerrada (${offer.status}): no se puede ${action}.`,
@@ -103,9 +105,28 @@ export function assertCanClose(
   }
   if (party === OfferParty.CLIENTE && offer.turn !== OfferParty.CLIENTE) {
     throw new ConflictException(
-      'Ahora le toca responder al trabajador: no puede rechazar la oferta todavía.',
+      `Ahora le toca responder al trabajador: no puede ${action} la oferta todavía.`,
     );
   }
+}
+
+/** Intervalo ocupado por un trabajo: [inicio, inicio + duracion). */
+export interface JobSlot {
+  proposedStartAt: Date;
+  estimatedDurationMinutes: number;
+}
+
+/**
+ * RF-30 y RF-31: dos trabajos se cruzan si sus intervalos [inicio, inicio +
+ * duracion estimada) se superponen. Uno que termina justo cuando empieza el
+ * otro no se cruza.
+ */
+export function slotsOverlap(a: JobSlot, b: JobSlot): boolean {
+  const end = (slot: JobSlot) =>
+    slot.proposedStartAt.getTime() + slot.estimatedDurationMinutes * 60_000;
+  return (
+    a.proposedStartAt.getTime() < end(b) && b.proposedStartAt.getTime() < end(a)
+  );
 }
 
 export function offerNotFound(): NotFoundException {

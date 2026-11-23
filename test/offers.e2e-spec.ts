@@ -1224,4 +1224,407 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       }
     });
   });
+
+  describe('POST /api/offers/:offerId/accept (T6.4.2)', () => {
+    // Cada trabajo aceptado queda activo el resto de la suite: cada prueba usa
+    // su propia semana para no cruzarse con otra salvo a proposito.
+    let week = 10;
+    const slot = () => ({
+      proposedStartAt: new Date(
+        nextMondayAt(10).getTime() + week++ * 7 * DAY,
+      ).toISOString(),
+      estimatedDurationMinutes: 120,
+    });
+    const accept = (user: PublicUser, offerId: string) =>
+      http()
+        .post(`/api/offers/${offerId}/accept`)
+        .set('Authorization', auth(user))
+        .send({});
+    const rejectBy = (user: PublicUser, offerId: string) =>
+      http()
+        .post(`/api/offers/${offerId}/reject`)
+        .set('Authorization', auth(user))
+        .send({});
+    const withdrawBy = (user: PublicUser, offerId: string) =>
+      http()
+        .post(`/api/offers/${offerId}/withdraw`)
+        .set('Authorization', auth(user))
+        .send({});
+    const counterBy = (user: PublicUser, offerId: string, amount: string) =>
+      http()
+        .post(`/api/offers/${offerId}/counter`)
+        .set('Authorization', auth(user))
+        .send({ amount });
+    const offerAt = async (
+      user: PublicUser,
+      orderId: string,
+      at: Record<string, unknown> = slot(),
+    ) =>
+      (await offer(user, orderId, offerBody(at)).expect(201)).body.id as string;
+    const orderRow = (id: string) =>
+      prisma.order.findUniqueOrThrow({
+        where: { id },
+        include: { statusHistory: { orderBy: { createdAt: 'asc' } } },
+      });
+    /** Invariantes: a lo sumo una ACEPTADA y, si hay, es la del asignado. */
+    const expectConsistent = async (orderId: string) => {
+      const [order, accepted] = await Promise.all([
+        prisma.order.findUniqueOrThrow({ where: { id: orderId } }),
+        prisma.offer.findMany({
+          where: { orderId, status: OfferStatus.ACEPTADA },
+        }),
+      ]);
+      expect(accepted.length).toBeLessThanOrEqual(1);
+      if (order.status === OrderStatus.ACORDADO) {
+        expect(accepted).toHaveLength(1);
+        expect(order.assignedWorkerId).toBe(accepted[0].workerId);
+      } else {
+        expect(accepted).toHaveLength(0);
+        expect(order.assignedWorkerId).toBeNull();
+      }
+    };
+
+    it('acepta: pedido ACORDADO con el trabajador asignado, oferta ACEPTADA y las demas SIN_EFECTO', async () => {
+      const orderId = await newOrder();
+      const chosen = await offerAt(worker, orderId);
+      const other = await offerAt(worker2, orderId);
+      // Otra oferta del mismo trabajador en otro pedido no se toca.
+      const elsewhereOrder = await newOrder(client2);
+      const elsewhere = await offerAt(worker2, elsewhereOrder);
+      const before = await orderRow(orderId);
+
+      const res = await accept(client, chosen).expect(200);
+
+      expect(res.body).toMatchObject({
+        id: chosen,
+        status: OfferStatus.ACEPTADA,
+        worker: { id: worker.id },
+      });
+      expect(res.body.history.at(-1)).toMatchObject({
+        type: 'ACEPTADA',
+        round: 1,
+        changedById: client.id,
+        actorRole: RoleName.CLIENTE,
+      });
+      const order = await orderRow(orderId);
+      expect(order).toMatchObject({
+        status: OrderStatus.ACORDADO,
+        assignedWorkerId: worker.id,
+      });
+      expect(order.publishedAt).toEqual(before.publishedAt);
+      expect(order.expiresAt).toEqual(before.expiresAt);
+      expect(order.statusHistory.at(-1)).toMatchObject({
+        fromStatus: OrderStatus.EN_NEGOCIACION,
+        toStatus: OrderStatus.ACORDADO,
+        changedById: client.id,
+        actorRole: RoleName.CLIENTE,
+      });
+
+      const loser = await prisma.offer.findUniqueOrThrow({
+        where: { id: other },
+        include: { events: { orderBy: { createdAt: 'asc' } } },
+      });
+      expect(loser.status).toBe(OfferStatus.SIN_EFECTO);
+      expect(loser.closedAt).not.toBeNull();
+      expect(loser.events.at(-1)).toMatchObject({
+        type: 'SIN_EFECTO',
+        actorType: 'SISTEMA',
+        systemProcess: 'ACEPTACION_OFERTA',
+        reason: 'El cliente aceptó otra oferta para este pedido.',
+        changedById: null,
+      });
+      expect(
+        (await prisma.offer.findUniqueOrThrow({ where: { id: elsewhere } }))
+          .status,
+      ).toBe(OfferStatus.VIGENTE);
+      await expectConsistent(orderId);
+
+      // El pedido acordado ya no admite operaciones de ofertas.
+      await accept(client, chosen).expect(409);
+      await rejectBy(client, other).expect(409);
+      await offer(workerOtherCategory, orderId).expect(404);
+    });
+
+    it('acepta una oferta despues de contraofertar, en el turno del cliente', async () => {
+      const orderId = await newOrder();
+      const id = await offerAt(worker, orderId);
+      await counterBy(client, id, '100').expect(200);
+      await accept(client, id).expect(409);
+      await counterBy(worker, id, '110').expect(200);
+
+      const res = await accept(client, id).expect(200);
+      expect(res.body).toMatchObject({ amount: '110.00', round: 3 });
+      expect(res.body.history.at(-1)).toMatchObject({
+        type: 'ACEPTADA',
+        round: 3,
+      });
+    });
+
+    it('solo el cliente dueno acepta', async () => {
+      const orderId = await newOrder();
+      const id = await offerAt(worker, orderId);
+      await accept(worker, id).expect(403);
+      await accept(client2, id).expect(404);
+      await accept(worker2, id).expect(404);
+      expect((await orderRow(orderId)).status).toBe(OrderStatus.EN_NEGOCIACION);
+    });
+
+    it('una oferta vencida o cerrada no se acepta', async () => {
+      const orderId = await newOrder();
+      const expired = await offerAt(worker, orderId);
+      await prisma.$executeRaw`UPDATE "offers" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${expired}::uuid`;
+      expect(
+        (await accept(client, expired).expect(409)).body.message,
+      ).toContain('venció');
+
+      const closed = await offerAt(worker2, orderId);
+      await withdrawBy(worker2, closed).expect(200);
+      await accept(client, closed).expect(409);
+      expect((await orderRow(orderId)).assignedWorkerId).toBeNull();
+    });
+
+    it('un pedido cancelado o vencido no admite aceptar', async () => {
+      const cancelled = await newOrder();
+      const a = await offerAt(worker, cancelled);
+      await http()
+        .post(`/api/orders/me/${cancelled}/cancel`)
+        .set('Authorization', auth(client))
+        .send({})
+        .expect(200);
+      await accept(client, a).expect(409);
+
+      const expired = await newOrder();
+      const b = await offerAt(worker, expired);
+      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${expired}::uuid`;
+      expect((await accept(client, b).expect(409)).body.message).toContain(
+        'VENCIDO',
+      );
+      expect((await orderRow(expired)).assignedWorkerId).toBeNull();
+    });
+
+    it('con la categoria o la zona inactiva no se acepta; al reactivarla si', async () => {
+      const orderId = await newOrder();
+      const id = await offerAt(worker, orderId);
+      await prisma.serviceCategory.update({
+        where: { id: catA.id },
+        data: { isActive: false },
+      });
+      try {
+        await accept(client, id).expect(409);
+      } finally {
+        await prisma.serviceCategory.update({
+          where: { id: catA.id },
+          data: { isActive: true },
+        });
+      }
+      await prisma.zone.update({
+        where: { id: zoneA.id },
+        data: { isActive: false },
+      });
+      try {
+        await accept(client, id).expect(409);
+      } finally {
+        await prisma.zone.update({
+          where: { id: zoneA.id },
+          data: { isActive: true },
+        });
+      }
+      await accept(client, id).expect(200);
+    });
+
+    it('un trabajador suspendido no puede ser asignado', async () => {
+      const profiles = app.get(WorkerProfileService);
+      const orderId = await newOrder();
+      const id = await offerAt(worker2, orderId);
+      const profile = await prisma.workerProfile.findUniqueOrThrow({
+        where: { userId: worker2.id },
+      });
+      await profiles.changeStatusByAdmin(admin.id, profile.id, {
+        status: WorkerProfileStatus.SUSPENDIDO,
+        reason: 'Prueba de suspension',
+      });
+      try {
+        await accept(client, id).expect(403);
+        expect((await orderRow(orderId)).assignedWorkerId).toBeNull();
+      } finally {
+        await profiles.changeStatusByAdmin(admin.id, profile.id, {
+          status: WorkerProfileStatus.APROBADO,
+        });
+      }
+    });
+
+    it('tras cambiar la categoria se acepta aunque el trabajador no tenga la nueva especialidad', async () => {
+      const orderId = await newOrder();
+      const id = await offerAt(worker, orderId);
+      await http()
+        .patch(`/api/orders/me/${orderId}`)
+        .set('Authorization', auth(client))
+        .send({ categoryId: catB.id })
+        .expect(200);
+
+      await accept(client, id).expect(200);
+      const order = await orderRow(orderId);
+      expect(order).toMatchObject({
+        categoryId: catB.id,
+        status: OrderStatus.ACORDADO,
+        assignedWorkerId: worker.id,
+      });
+    });
+
+    it('RF-30: no se asigna un trabajo que se cruza con otro acordado del trabajador', async () => {
+      const at = slot();
+      const firstOrder = await newOrder();
+      await accept(client, await offerAt(worker, firstOrder, at)).expect(200);
+
+      // Mismo horario en otro pedido.
+      const secondOrder = await newOrder(client2);
+      const clash = await offerAt(worker, secondOrder, {
+        proposedStartAt: new Date(
+          Date.parse(at.proposedStartAt) + 60 * 60_000,
+        ).toISOString(),
+        estimatedDurationMinutes: 30,
+      });
+      const res = await accept(client2, clash).expect(409);
+      expect(res.body.message).toContain('ya tiene un trabajo acordado');
+      expect(res.body.message).toContain(firstOrder);
+      expect((await orderRow(secondOrder)).assignedWorkerId).toBeNull();
+
+      // Justo despues de terminar el otro trabajo: no hay cruce.
+      const thirdOrder = await newOrder(client2);
+      const next = await offerAt(worker, thirdOrder, {
+        proposedStartAt: new Date(
+          Date.parse(at.proposedStartAt) + 120 * 60_000,
+        ).toISOString(),
+        estimatedDurationMinutes: 60,
+      });
+      await accept(client2, next).expect(200);
+    });
+
+    it('el historial de la aceptacion es inmutable', async () => {
+      const orderId = await newOrder();
+      const id = await offerAt(worker, orderId);
+      const other = await offerAt(worker2, orderId);
+      await accept(client, id).expect(200);
+
+      await expect(
+        prisma.offerEvent.updateMany({
+          where: { offerId: { in: [id, other] } },
+          data: { reason: 'cambio' },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offerEvent.deleteMany({ where: { offerId: id } }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offer.update({
+          where: { id: other },
+          data: { status: OfferStatus.VIGENTE, closedAt: null },
+        }),
+      ).rejects.toThrow();
+    });
+
+    describe('concurrencia', () => {
+      it('dos ofertas distintas del mismo pedido: solo una se acepta', async () => {
+        const orderId = await newOrder();
+        const a = await offerAt(worker, orderId);
+        const b = await offerAt(worker2, orderId);
+
+        const results = await Promise.all([
+          accept(client, a),
+          accept(client, b),
+        ]);
+
+        expect(results.map((res) => res.status).sort((x, y) => x - y)).toEqual([
+          200, 409,
+        ]);
+        await expectConsistent(orderId);
+        const statuses = (
+          await prisma.offer.findMany({ where: { orderId } })
+        ).map((row) => row.status);
+        expect(statuses.sort()).toEqual([
+          OfferStatus.ACEPTADA,
+          OfferStatus.SIN_EFECTO,
+        ]);
+      });
+
+      it('la misma oferta aceptada dos veces a la vez se acepta una sola vez', async () => {
+        const orderId = await newOrder();
+        const id = await offerAt(worker, orderId);
+
+        const results = await Promise.all([
+          accept(client, id),
+          accept(client, id),
+        ]);
+
+        expect(results.map((res) => res.status).sort((x, y) => x - y)).toEqual([
+          200, 409,
+        ]);
+        expect(
+          await prisma.offerEvent.count({
+            where: { offerId: id, type: 'ACEPTADA' },
+          }),
+        ).toBe(1);
+        await expectConsistent(orderId);
+      });
+
+      it.each([
+        ['rechazo', (id: string) => rejectBy(client, id)],
+        ['retiro', (id: string) => withdrawBy(worker, id)],
+        ['contraoferta', (id: string) => counterBy(client, id, '99')],
+      ])(
+        'aceptacion y %s simultaneos: gana una sola operacion',
+        async (_case, other) => {
+          const orderId = await newOrder();
+          const id = await offerAt(worker, orderId);
+
+          const [accepted, competing] = await Promise.all([
+            accept(client, id),
+            other(id),
+          ]);
+
+          expect(
+            [accepted.status, competing.status].filter((code) => code === 200),
+          ).toHaveLength(1);
+          expect(
+            [accepted.status, competing.status].filter((code) => code === 409),
+          ).toHaveLength(1);
+          await expectConsistent(orderId);
+          const row = await prisma.offer.findUniqueOrThrow({
+            where: { id },
+          });
+          const order = await orderRow(orderId);
+          if (accepted.status === 200) {
+            expect(row.status).toBe(OfferStatus.ACEPTADA);
+            expect(order.status).toBe(OrderStatus.ACORDADO);
+          } else {
+            expect(row.status).not.toBe(OfferStatus.ACEPTADA);
+            expect(order.status).not.toBe(OrderStatus.ACORDADO);
+          }
+        },
+      );
+
+      it('el mismo trabajador en dos pedidos con horarios cruzados: solo una asignacion', async () => {
+        const at = slot();
+        const first = await newOrder(client);
+        const second = await newOrder(client2);
+        const a = await offerAt(worker2, first, at);
+        const b = await offerAt(worker2, second, at);
+
+        const results = await Promise.all([
+          accept(client, a),
+          accept(client2, b),
+        ]);
+
+        expect(results.map((res) => res.status).sort((x, y) => x - y)).toEqual([
+          200, 409,
+        ]);
+        const assigned = await prisma.order.count({
+          where: { id: { in: [first, second] }, assignedWorkerId: worker2.id },
+        });
+        expect(assigned).toBe(1);
+        await expectConsistent(first);
+        await expectConsistent(second);
+      });
+    });
+  });
 });

@@ -79,3 +79,11 @@ export const OFFER_REOFFER_BLOCKING_STATUSES: readonly OfferStatus[] = [
   OfferStatus.RETIRADA,
   OfferStatus.SIN_EFECTO,
 ];
+
+/**
+ * Proceso del sistema que deja SIN_EFECTO las demas ofertas del pedido al
+ * aceptar una (decision aprobada 6), y su motivo en el historial.
+ */
+export const OFFER_ACCEPTANCE_PROCESS = 'ACEPTACION_OFERTA';
+export const OFFER_SUPERSEDED_REASON =
+  'El cliente aceptó otra oferta para este pedido.';

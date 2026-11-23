@@ -64,6 +64,19 @@ export class OffersController {
     return this.offers.counter(user.id, offerId, dto);
   }
 
+  // RF-20: el cliente dueno del pedido acepta la oferta en su turno. El
+  // pedido pasa a ACORDADO con el trabajador asignado y las demas ofertas
+  // quedan SIN_EFECTO.
+  @Auth(RoleName.CLIENTE)
+  @Post(':offerId/accept')
+  @HttpCode(HttpStatus.OK)
+  accept(
+    @CurrentUser() user: PublicUser,
+    @Param('offerId', ParseUUIDPipe) offerId: string,
+  ): Promise<OfferDetail<OfferView>> {
+    return this.offers.accept(user.id, offerId);
+  }
+
   // RF-20: el cliente dueno del pedido rechaza la oferta, en su turno. Si no
   // quedan ofertas vigentes el pedido vuelve a PUBLICADO.
   @Auth(RoleName.CLIENTE)

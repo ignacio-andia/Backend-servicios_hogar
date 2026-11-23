@@ -805,6 +805,28 @@ export class OrdersService {
   }
 
   /**
+   * T6.4.2 (para ofertas y agenda, RF-30): ids de los pedidos asignados al
+   * trabajador que cuentan como trabajo activo segun ACTIVE_ORDER_STATUSES
+   * (la definicion oficial de OrdersModule). Solo lectura, con `tx`, la
+   * transaccion del llamador: si este ya bloqueo al trabajador
+   * (lockApprovedWorker), ninguna asignacion nueva a ese trabajador puede
+   * confirmarse mientras tanto, porque transition() tambien lo bloquea.
+   */
+  async findActiveAssignedOrderIds(
+    tx: Db,
+    workerUserId: string,
+  ): Promise<string[]> {
+    const orders = await tx.order.findMany({
+      where: {
+        assignedWorkerId: workerUserId,
+        status: { in: [...ACTIVE_ORDER_STATUSES] },
+      },
+      select: { id: true },
+    });
+    return orders.map((order) => order.id);
+  }
+
+  /**
    * Aplica una transicion ya bloqueada en una sola sentencia (estado,
    * asignacion y marcas de tiempo) y deja el historial en la misma
    * transaccion. Nunca cambia el vencimiento (T5.1): volver a PUBLICADO
