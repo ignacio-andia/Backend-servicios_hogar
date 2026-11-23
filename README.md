@@ -569,10 +569,10 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
   - Se guardan como WebP sRGB (máximo 1600 px, calidad 80, más una miniatura), sin EXIF, GPS ni perfil ICC, con nombres aleatorios.
   - Una foto demasiado grande responde `413`.
 - **Vencimiento:**
-  - Una tarea cada 15 minutos marca `VENCIDO` los pedidos `PUBLICADO` cuyo plazo pasó y deja el historial con actor `SISTEMA` (`VENCIMIENTO`).
+  - Una tarea cada 15 minutos marca `VENCIDO` los pedidos `PUBLICADO` o `EN_NEGOCIACION` cuyo plazo pasó y deja el historial con actor `SISTEMA` (`VENCIMIENTO`).
   - Cada pedido se vence en su propio `SAVEPOINT` (transacción anidada de Prisma). Si un hook falla, solo ese pedido queda sin vencer; se registra en el log y se reintenta en la siguiente pasada.
   - Las consultas ya tratan como vencido un pedido atrasado aunque la tarea no haya corrido.
-  - Las fotos de pedidos vencidos se conservan.
+  - Al vencer, el pedido se limpia (T5.4): se borran sus fotos y su dirección y se anonimiza la descripción, salvo que alguna vez haya tenido un acuerdo. Sus ofertas vigentes quedan `VENCIDA` (T6.5.2).
 - **Historial:** cada cambio de estado queda en `order_status_history`, protegida contra `UPDATE`, `DELETE` y `TRUNCATE` por un trigger.
 - **Para otros módulos (ofertas, pagos, etc.):**
   - `OrdersService.transition(tx, request: OrderTransitionRequest)` (`src/modules/orders/order-transition.ts`):

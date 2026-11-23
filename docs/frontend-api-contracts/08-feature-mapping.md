@@ -34,7 +34,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 **Dependencias:**
 - Catálogos (zonas y categorías activas).
 - Cuentas (teléfono y rol).
-- OffersModule, para habilitar los cambios de zona.
+- Decisión del equipo para habilitar los cambios de zona: hoy OffersModule no registra la fuente `OFERTAS` del trabajo activo, así que la solicitud sigue bloqueada (`VERIFICACION_NO_DISPONIBLE`).
 - Un futuro módulo de verificación, para RF-10.
 
 ## 3. Pedidos (RF-14 a RF-18)
@@ -51,7 +51,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 **Dependencias:**
 - Catálogos.
 - WorkerProfile (elegibilidad y especialidades).
-- OffersModule (para pasar a `EN_NEGOCIACION`).
+- OffersModule: lleva el pedido a `EN_NEGOCIACION` con la primera oferta (#69), a `ACORDADO` al aceptar (#77) y de vuelta a `PUBLICADO` cuando no quedan ofertas vigentes.
 
 ❓ Pendientes con el docente:
 - Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos, T5.3).
