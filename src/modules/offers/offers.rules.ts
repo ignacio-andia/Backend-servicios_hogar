@@ -44,3 +44,38 @@ export const OFFER_CLOSING_EVENT: Readonly<
   [OfferStatus.VENCIDA]: OfferEventType.VENCIDA,
   [OfferStatus.SIN_EFECTO]: OfferEventType.SIN_EFECTO,
 };
+
+/**
+ * Monto propuesto: mayor que 0, con hasta 8 digitos enteros y 2 decimales
+ * (precision de la columna Decimal(10,2), igual que el presupuesto del pedido).
+ */
+export const OFFER_AMOUNT_PATTERN =
+  /^(?!0+(?:\.0{1,2})?$)\d{1,8}(?:\.\d{1,2})?$/;
+export const OFFER_AMOUNT_MESSAGE =
+  'amount debe ser un monto mayor que 0, con hasta 8 dígitos enteros y 2 decimales';
+
+/** Costo de la visita: 0 (gratis) o mayor, con la misma precision. */
+export const OFFER_VISIT_COST_PATTERN = /^\d{1,8}(?:\.\d{1,2})?$/;
+export const OFFER_VISIT_COST_MESSAGE =
+  'visitCost debe ser 0 (visita gratis) o un monto con hasta 8 dígitos enteros y 2 decimales';
+
+/**
+ * Maximo representable de la duracion estimada: la columna
+ * estimated_duration_minutes es INTEGER (int4). No es una regla de negocio:
+ * solo evita un error de la BD.
+ */
+export const OFFER_MAX_DURATION_MINUTES = 2_147_483_647;
+
+/** Proceso del sistema que registra el vencimiento de una oferta. */
+export const OFFER_EXPIRATION_PROCESS = 'VENCIMIENTO_OFERTA';
+
+/**
+ * Ofertas anteriores del mismo trabajador en el mismo pedido que impiden
+ * volver a ofertar (decision aprobada). Solo VENCIDA lo permite.
+ */
+export const OFFER_REOFFER_BLOCKING_STATUSES: readonly OfferStatus[] = [
+  OfferStatus.ACEPTADA,
+  OfferStatus.RECHAZADA,
+  OfferStatus.RETIRADA,
+  OfferStatus.SIN_EFECTO,
+];

@@ -20,6 +20,9 @@ export async function deleteOrderData(
       where: { orderId: { in: orderIds } },
       select: { storageKey: true, thumbnailKey: true },
     });
+    // T6.2: las ofertas y su historial (solo insercion) van antes que el pedido.
+    await tx.offerEvent.deleteMany({ where: { orderId: { in: orderIds } } });
+    await tx.offer.deleteMany({ where: { orderId: { in: orderIds } } });
     await tx.orderStatusHistory.deleteMany({
       where: { orderId: { in: orderIds } },
     });
