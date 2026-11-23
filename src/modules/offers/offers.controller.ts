@@ -64,6 +64,30 @@ export class OffersController {
     return this.offers.counter(user.id, offerId, dto);
   }
 
+  // RF-20: el cliente dueno del pedido rechaza la oferta, en su turno. Si no
+  // quedan ofertas vigentes el pedido vuelve a PUBLICADO.
+  @Auth(RoleName.CLIENTE)
+  @Post(':offerId/reject')
+  @HttpCode(HttpStatus.OK)
+  reject(
+    @CurrentUser() user: PublicUser,
+    @Param('offerId', ParseUUIDPipe) offerId: string,
+  ): Promise<OfferDetail<OfferView>> {
+    return this.offers.reject(user.id, offerId);
+  }
+
+  // El trabajador retira su oferta vigente (sin importar el turno). No podra
+  // volver a ofertar por ese pedido.
+  @Auth(RoleName.TRABAJADOR)
+  @Post(':offerId/withdraw')
+  @HttpCode(HttpStatus.OK)
+  withdraw(
+    @CurrentUser() user: PublicUser,
+    @Param('offerId', ParseUUIDPipe) offerId: string,
+  ): Promise<OfferDetail<OfferView>> {
+    return this.offers.withdraw(user.id, offerId);
+  }
+
   // Sus ofertas se consultan aunque el perfil ya no este aprobado.
   @Auth(RoleName.TRABAJADOR)
   @Get('me')

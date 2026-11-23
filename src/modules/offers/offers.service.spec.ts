@@ -50,7 +50,7 @@ describe('OffersService (T6.2)', () => {
     offer: { findFirst: Fn; findMany: Fn; count: Fn };
   };
   let visibility: { assertOpenForOffers: Fn };
-  let orders: { getOwn: Fn };
+  let orders: { getOwn: Fn; transition: Fn };
   let service: OffersService;
 
   const dto = (overrides: Partial<CreateOfferDto> = {}): CreateOfferDto => ({
@@ -93,7 +93,10 @@ describe('OffersService (T6.2)', () => {
         order: { status: 'PUBLICADO', revision: 1 },
       }),
     };
-    orders = { getOwn: vi.fn().mockResolvedValue({}) };
+    orders = {
+      getOwn: vi.fn().mockResolvedValue({}),
+      transition: vi.fn().mockResolvedValue({}),
+    };
     service = new OffersService(
       prisma as unknown as PrismaService,
       visibility as unknown as OrderVisibilityService,
@@ -154,6 +157,31 @@ describe('OffersService (T6.2)', () => {
       expect(tx.workerSchedule.findMany).not.toHaveBeenCalled();
       expect(tx.offer.create).toHaveBeenCalled();
       expect(detail.status).toBe('VIGENTE');
+    });
+
+    it('la primera oferta pasa el pedido a EN_NEGOCIACION por OrdersService.transition (T6.4.1)', async () => {
+      await service.create('trabajador-1', 'pedido-1', dto());
+
+      expect(orders.transition).toHaveBeenCalledWith(tx, {
+        orderId: 'pedido-1',
+        from: 'PUBLICADO',
+        to: 'EN_NEGOCIACION',
+        actor: { type: 'USUARIO', userId: 'trabajador-1', role: 'TRABAJADOR' },
+      });
+      expect(tx.offer.create.mock.invocationCallOrder[0]).toBeLessThan(
+        orders.transition.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('con el pedido ya EN_NEGOCIACION no vuelve a cambiar su estado', async () => {
+      visibility.assertOpenForOffers.mockResolvedValue({
+        worker: { userId: 'trabajador-1' },
+        order: { status: 'EN_NEGOCIACION', revision: 1 },
+      });
+
+      await service.create('trabajador-1', 'pedido-1', dto());
+
+      expect(orders.transition).not.toHaveBeenCalled();
     });
 
     it('si el pedido no esta disponible para el trabajador no escribe nada', async () => {

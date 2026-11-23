@@ -82,6 +82,32 @@ export function assertCanCounter(
   }
 }
 
+/**
+ * Rechazo o retiro (T6.4.1): la oferta debe estar VIGENTE y sin vencer
+ * (reloj de la BD). El rechazo ademas exige el turno del cliente; el retiro
+ * no depende del turno. 409 si no.
+ */
+export function assertCanClose(
+  offer: LockedOffer,
+  party: OfferParty,
+  now: Date,
+): void {
+  const action = party === OfferParty.CLIENTE ? 'rechazar' : 'retirar';
+  if (offer.status !== OfferStatus.VIGENTE) {
+    throw new ConflictException(
+      `La oferta ya está cerrada (${offer.status}): no se puede ${action}.`,
+    );
+  }
+  if (offer.expiresAt <= now) {
+    throw new ConflictException(`La oferta venció: no se puede ${action}.`);
+  }
+  if (party === OfferParty.CLIENTE && offer.turn !== OfferParty.CLIENTE) {
+    throw new ConflictException(
+      'Ahora le toca responder al trabajador: no puede rechazar la oferta todavía.',
+    );
+  }
+}
+
 export function offerNotFound(): NotFoundException {
   return new NotFoundException('Oferta no encontrada');
 }

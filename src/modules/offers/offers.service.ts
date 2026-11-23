@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
 } from '@nestjs/common';
 import {
@@ -8,12 +9,14 @@ import {
   OfferParty,
   OfferStatus,
   OrderActorType,
+  OrderStatus,
   Prisma,
   RoleName,
   UserStatus,
 } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { CatalogKind, CatalogsService } from '../catalogs/catalogs.service.js';
+import type { OrderActor } from '../orders/order-history.js';
 import { OrderVisibilityService } from '../orders/order-visibility.service.js';
 import { ORDER_OPEN_FOR_OFFERS_STATUSES } from '../orders/orders.rules.js';
 import { lockOrder, OrdersService } from '../orders/orders.service.js';
@@ -22,6 +25,7 @@ import { WorkerProfileService } from '../worker-profile/worker-profile.service.j
 import type { CounterOfferDto } from './dto/counter-offer.dto.js';
 import type { CreateOfferDto } from './dto/create-offer.dto.js';
 import {
+  assertCanClose,
   assertCanCounter,
   lockOffer,
   offerNotFound,
@@ -46,6 +50,7 @@ import {
   toReceivedOfferView,
 } from './offer-views.js';
 import {
+  OFFER_CLOSING_EVENT,
   OFFER_EXPIRATION_PROCESS,
   OFFER_REOFFER_BLOCKING_STATUSES,
   OFFER_VALIDITY_HOURS,
@@ -205,6 +210,157 @@ export class OffersService {
       : this.getOwn(userId, offerId);
   }
 
+  // ---------------------------------------------------------------------
+  // T6.4.1: rechazo (cliente) y retiro (trabajador)
+  // ---------------------------------------------------------------------
+
+  /** El cliente dueno del pedido rechaza la oferta, en su turno. */
+  reject(clientId: string, offerId: string): Promise<OfferDetail<OfferView>> {
+    return this.closeByParticipant(
+      clientId,
+      offerId,
+      OfferParty.CLIENTE,
+      OfferStatus.RECHAZADA,
+    );
+  }
+
+  /**
+   * El trabajador retira su oferta, sin importar el turno. Despues no puede
+   * volver a ofertar por ese pedido (closePreviousOffers).
+   */
+  withdraw(
+    workerUserId: string,
+    offerId: string,
+  ): Promise<OfferDetail<OfferView>> {
+    return this.closeByParticipant(
+      workerUserId,
+      offerId,
+      OfferParty.TRABAJADOR,
+      OfferStatus.RETIRADA,
+    );
+  }
+
+  /**
+   * Cierra la oferta con su evento y, si ya no quedan ofertas vigentes,
+   * devuelve el pedido a PUBLICADO por OrdersService.transition (decision
+   * 10), sin tocar publishedAt ni expiresAt.
+   *
+   * Bloqueos: pedido (lockOrder) y despues la fila de la oferta. No bloquea
+   * al trabajador ni la cuenta: la transicion a PUBLICADO tampoco lo hace, y
+   * ninguna operacion bloquea al trabajador despues del pedido. Toda
+   * operacion que crea o cierra ofertas bloquea antes el pedido: el conteo de
+   * vigentes no cambia hasta confirmar.
+   */
+  private async closeByParticipant(
+    userId: string,
+    offerId: string,
+    party: OfferParty,
+    status: typeof OfferStatus.RECHAZADA | typeof OfferStatus.RETIRADA,
+  ): Promise<OfferDetail<OfferView>> {
+    const target = await this.prisma.offer.findUnique({
+      where: { id: offerId },
+      select: {
+        workerId: true,
+        orderId: true,
+        order: { select: { clientId: true } },
+      },
+    });
+    const actual = target ? partyOf(target, userId) : null;
+    if (!target || !actual) {
+      throw offerNotFound();
+    }
+    if (actual !== party) {
+      throw new ForbiddenException(
+        party === OfferParty.CLIENTE
+          ? 'Solo el cliente del pedido puede rechazar la oferta.'
+          : 'Solo el trabajador que la envió puede retirar la oferta.',
+      );
+    }
+    const { orderId } = target;
+    const actor =
+      party === OfferParty.CLIENTE ? clientActor(userId) : workerActor(userId);
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const order = await lockOrder(tx, orderId);
+        if (!order) {
+          throw offerNotFound();
+        }
+        if (!ORDER_OPEN_FOR_OFFERS_STATUSES.includes(order.effectiveStatus)) {
+          throw new ConflictException(
+            `El pedido ya no admite negociación (estado ${order.effectiveStatus}).`,
+          );
+        }
+        const offer = await lockOffer(tx, offerId);
+        if (!offer) {
+          throw offerNotFound();
+        }
+        const now = await dbNow(tx);
+        assertCanClose(offer, party, now);
+
+        await tx.offer.update({
+          where: { id: offerId },
+          data: { status, closedAt: now },
+        });
+        await tx.offerEvent.create({
+          data: {
+            offerId,
+            orderId,
+            type: OFFER_CLOSING_EVENT[status],
+            round: offer.round,
+            actorType: OrderActorType.USUARIO,
+            changedById: userId,
+            actorRole:
+              party === OfferParty.CLIENTE
+                ? RoleName.CLIENTE
+                : RoleName.TRABAJADOR,
+          },
+        });
+        await this.reopenIfNoOpenOffers(tx, orderId, order.status, now, actor);
+      });
+    } catch (error) {
+      // Respaldo de la BD (offer_events_offer_closing_key): la oferta ya
+      // tiene un cierre registrado.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === PRISMA_UNIQUE_VIOLATION
+      ) {
+        throw new ConflictException('La oferta ya fue cerrada.');
+      }
+      throw error;
+    }
+    return party === OfferParty.CLIENTE
+      ? this.getReceived(userId, offerId)
+      : this.getOwn(userId, offerId);
+  }
+
+  /**
+   * Sin ofertas vigentes (VIGENTE y sin vencer), un pedido EN_NEGOCIACION
+   * vuelve a PUBLICADO. Se llama con el pedido bloqueado.
+   */
+  private async reopenIfNoOpenOffers(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    orderStatus: OrderStatus,
+    now: Date,
+    actor: OrderActor,
+  ): Promise<void> {
+    if (orderStatus !== OrderStatus.EN_NEGOCIACION) {
+      return;
+    }
+    const open = await tx.offer.count({
+      where: { orderId, status: OfferStatus.VIGENTE, expiresAt: { gt: now } },
+    });
+    if (open === 0) {
+      await this.orders.transition(tx, {
+        orderId,
+        from: OrderStatus.EN_NEGOCIACION,
+        to: OrderStatus.PUBLICADO,
+        actor,
+      });
+    }
+  }
+
   /**
    * Zona y categoria del pedido activas, bloqueadas (FOR SHARE) hasta
    * confirmar. Con el pedido bloqueado no cambian. Orden fijo: zona y
@@ -258,7 +414,11 @@ export class OffersService {
         //    ese trabajador por zona, especialidad de la categoria ACTUAL,
         //    cliente activo, no propio, abierto y sin vencer) y 3. zona y
         //    categoria activas (FOR SHARE). Lo que no corresponde da 404.
-        await this.visibility.assertOpenForOffers(tx, workerUserId, orderId);
+        const { order } = await this.visibility.assertOpenForOffers(
+          tx,
+          workerUserId,
+          orderId,
+        );
         const now = await dbNow(tx);
         if (proposedStartAt <= now) {
           throw new BadRequestException(
@@ -297,6 +457,17 @@ export class OffersService {
             actorRole: RoleName.TRABAJADOR,
           },
         });
+        // T6.4.1: la primera oferta abre la negociacion. El cambio lo hace
+        // OrdersModule (transition), con el pedido ya bloqueado; no toca
+        // publishedAt ni expiresAt.
+        if (order.status === OrderStatus.PUBLICADO) {
+          await this.orders.transition(tx, {
+            orderId,
+            from: OrderStatus.PUBLICADO,
+            to: OrderStatus.EN_NEGOCIACION,
+            actor: workerActor(workerUserId),
+          });
+        }
         return offer.id;
       });
     } catch (error) {
@@ -506,6 +677,14 @@ function assertVisitCost(dto: CreateOfferDto): void {
       'visitCost solo se indica cuando la oferta requiere visita',
     );
   }
+}
+
+function workerActor(userId: string): OrderActor {
+  return { type: 'USUARIO', userId, role: RoleName.TRABAJADOR };
+}
+
+function clientActor(userId: string): OrderActor {
+  return { type: 'USUARIO', userId, role: RoleName.CLIENTE };
 }
 
 function addHours(date: Date, hours: number): Date {

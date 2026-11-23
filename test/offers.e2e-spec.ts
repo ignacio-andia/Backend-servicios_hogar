@@ -270,12 +270,23 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       });
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ orderId, type: 'PROPUESTA' });
-      // T6.2 no cambia el estado del pedido.
+      // T6.4.1: la primera oferta abre la negociacion, sin asignar ni tocar
+      // el plazo original de 7 dias.
       const order = await prisma.order.findUniqueOrThrow({
         where: { id: orderId },
+        include: { statusHistory: { orderBy: { createdAt: 'asc' } } },
       });
-      expect(order.status).toBe(OrderStatus.PUBLICADO);
+      expect(order.status).toBe(OrderStatus.EN_NEGOCIACION);
       expect(order.assignedWorkerId).toBeNull();
+      expect(order.expiresAt.getTime() - order.publishedAt.getTime()).toBe(
+        7 * DAY,
+      );
+      expect(order.statusHistory.at(-1)).toMatchObject({
+        fromStatus: OrderStatus.PUBLICADO,
+        toStatus: OrderStatus.EN_NEGOCIACION,
+        changedById: worker.id,
+        actorRole: RoleName.TRABAJADOR,
+      });
     });
 
     it('el horario de atencion no limita las ofertas: se oferta a cualquier hora', async () => {
@@ -922,6 +933,295 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
         })
       ).map((event) => event.round);
       expect(rounds).toEqual(byWorker.status === 200 ? [2, 3] : [2]);
+    });
+  });
+
+  describe('rechazo, retiro y estado del pedido (T6.4.1)', () => {
+    const reject = (user: PublicUser, offerId: string) =>
+      http()
+        .post(`/api/offers/${offerId}/reject`)
+        .set('Authorization', auth(user))
+        .send({});
+    const withdraw = (user: PublicUser, offerId: string) =>
+      http()
+        .post(`/api/offers/${offerId}/withdraw`)
+        .set('Authorization', auth(user))
+        .send({});
+    const counterBy = (user: PublicUser, offerId: string, amount: string) =>
+      http()
+        .post(`/api/offers/${offerId}/counter`)
+        .set('Authorization', auth(user))
+        .send({ amount });
+    const orderRow = (id: string) =>
+      prisma.order.findUniqueOrThrow({
+        where: { id },
+        include: { statusHistory: { orderBy: { createdAt: 'asc' } } },
+      });
+    /** Invariante: EN_NEGOCIACION si y solo si hay alguna oferta vigente. */
+    const expectStatusMatchesOffers = async (orderId: string) => {
+      const [order, open] = await Promise.all([
+        prisma.order.findUniqueOrThrow({ where: { id: orderId } }),
+        prisma.offer.count({
+          where: {
+            orderId,
+            status: OfferStatus.VIGENTE,
+            expiresAt: { gt: new Date() },
+          },
+        }),
+      ]);
+      expect(order.status).toBe(
+        open > 0 ? OrderStatus.EN_NEGOCIACION : OrderStatus.PUBLICADO,
+      );
+    };
+
+    it('el cliente rechaza la unica oferta: RECHAZADA y el pedido vuelve a PUBLICADO sin tocar su plazo', async () => {
+      const orderId = await newOrder();
+      const { body: created } = await offer(worker, orderId).expect(201);
+      const before = await orderRow(orderId);
+      expect(before.status).toBe(OrderStatus.EN_NEGOCIACION);
+
+      const res = await reject(client, created.id).expect(200);
+
+      expect(res.body).toMatchObject({
+        status: OfferStatus.RECHAZADA,
+        worker: { id: worker.id },
+      });
+      expect(res.body.closedAt).not.toBeNull();
+      expect(res.body.history.at(-1)).toMatchObject({
+        type: 'RECHAZADA',
+        round: 1,
+        amount: null,
+        changedById: client.id,
+        actorRole: RoleName.CLIENTE,
+      });
+      const after = await orderRow(orderId);
+      expect(after.status).toBe(OrderStatus.PUBLICADO);
+      expect(after.publishedAt).toEqual(before.publishedAt);
+      expect(after.expiresAt).toEqual(before.expiresAt);
+      expect(after.statusHistory.at(-1)).toMatchObject({
+        fromStatus: OrderStatus.EN_NEGOCIACION,
+        toStatus: OrderStatus.PUBLICADO,
+        changedById: client.id,
+        actorRole: RoleName.CLIENTE,
+      });
+
+      // El rechazado no vuelve a ofertar; otro trabajador si, y reabre.
+      await offer(worker, orderId).expect(409);
+      await offer(worker2, orderId).expect(201);
+      expect((await orderRow(orderId)).status).toBe(OrderStatus.EN_NEGOCIACION);
+    });
+
+    it('el trabajador retira su oferta en cualquier turno y no puede volver a ofertar', async () => {
+      const orderId = await newOrder();
+      const { body: created } = await offer(worker, orderId).expect(201);
+      // Turno del trabajador despues de la contraoferta del cliente.
+      await counterBy(client, created.id, '100').expect(200);
+
+      const res = await withdraw(worker, created.id).expect(200);
+
+      expect(res.body.status).toBe(OfferStatus.RETIRADA);
+      expect(res.body.history.at(-1)).toMatchObject({
+        type: 'RETIRADA',
+        round: 2,
+        changedById: worker.id,
+        actorRole: RoleName.TRABAJADOR,
+      });
+      expect((await orderRow(orderId)).statusHistory.at(-1)).toMatchObject({
+        toStatus: OrderStatus.PUBLICADO,
+        changedById: worker.id,
+        actorRole: RoleName.TRABAJADOR,
+      });
+      const again = await offer(worker, orderId).expect(409);
+      expect(again.body.message).toContain('Retiró su oferta');
+    });
+
+    it('el retiro tambien vale en el turno del cliente', async () => {
+      const orderId = await newOrder();
+      const { body: created } = await offer(worker, orderId).expect(201);
+      await withdraw(worker, created.id).expect(200);
+    });
+
+    it('el trabajador no puede rechazar y el cliente no puede retirar', async () => {
+      const orderId = await newOrder();
+      const { body: created } = await offer(worker, orderId).expect(201);
+      // El trabajador tambien tiene el rol CLIENTE, pero no es el dueno.
+      await reject(worker, created.id).expect(403);
+      await withdraw(client, created.id).expect(403);
+      // Ajenos: 404.
+      await reject(client2, created.id).expect(404);
+      await withdraw(worker2, created.id).expect(404);
+      const row = await prisma.offer.findUniqueOrThrow({
+        where: { id: created.id },
+      });
+      expect(row.status).toBe(OfferStatus.VIGENTE);
+    });
+
+    it('el cliente no rechaza fuera de su turno', async () => {
+      const orderId = await newOrder();
+      const { body: created } = await offer(worker, orderId).expect(201);
+      await counterBy(client, created.id, '100').expect(200);
+
+      const res = await reject(client, created.id).expect(409);
+      expect(res.body.message).toContain('trabajador');
+      // Cuando el trabajador contraoferta vuelve a ser su turno.
+      await counterBy(worker, created.id, '110').expect(200);
+      await reject(client, created.id).expect(200);
+    });
+
+    it('una oferta vencida o cerrada no se rechaza ni se retira', async () => {
+      const orderId = await newOrder();
+      const { body: expired } = await offer(worker, orderId).expect(201);
+      await prisma.$executeRaw`UPDATE "offers" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${expired.id}::uuid`;
+      expect(
+        (await reject(client, expired.id).expect(409)).body.message,
+      ).toContain('venció');
+      await withdraw(worker, expired.id).expect(409);
+
+      const { body: closed } = await offer(worker2, orderId).expect(201);
+      await withdraw(worker2, closed.id).expect(200);
+      expect(
+        (await reject(client, closed.id).expect(409)).body.message,
+      ).toContain('cerrada');
+      await withdraw(worker2, closed.id).expect(409);
+    });
+
+    it('con varias ofertas el pedido sigue EN_NEGOCIACION hasta cerrar la ultima', async () => {
+      const orderId = await newOrder();
+      const first = (await offer(worker, orderId).expect(201)).body.id;
+      const second = (await offer(worker2, orderId).expect(201)).body.id;
+
+      await reject(client, first).expect(200);
+      expect((await orderRow(orderId)).status).toBe(OrderStatus.EN_NEGOCIACION);
+
+      await withdraw(worker2, second).expect(200);
+      const order = await orderRow(orderId);
+      expect(order.status).toBe(OrderStatus.PUBLICADO);
+      // Una sola entrada PUBLICADO -> EN_NEGOCIACION y otra de vuelta.
+      expect(
+        order.statusHistory.map((entry) => [entry.fromStatus, entry.toStatus]),
+      ).toEqual([
+        [null, OrderStatus.PUBLICADO],
+        [OrderStatus.PUBLICADO, OrderStatus.EN_NEGOCIACION],
+        [OrderStatus.EN_NEGOCIACION, OrderStatus.PUBLICADO],
+      ]);
+    });
+
+    it('una oferta vencida sin marcar no cuenta como vigente', async () => {
+      const orderId = await newOrder();
+      const stale = (await offer(worker, orderId).expect(201)).body.id;
+      const live = (await offer(worker2, orderId).expect(201)).body.id;
+      await prisma.$executeRaw`UPDATE "offers" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${stale}::uuid`;
+
+      await reject(client, live).expect(200);
+
+      expect((await orderRow(orderId)).status).toBe(OrderStatus.PUBLICADO);
+    });
+
+    it('un pedido cancelado o vencido no admite rechazo ni retiro y no cambia de estado', async () => {
+      const cancelled = await newOrder();
+      const a = (await offer(worker, cancelled).expect(201)).body.id;
+      await http()
+        .post(`/api/orders/me/${cancelled}/cancel`)
+        .set('Authorization', auth(client))
+        .send({})
+        .expect(200);
+      await reject(client, a).expect(409);
+      await withdraw(worker, a).expect(409);
+      expect((await orderRow(cancelled)).status).toBe(OrderStatus.CANCELADO);
+
+      const expired = await newOrder();
+      const b = (await offer(worker, expired).expect(201)).body.id;
+      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${expired}::uuid`;
+      await reject(client, b).expect(409);
+      await withdraw(worker, b).expect(409);
+      expect((await orderRow(expired)).status).toBe(OrderStatus.EN_NEGOCIACION);
+    });
+
+    it('el cierre queda en el historial inmutable y la oferta no se reabre', async () => {
+      const orderId = await newOrder();
+      const id = (await offer(worker, orderId).expect(201)).body.id;
+      await reject(client, id).expect(200);
+
+      await expect(
+        prisma.offerEvent.updateMany({
+          where: { offerId: id, type: 'RECHAZADA' },
+          data: { reason: 'cambio' },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offerEvent.deleteMany({ where: { offerId: id } }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offer.update({
+          where: { id },
+          data: { status: OfferStatus.VIGENTE, closedAt: null },
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('concurrencia: rechazo y retiro simultaneos cierran la oferta una sola vez', async () => {
+      const orderId = await newOrder();
+      const id = (await offer(worker, orderId).expect(201)).body.id;
+
+      const results = await Promise.all([
+        reject(client, id),
+        withdraw(worker, id),
+        withdraw(worker, id),
+      ]);
+
+      expect(results.map((res) => res.status).sort((a, b) => a - b)).toEqual([
+        200, 409, 409,
+      ]);
+      const closings = await prisma.offerEvent.findMany({
+        where: { offerId: id, type: { in: ['RECHAZADA', 'RETIRADA'] } },
+      });
+      expect(closings).toHaveLength(1);
+      const order = await orderRow(orderId);
+      expect(order.status).toBe(OrderStatus.PUBLICADO);
+      expect(
+        order.statusHistory.filter(
+          (entry) => entry.toStatus === OrderStatus.PUBLICADO,
+        ),
+      ).toHaveLength(2);
+    });
+
+    it('concurrencia: cerrar dos ofertas a la vez devuelve el pedido a PUBLICADO una sola vez', async () => {
+      const orderId = await newOrder();
+      const first = (await offer(worker, orderId).expect(201)).body.id;
+      const second = (await offer(worker2, orderId).expect(201)).body.id;
+
+      const results = await Promise.all([
+        reject(client, first),
+        withdraw(worker2, second),
+      ]);
+
+      expect(results.map((res) => res.status)).toEqual([200, 200]);
+      const order = await orderRow(orderId);
+      expect(order.status).toBe(OrderStatus.PUBLICADO);
+      expect(
+        order.statusHistory.filter(
+          (entry) => entry.fromStatus === OrderStatus.EN_NEGOCIACION,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('concurrencia: retirar mientras llega otra oferta nunca deja el pedido PUBLICADO con ofertas vigentes', async () => {
+      for (let i = 0; i < 3; i++) {
+        const orderId = await newOrder();
+        const id = (await offer(worker, orderId).expect(201)).body.id;
+
+        const [closed, created] = await Promise.all([
+          withdraw(worker, id),
+          offer(worker2, orderId),
+        ]);
+
+        expect(closed.status).toBe(200);
+        expect(created.status).toBe(201);
+        await expectStatusMatchesOffers(orderId);
+        expect((await orderRow(orderId)).status).toBe(
+          OrderStatus.EN_NEGOCIACION,
+        );
+      }
     });
   });
 });
