@@ -10,6 +10,7 @@ import { OrderImagesService } from './images/order-images.service.js';
 import { OrderExpirationService } from './order-expiration.service.js';
 import { OrderImageTooLargeFilter } from './order-image-too-large.filter.js';
 import { OrderLifecycleRegistry } from './order-lifecycle.registry.js';
+import { OrderRetentionService } from './order-retention.service.js';
 import { OrdersActiveWorkSource } from './orders-active-work.source.js';
 import { OrdersConfig } from './orders.config.js';
 import { OrdersController } from './orders.controller.js';
@@ -47,6 +48,7 @@ import { OrderVisibilityService } from './order-visibility.service.js';
     OrderImageTooLargeFilter,
     OrderLifecycleRegistry,
     OrderExpirationService,
+    OrderRetentionService,
     OrdersActiveWorkSource,
   ],
   exports: [OrdersService, OrderVisibilityService, OrderLifecycleRegistry],

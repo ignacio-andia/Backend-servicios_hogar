@@ -85,6 +85,30 @@ export type OrderAgreedStatus = (typeof AGREED_STATUSES)[number];
 export const ORDER_AGREED_STATUSES: readonly OrderStatus[] = AGREED_STATUSES;
 
 /**
+ * Estados que indican que el pedido alguna vez tuvo un acuerdo (T5.4): los
+ * estados con acuerdo y CERRADO, que solo se alcanza despues de uno. Si el
+ * historial tiene alguno, el pedido nunca se limpia automaticamente.
+ */
+export const ORDER_EVER_AGREED_STATUSES: readonly OrderStatus[] = [
+  ...AGREED_STATUSES,
+  OrderStatus.CERRADO,
+];
+
+/**
+ * Estados cerrados sin acuerdo que se limpian (T5.4): se borran las fotos y
+ * la direccion y se anonimiza la descripcion. Se conservan categoria, zona,
+ * presupuesto, fechas, estado e historial; nunca se borra el historial.
+ */
+export const ORDER_CLEANUP_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.VENCIDO,
+  OrderStatus.CANCELADO,
+];
+
+/** Texto fijo que reemplaza la descripcion de un pedido limpiado (T5.4). */
+export const ORDER_ANONYMIZED_DESCRIPTION =
+  'Descripción no disponible por cierre del pedido.';
+
+/**
  * Transiciones permitidas. Cada modulo (ofertas, pagos, visitas, agenda,
  * reclamos) agrega aqui las suyas al integrarse y las ejecuta con
  * OrdersService.transition(). CANCELADO y VENCIDO tienen efectos propios

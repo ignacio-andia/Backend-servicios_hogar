@@ -84,7 +84,6 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 - Qué estados cuentan como activos.
 - Si el trabajador ve la dirección exacta (RF-55).
 - Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos, T5.3).
-- Retención de fotos de pedidos vencidos.
 - Si aprobar un cambio de zona devuelve el perfil a revisión.
 - Si se vuelve a verificar el trabajo activo al aprobar.
 - Texto de RF-12.

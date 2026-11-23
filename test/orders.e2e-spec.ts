@@ -18,6 +18,7 @@ import { App } from 'supertest/types.js';
 import { AppModule } from '../src/app.module.js';
 import { setupApp } from '../src/common/setup-app.js';
 import {
+  NotificationType,
   OrderStatus,
   Prisma,
   RoleName,
@@ -44,6 +45,7 @@ import {
   OrderTransitionUsageError,
 } from '../src/modules/orders/order-transition.js';
 import { OrderVisibilityService } from '../src/modules/orders/order-visibility.service.js';
+import { OrderRetentionService } from '../src/modules/orders/order-retention.service.js';
 import { OrdersConfig } from '../src/modules/orders/orders.config.js';
 import { OrdersService } from '../src/modules/orders/orders.service.js';
 import {
@@ -53,6 +55,8 @@ import {
 import { WorkerProfileService } from '../src/modules/worker-profile/worker-profile.service.js';
 import { ZoneChangeRequestsService } from '../src/modules/worker-profile/zone-change-requests.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { NotificationsService } from '../src/modules/notifications/notifications.service.js';
+import { FileDeletionService } from '../src/storage/file-deletion.service.js';
 import { FileStorage } from '../src/storage/file-storage.js';
 import { deleteOrderData } from './utils/orders-cleanup.js';
 import { deleteWorkerData } from './utils/worker-profile-cleanup.js';
@@ -1337,6 +1341,12 @@ describe('OrdersModule (e2e)', () => {
         canCancel: false,
       });
       expect(res.body.cancelledAt).not.toBeNull();
+      // T5.4: tambien se anonimiza (sin direccion; descripcion fija).
+      expect(res.body).toMatchObject({
+        address: null,
+        description: 'Descripción no disponible por cierre del pedido.',
+      });
+      expect(res.body.anonymizedAt).toEqual(expect.any(String));
       expect(await keysExist(keys)).toEqual([false, false, false, false]);
       expect(
         await prisma.pendingFileDeletion.count({
@@ -1914,7 +1924,7 @@ describe('OrdersModule (e2e)', () => {
         where: { orderId: id, toStatus: OrderStatus.VENCIDO },
       });
 
-    it('vence los pedidos atrasados con actor SISTEMA y conserva sus fotos', async () => {
+    it('vence los pedidos atrasados con actor SISTEMA y borra sus fotos (T5.4)', async () => {
       const due = await newOrder('Cambiar el foco de la escalera');
       const fresh = await newOrder('Revisar la conexión de gas');
       await makeDue([due]);
@@ -1936,9 +1946,10 @@ describe('OrdersModule (e2e)', () => {
         },
       ]);
       expect(vencidos).toContain(due);
-      // Fotos de pedidos vencidos: por ahora se conservan (su borrado es una
-      // tarea aparte de T5.1).
-      await access(path.join(storageDir, image.storageKey));
+      // T5.4: al vencer se borran sus fotos del disco y de la BD.
+      await expect(
+        access(path.join(storageDir, image.storageKey)),
+      ).rejects.toThrow();
       const own = await http()
         .get(`${BASE}/me/${due}`)
         .set('Authorization', auth(client2))
@@ -1948,7 +1959,8 @@ describe('OrdersModule (e2e)', () => {
         canEdit: false,
         canCancel: false,
       });
-      expect(own.body.images).toHaveLength(1);
+      expect(own.body.images).toEqual([]);
+      expect(own.body.address).toBeNull();
 
       // Una segunda pasada no lo vuelve a vencer.
       await expiration.expireDue();
@@ -2230,6 +2242,8 @@ describe('OrdersModule (e2e)', () => {
           app.get(OrderLifecycleRegistry),
           new ConfigService(),
           new SchedulerRegistry(),
+          app.get(OrderRetentionService),
+          app.get(FileDeletionService),
         );
         try {
           restarted.onApplicationBootstrap();
@@ -2606,6 +2620,545 @@ describe('OrdersModule (e2e)', () => {
         description: original,
         revision: 2,
       });
+    });
+  });
+  describe('T5.4: limpieza de pedidos vencidos y cancelados', () => {
+    const ANONYMIZED = 'Descripción no disponible por cierre del pedido.';
+    const retention = () => app.get(OrderRetentionService);
+    const expiration = () => app.get(OrderExpirationService);
+    const fileDeletion = () => app.get(FileDeletionService);
+    const photos = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        content: jpeg,
+        name: `t54-${i}.jpg`,
+      }));
+    const newOrder = async (description: string, images = 1) => {
+      const res = await createOrder(
+        client2,
+        orderFields({ description }),
+        photos(images),
+      ).expect(201);
+      return res.body.order.id as string;
+    };
+    const keysOf = async (orderId: string) =>
+      (
+        await prisma.orderImage.findMany({
+          where: { orderId },
+          select: { storageKey: true, thumbnailKey: true },
+        })
+      ).flatMap((image) => [image.storageKey, image.thumbnailKey]);
+    const exists = (keys: string[]) =>
+      Promise.all(
+        keys.map((key) =>
+          access(path.join(storageDir, key)).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      );
+    const stored = (id: string) =>
+      prisma.order.findUniqueOrThrow({
+        where: { id },
+        include: { address: true, images: true },
+      });
+    const historyCount = (id: string) =>
+      prisma.orderStatusHistory.count({ where: { orderId: id } });
+    const cancel = (id: string) =>
+      http()
+        .post(`${BASE}/me/${id}/cancel`)
+        .set('Authorization', auth(client2))
+        .send({ reason: 'Prefiero otro día' });
+    /** Simula un pedido cerrado antes de T5.4: estado final sin limpiar. */
+    const closedBeforeT54 = async (
+      description: string,
+      status: 'VENCIDO' | 'CANCELADO',
+    ) => {
+      const id = await newOrder(description, 2);
+      await prisma.$executeRaw`UPDATE "orders" SET "status" = ${status}::"OrderStatus", "cancelled_at" = CASE WHEN ${status} = 'CANCELADO' THEN now() ELSE NULL END WHERE "id" = ${id}::uuid`;
+      return id;
+    };
+    const expectCleaned = async (id: string, keys: string[]) => {
+      const order = await stored(id);
+      expect(order).toMatchObject({
+        description: ANONYMIZED,
+        address: null,
+        images: [],
+      });
+      expect(order.anonymizedAt).toBeInstanceOf(Date);
+      expect(await exists(keys)).toEqual(keys.map(() => false));
+      expect(
+        await prisma.pendingFileDeletion.count({
+          where: { storageKey: { in: keys } },
+        }),
+      ).toBe(0);
+    };
+    const expectUntouched = async (id: string, keys: string[]) => {
+      const order = await stored(id);
+      expect(order.anonymizedAt).toBeNull();
+      expect(order.description).not.toBe(ANONYMIZED);
+      expect(order.address).not.toBeNull();
+      expect(order.images).toHaveLength(keys.length / 2);
+      expect(await exists(keys)).toEqual(keys.map(() => true));
+    };
+
+    it('al vencer borra las fotos, la dirección y la descripción, conservando el registro y el historial', async () => {
+      const id = await newOrder('Cambiar el foco del patio trasero', 2);
+      const keys = await keysOf(id);
+      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '1 second' WHERE "id" = ${id}::uuid`;
+      const before = await stored(id);
+
+      await expiration().expireDue();
+
+      await expectCleaned(id, keys);
+      expect(await stored(id)).toMatchObject({
+        status: OrderStatus.VENCIDO,
+        categoryId: before.categoryId,
+        zoneId: before.zoneId,
+        budgetAmount: before.budgetAmount,
+        publishedAt: before.publishedAt,
+        expiresAt: before.expiresAt,
+        clientId: before.clientId,
+      });
+      expect(await historyCount(id)).toBe(2);
+
+      // El dueno consulta el registro historico, sin direccion ni fotos.
+      const own = await http()
+        .get(`${BASE}/me/${id}`)
+        .set('Authorization', auth(client2))
+        .expect(200);
+      expect(own.body).toMatchObject({
+        status: OrderStatus.VENCIDO,
+        description: ANONYMIZED,
+        address: null,
+        images: [],
+      });
+      expect(own.body.anonymizedAt).toEqual(expect.any(String));
+      const imageId = before.images[0].id;
+      await http()
+        .get(`${BASE}/me/${id}/images/${imageId}`)
+        .set('Authorization', auth(client2))
+        .expect(404);
+
+      // Idempotente: otra pasada y la recuperacion no lo vuelven a tocar.
+      const anonymizedAt = (await stored(id)).anonymizedAt;
+      await expiration().expireDue();
+      await retention().recoverClosedOrders();
+      expect((await stored(id)).anonymizedAt).toEqual(anonymizedAt);
+      expect(await historyCount(id)).toBe(2);
+    });
+
+    it('al cancelar hace la misma limpieza y conserva el historial con el motivo', async () => {
+      const id = await newOrder('Reparar la persiana del dormitorio', 2);
+      const keys = await keysOf(id);
+
+      const res = await cancel(id).expect(200);
+
+      expect(res.body).toMatchObject({
+        status: OrderStatus.CANCELADO,
+        description: ANONYMIZED,
+        address: null,
+        images: [],
+      });
+      await expectCleaned(id, keys);
+      expect(
+        await prisma.orderStatusHistory.findFirst({
+          where: { orderId: id, toStatus: OrderStatus.CANCELADO },
+        }),
+      ).toMatchObject({ reason: 'Prefiero otro día' });
+    });
+
+    it('recupera pedidos vencidos o cancelados antes de T5.4, de forma idempotente', async () => {
+      const expired = await closedBeforeT54(
+        'Pintar la reja del frente de la casa',
+        'VENCIDO',
+      );
+      const cancelled = await closedBeforeT54(
+        'Arreglar la manija de la puerta',
+        'CANCELADO',
+      );
+      const keys = {
+        expired: await keysOf(expired),
+        cancelled: await keysOf(cancelled),
+      };
+      const historyBefore = [
+        await historyCount(expired),
+        await historyCount(cancelled),
+      ];
+
+      const first = await retention().recoverClosedOrders();
+      expect(first.cleaned).toBeGreaterThanOrEqual(2);
+
+      await expectCleaned(expired, keys.expired);
+      await expectCleaned(cancelled, keys.cancelled);
+      expect([
+        await historyCount(expired),
+        await historyCount(cancelled),
+      ]).toEqual(historyBefore);
+      const marks = [
+        (await stored(expired)).anonymizedAt,
+        (await stored(cancelled)).anonymizedAt,
+      ];
+      await retention().recoverClosedOrders();
+      expect([
+        (await stored(expired)).anonymizedAt,
+        (await stored(cancelled)).anonymizedAt,
+      ]).toEqual(marks);
+    });
+
+    it('nunca limpia un pedido que alguna vez tuvo un acuerdo (asignación o historial)', async () => {
+      // Con trabajador asignado.
+      const assigned = await closedBeforeT54(
+        'Revisar el tablero de la cocina',
+        'CANCELADO',
+      );
+      await prisma.order.update({
+        where: { id: assigned },
+        data: { assignedWorkerId: workerOtherCategory.id },
+      });
+      // Sin asignacion ahora, pero con ACORDADO en el historial.
+      const agreedBefore = await closedBeforeT54(
+        'Cambiar la bomba del tanque elevado',
+        'VENCIDO',
+      );
+      await prisma.orderStatusHistory.create({
+        data: {
+          orderId: agreedBefore,
+          fromStatus: OrderStatus.EN_NEGOCIACION,
+          toStatus: OrderStatus.ACORDADO,
+          actorType: 'USUARIO',
+          changedById: client2.id,
+          actorRole: RoleName.CLIENTE,
+        },
+      });
+      // Cancelado por el cliente con ACORDADO previo en el historial.
+      const cancelledAfterAgreement = await newOrder(
+        'Instalar la cocina a gas nueva',
+        1,
+      );
+      await prisma.orderStatusHistory.create({
+        data: {
+          orderId: cancelledAfterAgreement,
+          fromStatus: OrderStatus.EN_NEGOCIACION,
+          toStatus: OrderStatus.ACORDADO,
+          actorType: 'USUARIO',
+          changedById: client2.id,
+          actorRole: RoleName.CLIENTE,
+        },
+      });
+      const keys = {
+        assigned: await keysOf(assigned),
+        agreedBefore: await keysOf(agreedBefore),
+        cancelledAfterAgreement: await keysOf(cancelledAfterAgreement),
+      };
+
+      await retention().recoverClosedOrders();
+      await cancel(cancelledAfterAgreement).expect(200);
+
+      await expectUntouched(assigned, keys.assigned);
+      await expectUntouched(agreedBefore, keys.agreedBefore);
+      await expectUntouched(
+        cancelledAfterAgreement,
+        keys.cancelledAfterAgreement,
+      );
+      expect((await stored(cancelledAfterAgreement)).status).toBe(
+        OrderStatus.CANCELADO,
+      );
+      // Limpieza de la prueba: no deben quedar archivos de estos pedidos.
+      for (const id of [assigned, agreedBefore, cancelledAfterAgreement]) {
+        await prisma.order.update({
+          where: { id },
+          data: { assignedWorkerId: null, status: OrderStatus.CERRADO },
+        });
+      }
+    });
+
+    it('cualquier estado de acuerdo o ejecucion en el historial protege el pedido, no solo ACORDADO', async () => {
+      const agreedStatuses = [
+        OrderStatus.ANTICIPO_REGISTRADO,
+        OrderStatus.VISITA_REALIZADA,
+        OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE,
+        OrderStatus.EN_EJECUCION,
+        OrderStatus.TERMINADO,
+        OrderStatus.EN_RECLAMO,
+        OrderStatus.CERRADO,
+      ];
+      const orders: { id: string; keys: string[] }[] = [];
+      for (const [index, toStatus] of agreedStatuses.entries()) {
+        // Sin trabajador asignado: solo el historial lo protege.
+        const id = await closedBeforeT54(
+          `Pedido con acuerdo previo numero ${index + 1}`,
+          index % 2 === 0 ? 'VENCIDO' : 'CANCELADO',
+        );
+        await prisma.orderStatusHistory.create({
+          data: {
+            orderId: id,
+            fromStatus: OrderStatus.ACORDADO,
+            toStatus,
+            actorType: 'USUARIO',
+            changedById: client2.id,
+            actorRole: RoleName.CLIENTE,
+          },
+        });
+        orders.push({ id, keys: await keysOf(id) });
+      }
+
+      await retention().recoverClosedOrders();
+
+      for (const { id, keys } of orders) {
+        await expectUntouched(id, keys);
+      }
+      // Limpieza de la prueba, igual que la anterior.
+      for (const { id } of orders) {
+        await prisma.order.update({
+          where: { id },
+          data: { status: OrderStatus.CERRADO },
+        });
+      }
+    });
+
+    it('un fallo temporal deja la clave en la cola y un reintento posterior (o un reinicio) la borra', async () => {
+      const id = await newOrder('Reparar el enchufe del lavadero', 1);
+      const [first, second] = await keysOf(id);
+      const storage = app.get(FileStorage);
+      const original = storage.delete.bind(storage);
+      const spy = vi
+        .spyOn(storage, 'delete')
+        .mockImplementation((key: string) =>
+          key === first
+            ? Promise.reject(new Error('disco no disponible'))
+            : original(key),
+        );
+      try {
+        await cancel(id).expect(200);
+      } finally {
+        spy.mockRestore();
+      }
+
+      // La BD ya no apunta al archivo; la clave quedo en la cola.
+      expect(await exists([first, second])).toEqual([true, false]);
+      const pending = await prisma.pendingFileDeletion.findUniqueOrThrow({
+        where: { storageKey: first },
+      });
+      expect(pending).toMatchObject({
+        attempts: 1,
+        lastError: 'disco no disponible',
+        escalatedAt: null,
+      });
+
+      // Reinicio: una instancia nueva de la cola reintenta al arrancar.
+      await prisma.pendingFileDeletion.update({
+        where: { storageKey: first },
+        data: { nextAttemptAt: new Date(Date.now() - 1000) },
+      });
+      const previous = process.env.SCHEDULED_JOBS_ENABLED;
+      process.env.SCHEDULED_JOBS_ENABLED = 'true';
+      const restarted = new FileDeletionService(
+        prisma,
+        app.get(FileStorage),
+        new ConfigService(),
+        new SchedulerRegistry(),
+        app.get(NotificationsService),
+      );
+      try {
+        restarted.onApplicationBootstrap();
+        await vi.waitFor(
+          async () =>
+            expect(
+              await prisma.pendingFileDeletion.count({
+                where: { storageKey: first },
+              }),
+            ).toBe(0),
+          { timeout: 10_000, interval: 100 },
+        );
+      } finally {
+        restarted.onModuleDestroy();
+        process.env.SCHEDULED_JOBS_ENABLED = previous;
+      }
+      expect(await exists([first])).toEqual([false]);
+    });
+
+    it('a los 10 intentos escala una vez y avisa a los administradores, sin borrar la clave', async () => {
+      const key = `order-images/${randomUUID()}`;
+      await prisma.pendingFileDeletion.create({
+        data: { storageKey: key, reason: 'prueba-t54', attempts: 9 },
+      });
+      const storage = app.get(FileStorage);
+      const spy = vi
+        .spyOn(storage, 'delete')
+        .mockRejectedValue(new Error('permiso denegado'));
+      const notices = () =>
+        prisma.notification.findMany({
+          where: {
+            type: NotificationType.BORRADO_ARCHIVO_ESCALADO,
+            message: { contains: key },
+          },
+        });
+      try {
+        await fileDeletion().retryPending();
+        const row = await prisma.pendingFileDeletion.findUniqueOrThrow({
+          where: { storageKey: key },
+        });
+        expect(row.attempts).toBe(10);
+        expect(row.escalatedAt).toBeInstanceOf(Date);
+        // Reintento en 6 horas.
+        expect(row.nextAttemptAt.getTime() - Date.now()).toBeGreaterThan(
+          5.9 * 60 * 60 * 1000,
+        );
+        const sent = await notices();
+        expect(sent.map((n) => n.userId)).toContain(admin.id);
+        expect(sent.map((n) => n.userId)).not.toContain(client2.id);
+        const perAdmin = sent.filter((n) => n.userId === admin.id);
+        expect(perAdmin).toHaveLength(1);
+
+        // Otro fallo: sigue en la cola, sin un aviso nuevo.
+        await prisma.pendingFileDeletion.update({
+          where: { storageKey: key },
+          data: { nextAttemptAt: new Date(Date.now() - 1000) },
+        });
+        await fileDeletion().retryPending();
+        expect(
+          (
+            await prisma.pendingFileDeletion.findUniqueOrThrow({
+              where: { storageKey: key },
+            })
+          ).attempts,
+        ).toBe(11);
+        expect(await notices()).toHaveLength(sent.length);
+      } finally {
+        spy.mockRestore();
+        await prisma.notification.deleteMany({
+          where: {
+            type: NotificationType.BORRADO_ARCHIVO_ESCALADO,
+            message: { contains: key },
+          },
+        });
+      }
+      // Cuando el almacenamiento se recupera, el reintento la borra.
+      await prisma.pendingFileDeletion.update({
+        where: { storageKey: key },
+        data: { nextAttemptAt: new Date(Date.now() - 1000) },
+      });
+      await fileDeletion().retryPending();
+      expect(
+        await prisma.pendingFileDeletion.count({ where: { storageKey: key } }),
+      ).toBe(0);
+    });
+
+    it('vencimiento y cancelación a la vez: se limpia una sola vez', async () => {
+      const id = await newOrder('Revisar la terma del baño principal', 2);
+      const keys = await keysOf(id);
+      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '1 second' WHERE "id" = ${id}::uuid`;
+
+      const [, cancelled] = await Promise.all([
+        expiration().expireDue(),
+        cancel(id),
+      ]);
+
+      // Ya estaba vencido: cancelar responde 409 en cualquier orden.
+      expect(cancelled.status).toBe(409);
+      await expiration().expireDue();
+      expect((await stored(id)).status).toBe(OrderStatus.VENCIDO);
+      await expectCleaned(id, keys);
+      expect(await historyCount(id)).toBe(2);
+    });
+
+    it('recuperaciones y vencimiento simultáneos procesan cada pedido una sola vez', async () => {
+      const ids = await Promise.all([
+        closedBeforeT54('Cambiar el vidrio de la puerta trasera', 'VENCIDO'),
+        closedBeforeT54('Revisar la caldera del sótano', 'CANCELADO'),
+        closedBeforeT54('Arreglar el portón eléctrico', 'VENCIDO'),
+      ]);
+      const keys = await Promise.all(ids.map((id) => keysOf(id)));
+
+      const results = await Promise.all([
+        retention().recoverClosedOrders(1),
+        retention().recoverClosedOrders(1),
+        expiration().expireDue(),
+      ]);
+
+      const cleaned =
+        (results[0] as { cleaned: number }).cleaned +
+        (results[1] as { cleaned: number }).cleaned;
+      expect(cleaned).toBeGreaterThanOrEqual(3);
+      for (const [index, id] of ids.entries()) {
+        await expectCleaned(id, keys[index]);
+      }
+    });
+
+    it('los administradores consultan el registro mínimo, sin dirección ni fotos', async () => {
+      const active = await newOrder('Instalar un ventilador de techo', 1);
+      const closed = await newOrder('Reparar el lavamanos del baño', 1);
+      await cancel(closed).expect(200);
+      const get = (id: string, user = admin) =>
+        http().get(`${BASE}/admin/${id}`).set('Authorization', auth(user));
+
+      const anonymized = await get(closed).expect(200);
+      expect(anonymized.body).toMatchObject({
+        id: closed,
+        status: OrderStatus.CANCELADO,
+        clientId: client2.id,
+        client: null,
+        imageCount: 0,
+        budgetAmount: '150.50',
+      });
+      expect(anonymized.body.anonymizedAt).toEqual(expect.any(String));
+      for (const hidden of ['address', 'images', 'description']) {
+        expect(anonymized.body).not.toHaveProperty(hidden);
+      }
+      expect(
+        anonymized.body.history.map((h: { toStatus: string }) => h.toStatus),
+      ).toEqual([OrderStatus.PUBLICADO, OrderStatus.CANCELADO]);
+      expect(
+        anonymized.body.history.every(
+          (h: { reason: string | null }) => h.reason === null,
+        ),
+      ).toBe(true);
+
+      const live = await get(active).expect(200);
+      expect(live.body).toMatchObject({
+        anonymizedAt: null,
+        imageCount: 1,
+        client: { id: client2.id, firstName: client2.firstName },
+      });
+      expect(live.body).not.toHaveProperty('address');
+
+      const list = await http()
+        .get(`${BASE}/admin`)
+        .query({ status: OrderStatus.CANCELADO, limit: 50 })
+        .set('Authorization', auth(admin))
+        .expect(200);
+      expect(list.body.data.map((o: { id: string }) => o.id)).toContain(closed);
+      expect(
+        list.body.data.every(
+          (o: { status: string }) => o.status === OrderStatus.CANCELADO,
+        ),
+      ).toBe(true);
+
+      await get(closed, client2).expect(403);
+      await get(closed, worker).expect(403);
+      await http().get(`${BASE}/admin/${closed}`).expect(401);
+      await http()
+        .get(`${BASE}/admin`)
+        .set('Authorization', auth(client2))
+        .expect(403);
+      await get(randomUUID()).expect(404);
+      await cancel(active).expect(200);
+    });
+
+    it('no quedan archivos ni claves huérfanas de esta suite', async () => {
+      const referenced = new Set(
+        (
+          await prisma.orderImage.findMany({
+            select: { storageKey: true, thumbnailKey: true },
+          })
+        ).flatMap((image) => [image.storageKey, image.thumbnailKey]),
+      );
+      const onDisk = (
+        await readdir(path.join(storageDir, 'order-images')).catch(() => [])
+      ).map((name) => `order-images/${name}`);
+      // Todo archivo en disco sigue referenciado por una foto vigente.
+      expect(onDisk.filter((key) => !referenced.has(key))).toEqual([]);
+      expect(await prisma.pendingFileDeletion.count()).toBe(0);
     });
   });
 });

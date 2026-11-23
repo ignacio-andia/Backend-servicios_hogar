@@ -44,6 +44,8 @@ Cada modelo se obtuvo de lo que **construye el service** (selects explícitos, f
 | #46, #54 fotos | Binario `image/webp` |
 | #52 pedidos disponibles | `Paginated<WorkerOrderView>` |
 | #53 pedido disponible | `WorkerOrderView` |
+| #67 pedidos (admin) | `Paginated<AdminOrderSummary>` |
+| #68 detalle de un pedido (admin) | `AdminOrderView` |
 | #61 notificaciones | `Paginated<NotificationView>` |
 | #62 no leídas | `{ unread: number }` |
 | #63 marcar como leída | `NotificationView` |
@@ -454,13 +456,32 @@ Excluidos para el trabajador:
 
 | Propiedad | Tipo | Nullable | Calculado | Notas |
 |---|---|---|---|---|
-| `address` | `{ addressLine: string, reference: string \| null }` | **sí** (en la práctica siempre existe) | | Dato privado |
+| `address` | `{ addressLine: string, reference: string \| null }` | **sí** | | Dato privado. `null` si el pedido se limpió al vencer o cancelarse (T5.4) |
 | `cancelledAt` | string | **sí** | | |
+| `anonymizedAt` | string | **sí** | | T5.4: cuándo se limpió el pedido (sin dirección ni fotos, descripción "Descripción no disponible por cierre del pedido.") |
 | `createdAt`, `updatedAt` | string | no | | |
 | `canEdit` | boolean | no | ✔ | Estado efectivo `PUBLICADO` o `EN_NEGOCIACION` |
 | `canCancel` | boolean | no | ✔ | Igual que `canEdit` |
 
-Tampoco expone `clientId` ni `assignedWorkerId`. Un pedido cancelado se devuelve con `images: []`, porque sus fotos se borran.
+Tampoco expone `clientId` ni `assignedWorkerId`. Un pedido vencido o cancelado sin acuerdo se devuelve con `images: []`, `address: null` y la descripción fija (T5.4).
+
+### `AdminOrderSummary` (#67) y `AdminOrderView` (#68)
+
+Registro mínimo para administradores (T5.4). **Nunca** incluye la dirección, las fotos ni la descripción.
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `id`, `clientId` | string | no | |
+| `status` | `OrderStatus` | no | Estado efectivo |
+| `category`, `zone` | `CatalogRef` | no | |
+| `budgetAmount` | string | no | 2 decimales |
+| `revision` | number | no | |
+| `publishedAt`, `expiresAt`, `createdAt`, `updatedAt` | string | no | |
+| `lastEditedAt`, `cancelledAt`, `anonymizedAt` | string | **sí** | |
+| `client` | `{ id, firstName, lastName }` | **sí** | `null` si el pedido fue anonimizado |
+| `assignedWorkerId` | string | **sí** | |
+| `imageCount` | number | no | Fotos vigentes |
+| `history` (solo #68) | `{ fromStatus, toStatus, actorType, changedById, actorRole, systemProcess, reason, createdAt }[]` | no | Más antiguo primero. `reason` es `null` si el pedido fue anonimizado |
 
 ```json
 {

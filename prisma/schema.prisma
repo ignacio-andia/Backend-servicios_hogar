@@ -45,6 +45,8 @@ model User {
   ordersAsWorker       Order[]                      @relation("OrderAssignedWorker")
   orderStatusChanges   OrderStatusHistory[]
   notifications        Notification[]
+  offersAsWorker       Offer[]                      @relation("OfferWorker")
+  offerEvents          OfferEvent[]                 @relation("OfferEventActor")
 
   @@index([status])
   @@map("users")
@@ -354,6 +356,9 @@ model Order {
   publishedAt      DateTime    @default(now()) @map("published_at") @db.Timestamptz(3)
   expiresAt        DateTime    @map("expires_at") @db.Timestamptz(3)
   lastEditedAt     DateTime?   @map("last_edited_at") @db.Timestamptz(3)
+  /// T5.4: cuando se anonimizo el pedido al vencer o cancelarse (sin direccion,
+  /// sin fotos y con la descripcion reemplazada). Null: no anonimizado.
+  anonymizedAt     DateTime?   @map("anonymized_at") @db.Timestamptz(3)
   assignedWorkerId String?     @map("assigned_worker_id") @db.Uuid
   cancelledAt      DateTime?   @map("cancelled_at") @db.Timestamptz(3)
   createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -366,6 +371,9 @@ model Order {
   address        OrderAddress?
   images         OrderImage[]
   statusHistory  OrderStatusHistory[]
+  /// T6.1: solo relaciones inversas (OffersModule); no cambian la tabla orders.
+  offers         Offer[]
+  offerEvents    OfferEvent[]
 
   @@index([zoneId, categoryId, status, expiresAt])
   @@index([clientId, createdAt])
@@ -430,17 +438,129 @@ model OrderStatusHistory {
   @@map("order_status_history")
 }
 
+/// Estado de una oferta (T6.1). VIGENTE es el unico estado abierto; los demas
+/// son finales y quedan registrados como evento en OfferEvent.
+enum OfferStatus {
+  VIGENTE
+  ACEPTADA
+  RECHAZADA
+  RETIRADA
+  VENCIDA
+  SIN_EFECTO
+}
+
+/// Parte de la negociacion a la que le toca responder.
+enum OfferParty {
+  CLIENTE
+  TRABAJADOR
+}
+
+/// Evento del historial de negociacion (RF-21). PROPUESTA y CONTRAOFERTA
+/// abren una ronda y llevan monto; los demas cierran la oferta.
+enum OfferEventType {
+  PROPUESTA
+  CONTRAOFERTA
+  ACEPTADA
+  RECHAZADA
+  RETIRADA
+  VENCIDA
+  SIN_EFECTO
+}
+
+/// Oferta de un trabajador sobre un pedido (RF-19 a RF-24): estado actual de
+/// la negociacion. Las condiciones (visita, materiales, horario, duracion) se
+/// fijan al ofertar y no cambian; las contraofertas solo cambian el monto.
+/// Cada cambio queda en OfferEvent. La BD impide borrar la fila, cambiar sus
+/// condiciones o reabrir una oferta cerrada (trigger offers_guard).
+model Offer {
+  id                       String      @id @default(uuid()) @db.Uuid
+  orderId                  String      @map("order_id") @db.Uuid
+  workerId                 String      @map("worker_id") @db.Uuid
+  status                   OfferStatus @default(VIGENTE)
+  /// Ronda actual: 1 propuesta, 2 y 3 contraofertas (maximo 3).
+  round                    Int         @default(1) @db.SmallInt
+  /// Monto vigente: el de la ultima propuesta o contraoferta.
+  amount                   Decimal     @db.Decimal(10, 2)
+  /// A quien le toca responder la ultima propuesta.
+  turn                     OfferParty  @default(CLIENTE)
+  requiresVisit            Boolean     @map("requires_visit")
+  visitCost                Decimal?    @map("visit_cost") @db.Decimal(10, 2)
+  materialsIncluded        Boolean     @map("materials_included")
+  proposedStartAt          DateTime    @map("proposed_start_at") @db.Timestamptz(3)
+  estimatedDurationMinutes Int         @map("estimated_duration_minutes")
+  /// Vigencia: 24 horas desde la ultima propuesta o contraoferta.
+  expiresAt                DateTime    @map("expires_at") @db.Timestamptz(3)
+  closedAt                 DateTime?   @map("closed_at") @db.Timestamptz(3)
+  createdAt                DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order         Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  worker        User         @relation("OfferWorker", fields: [workerId], references: [id], onDelete: Restrict)
+  events        OfferEvent[] @relation("OfferEvents")
+  /// Inversa de la FK compuesta (mismos eventos que `events`).
+  eventsOfOrder OfferEvent[] @relation("OfferEventsSameOrder")
+
+  // Indices parciales en la migracion (Prisma no los modela):
+  // - offers_order_worker_open_key: una sola VIGENTE por trabajador y pedido
+  //   (no volver a ofertar tras retirarla lo controla OffersService).
+  // - offers_one_accepted_per_order_key: a lo sumo una ACEPTADA por pedido.
+  // Destino de la FK compuesta offer_events (offer_id, order_id): el evento
+  // pertenece al mismo pedido que su oferta.
+  @@unique([id, orderId], map: "offers_id_order_id_key")
+  @@index([orderId, status])
+  @@index([workerId, status])
+  @@index([status, expiresAt])
+  @@map("offers")
+}
+
+/// Historial inmutable de la negociacion (RF-21): cada propuesta, contraoferta
+/// y cierre, con actor, fecha, ronda y monto cuando corresponde. Solo
+/// insercion (trigger). orderId se repite para consultar el historial del
+/// pedido sin pasar por offers.
+model OfferEvent {
+  id            String         @id @default(uuid()) @db.Uuid
+  offerId       String         @map("offer_id") @db.Uuid
+  orderId       String         @map("order_id") @db.Uuid
+  type          OfferEventType
+  round         Int            @db.SmallInt
+  /// Solo en PROPUESTA y CONTRAOFERTA.
+  amount        Decimal?       @db.Decimal(10, 2)
+  actorType     OrderActorType @map("actor_type")
+  changedById   String?        @map("changed_by_id") @db.Uuid
+  actorRole     RoleName?      @map("actor_role")
+  systemProcess String?        @map("system_process") @db.VarChar(50)
+  reason        String?        @db.VarChar(500)
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  offer        Offer @relation("OfferEvents", fields: [offerId], references: [id], onDelete: Restrict)
+  /// Misma oferta, por la FK compuesta: garantiza que orderId sea el de la
+  /// oferta. Usar `offer` para navegar.
+  offerOfOrder Offer @relation("OfferEventsSameOrder", fields: [offerId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict, map: "offer_events_offer_order_fkey")
+  order        Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  changedBy    User? @relation("OfferEventActor", fields: [changedById], references: [id], onDelete: Restrict)
+
+  // Indice parcial en la migracion: una sola PROPUESTA o CONTRAOFERTA por
+  // ronda (offer_events_offer_round_key) y un solo cierre por oferta
+  // (offer_events_offer_closing_key).
+  @@index([offerId, createdAt])
+  @@index([orderId, createdAt])
+  @@map("offer_events")
+}
+
 /// Cola compartida de archivos por borrar del almacenamiento privado
 /// (StorageModule). La BD deja de apuntar al archivo y luego se borra; si el
 /// borrado falla, se reintenta.
 model PendingFileDeletion {
-  id            String   @id @default(uuid()) @db.Uuid
-  storageKey    String   @unique @map("storage_key") @db.VarChar(255)
-  reason        String   @db.VarChar(50)
-  attempts      Int      @default(0)
-  lastError     String?  @map("last_error") @db.VarChar(500)
-  nextAttemptAt DateTime @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id            String    @id @default(uuid()) @db.Uuid
+  storageKey    String    @unique @map("storage_key") @db.VarChar(255)
+  reason        String    @db.VarChar(50)
+  attempts      Int       @default(0)
+  lastError     String?   @map("last_error") @db.VarChar(500)
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  /// T5.4: cuando se aviso a los administradores de un fallo persistente. El
+  /// registro nunca se borra por eso: se sigue reintentando.
+  escalatedAt   DateTime? @map("escalated_at") @db.Timestamptz(3)
 
   @@index([nextAttemptAt])
   @@map("pending_file_deletions")
@@ -468,6 +588,9 @@ enum NotificationType {
   /// Para el trabajador RECHAZADO: un administrador reasigno su zona porque la
   /// anterior fue desactivada (T4.4). No cambia el estado del perfil.
   ZONA_REASIGNADA
+  /// Para los administradores: un archivo privado no se pudo borrar despues de
+  /// varios intentos (T5.4). Se sigue reintentando.
+  BORRADO_ARCHIVO_ESCALADO
 }
 
 /// Recurso al que apunta una notificacion (para navegar desde la interfaz).

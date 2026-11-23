@@ -55,7 +55,6 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 
 ❓ Pendientes con el docente:
 - Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos, T5.3).
-- Retención de fotos de pedidos vencidos.
 
 ## 4. Ofertas y negociación (RF-19 a RF-24)
 
@@ -96,7 +95,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF | Estado | Contrato |
 |---|---|---|
 | RF-34 "Cancelar trabajo" (con acuerdo) | ⛔ ❓ | Los 409 de edición y cancelación sugieren usarlo, pero no existe |
-| RF-35 Vencimiento del pedido | 🟡 | Vencimiento automático a los 7 días de la publicación, también en negociación y sin reinicios (T5.1); la tarea corre al arrancar y cada 15 min, y el estado efectivo se ve en #44–#45. El **aviso al cliente** y el borrado de las fotos del pedido vencido no existen |
+| RF-35 Vencimiento del pedido | 🟡 | Vencimiento automático a los 7 días de la publicación, también en negociación y sin reinicios (T5.1); la tarea corre al arrancar y cada 15 min, y el estado efectivo se ve en #44–#45. Al vencer se borran las fotos y la dirección y se anonimiza la descripción (T5.4). El **aviso al cliente** no existe |
 | RF-36 Inasistencia del trabajador | ⛔ | — |
 | RF-37, RF-38 Reclamos | ⛔ | — |
 | Cancelación antes del acuerdo (RF-18) | ✅ | #51 |
@@ -116,7 +115,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF-47 Revisar y suspender trabajadores | 🟡 | Listar (#56), ver (#57), documentos (#58–#60), suspender y reactivar (#55; la reactivación exige los requisitos vigentes, T4-F1; mientras está suspendido el trabajador puede regularizar su perfil, T4-F7). Además, #41 (perfiles con zona inactiva), #66 (reasignación de zona) y la decisión de cambios de zona (#38–#40) |
 | RF-48 Categorías | ✅ | #8, #9, #12, #13, #16–#18 (sin reactivación) |
 | RF-49 Zonas | ✅ | #10, #11, #14, #15, #19–#21 (sin reactivación). Perfiles afectados: #41; un perfil `RECHAZADO` con la zona desactivada recibe otra zona por reasignación administrativa (#66, T4.4) |
-| RF-50 Supervisar pedidos | ⛔ | No hay vista administrativa de pedidos |
+| RF-50 Supervisar pedidos | 🟡 | Registro mínimo de solo lectura: #67–#68 (T5.4). Sin acciones administrativas sobre pedidos |
 | RF-51 Atender reclamos | ⛔ | — |
 | RF-52 Reportes | ⛔ | — |
 | RF-53 Bitácora | ✅ | #22 (catálogos, decisiones de zona, decisiones sobre perfiles con `CAMBIO_ESTADO`, y accesos a documentos) |

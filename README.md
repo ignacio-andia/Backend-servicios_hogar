@@ -231,7 +231,7 @@ Formato: `postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/BASE_DE_DATOS`
 | `FILE_STORAGE_DIR` | No (por defecto `storage/private`) | Carpeta privada donde se guardan los documentos de los trabajadores y las fotos de los pedidos. No puede estar dentro de `src/`, `public/` ni `dist/`; `/storage` ya está en `.gitignore`. |
 | `WORKER_DOCUMENT_MAX_MB` | No (por defecto `5`) | Tamaño máximo de cada documento, en MB (como máximo 20). |
 | `SCHEDULED_JOBS_ENABLED` | No (por defecto `true`) | `false` apaga las tareas programadas (vencimiento de pedidos y reintentos de borrado). Las pruebas e2e las apagan. |
-| `FILE_DELETION_RETRY_INTERVAL_MINUTES` | No (por defecto `5`) | Cada cuánto se reintentan los archivos que no se pudieron borrar. |
+| `FILE_DELETION_RETRY_INTERVAL_MINUTES` | No (por defecto `5`) | Cada cuánto se reintentan los archivos que no se pudieron borrar (también al arrancar). A los 10 intentos se avisa a los administradores y se sigue reintentando cada 6 horas. |
 | `ORDER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `15`) | Cada cuánto corre la tarea de vencimiento (también corre una vez al arrancar). El plazo de vencimiento no es configurable: son 7 días desde la publicación (T5.1). `ORDER_EXPIRATION_HOURS` ya no existe y se ignora. |
 | `ORDER_MIN_IMAGES` | No (por defecto `1`) | Mínimo de fotos por pedido (como mucho 4). El **máximo es 4 y no es configurable** (T5.3): si se define `ORDER_MAX_IMAGES` con otro valor, la aplicación no arranca. Multer acepta como mucho 5 archivos, para que la quinta foto reciba el mensaje del servicio. |
 | `ORDER_IMAGE_MAX_MB` | No (por defecto `10`) | Peso máximo de cada foto subida, en MB (como máximo 25). |
@@ -303,6 +303,7 @@ Este comando aplica, en orden, las migraciones versionadas de `prisma/migrations
 | `20261122300000_zone_change_withdrawal` | Causa `RETIRO_TRABAJADOR` y notificación `SOLICITUD_ZONA_RETIRADA` (retiro voluntario) |
 | `20261122400000_zone_reassignment_notification` | Notificación `ZONA_REASIGNADA` (reasignación administrativa de zona) |
 | `20261122500000_zone_change_account_suspension` | Causa `SUSPENSION_CUENTA`: suspender una cuenta cancela su solicitud de cambio de zona pendiente |
+| `20261123000000_order_retention` | `orders.anonymized_at`, `pending_file_deletions.escalated_at` y la notificación `BORRADO_ARCHIVO_ESCALADO` (T5.4) |
 
 > Algunas migraciones tienen SQL escrito a mano (conversión a `citext`, `CHECK` y triggers) porque Prisma no los genera. **No las regeneres ni las edites**: Prisma propone `DROP COLUMN`/`ADD COLUMN` para el cambio a `citext`, y eso borraría los nombres existentes.
 
@@ -543,7 +544,7 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
 | `POST` | `/api/orders/me/:orderId/images` | Agrega una foto (campo `image`). `201` con el pedido actualizado; `409` si ya tiene el máximo. |
 | `PUT` | `/api/orders/me/:orderId/images/:imageId` | Reemplaza una foto (campo `image`); la anterior se borra del disco. `200` con el pedido actualizado. |
 | `DELETE` | `/api/orders/me/:orderId/images/:imageId` | Borra una foto del disco. `200` con el pedido actualizado (nueva `revision` y vencimiento); `409` si quedaría por debajo del mínimo (hay que reemplazarla). |
-| `POST` | `/api/orders/me/:orderId/cancel` | Cancela: `{ reason? }` (hasta 500 caracteres). `200` con el pedido. Borra todas las fotos y conserva el pedido y su historial. |
+| `POST` | `/api/orders/me/:orderId/cancel` | Cancela: `{ reason? }` (hasta 500 caracteres). `200` con el pedido. Limpia el pedido (T5.4): borra sus fotos y su dirección y anonimiza la descripción; conserva el registro mínimo y su historial. |
 | `GET` | `/api/orders/me/:orderId/images/:imageId?variant=full\|thumb` | Descarga una foto propia. |
 | `GET` | `/api/orders/available?categoryId&page&limit` | Pedidos visibles para el trabajador: misma zona, categoría entre sus especialidades, `PUBLICADO` o `EN_NEGOCIACION` sin vencer, zona y categoría activas, cuenta del cliente `ACTIVO`, y nunca los suyos como cliente (RN-14). Sin dirección ni datos del cliente. |
 | `GET` | `/api/orders/available/:orderId` | Detalle con la misma regla. Un pedido no visible responde `404`. |
@@ -552,6 +553,7 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
 - **Edición:** solo en `PUBLICADO` o `EN_NEGOCIACION` y antes de vencer.
   - Toda edición efectiva sube `revision` y actualiza `lastEditedAt`. Agregar, reemplazar o borrar una foto también cuenta como edición.
   - Una edición sin cambios reales no sube la revisión.
+- **Pedidos cerrados (T5.4):** al vencer o al cancelarlo el cliente, el pedido se **limpia** (T5.4): se borran sus fotos (de la BD y del disco, por la cola de borrado con reintentos) y su dirección exacta, y la descripción se reemplaza por `"Descripción no disponible por cierre del pedido."`; `anonymizedAt` indica cuándo. Se conservan categoría, zona, presupuesto, fechas, estado e historial (nunca se borra). **Nunca** se limpia un pedido que alguna vez tuvo un acuerdo (trabajador asignado o `ACORDADO` o posterior en su historial). Los pedidos cerrados antes de T5.4 se limpian con la misma rutina en cada pasada de la tarea automática. Administradores: `GET /api/orders/admin` y `GET /api/orders/admin/:orderId` (solo lectura, registro mínimo).
 - **Vencimiento (T5.1):** todo pedido vence a los **7 días calendario** desde su publicación original (`expiresAt = publishedAt + 7 días`, reloj de la BD). Ese plazo no se reinicia nunca: ni al editar, ni al cambiar de estado, ni al volver a `PUBLICADO` después de una negociación fallida, y no depende de las ofertas. También vence en `EN_NEGOCIACION`. Pasado `expiresAt`, las respuestas ya lo muestran `VENCIDO` y no se puede editar, cancelar, ofertar ni cambiarle el estado, aunque la tarea automática no haya corrido. La tarea corre al arrancar y cada `ORDER_EXPIRATION_INTERVAL_MINUTES`, toma los pedidos con `FOR UPDATE SKIP LOCKED` (nunca vence dos veces el mismo) y deja el historial con actor `SISTEMA`. El evento `VENCIDO` de `OrderLifecycleRegistry` incluye `fromStatus`.
   - Con acuerdo (`ACORDADO` en adelante), editar o cancelar responde `409` e indica usar «Cancelar trabajo» (RF-34). Un pedido vencido responde `409`.
 - **Avisos (`warnings`):**
@@ -592,7 +594,6 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
   - Si se pueden editar categoría o zona.
   - Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos).
   - Edición en negociación frente a ofertas existentes.
-  - Retención de fotos de pedidos vencidos.
 
 Ejemplo de registro:
 

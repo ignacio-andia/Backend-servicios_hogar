@@ -256,7 +256,7 @@ export type NotificationType =
   | 'PERFIL_REACTIVADO' | 'VERIFICACION_SOLICITADA'
   | 'VERIFICACION_REENVIADA_OBSERVACION' | 'VERIFICACION_REENVIADA_RECHAZO'
   | 'SOLICITUD_ZONA_APROBADA' | 'SOLICITUD_ZONA_RECHAZADA' | 'SOLICITUD_ZONA_CANCELADA'
-  | 'SOLICITUD_ZONA_RETIRADA' | 'ZONA_REASIGNADA';
+  | 'SOLICITUD_ZONA_RETIRADA' | 'ZONA_REASIGNADA' | 'BORRADO_ARCHIVO_ESCALADO';
 export type NotificationResourceType = 'PERFIL_TRABAJADOR' | 'SOLICITUD_CAMBIO_ZONA';
 export interface AppNotification {
   id: string;
@@ -459,10 +459,43 @@ export interface WorkerOrder {     // WorkerOrderView (trabajador aprobado)
 export interface OwnerOrder extends WorkerOrder { // OwnerOrderView (cliente duenio)
   address: { addressLine: string; reference: string | null } | null;
   cancelledAt: string | null;
+  anonymizedAt: string | null; // T5.4: sin direccion ni fotos; descripcion fija
   createdAt: string;
   updatedAt: string;
   canEdit: boolean;
   canCancel: boolean;
+}
+// Solo administradores (T5.4): registro minimo, sin direccion, fotos ni descripcion.
+export interface AdminOrderSummary {
+  id: string;
+  status: OrderStatus;
+  category: CatalogRef;
+  zone: CatalogRef;
+  budgetAmount: string;
+  revision: number;
+  publishedAt: string;
+  expiresAt: string;
+  lastEditedAt: string | null;
+  cancelledAt: string | null;
+  anonymizedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  clientId: string;
+  client: { id: string; firstName: string; lastName: string } | null; // null si anonimizado
+  assignedWorkerId: string | null;
+  imageCount: number;
+}
+export interface AdminOrderView extends AdminOrderSummary {
+  history: {
+    fromStatus: OrderStatus | null;
+    toStatus: OrderStatus;
+    actorType: 'USUARIO' | 'SISTEMA';
+    changedById: string | null;
+    actorRole: RoleName | null;
+    systemProcess: string | null;
+    reason: string | null; // null si anonimizado
+    createdAt: string;
+  }[];
 }
 export type OrderWarning =
   | { code: 'POSIBLE_DUPLICADO'; message: string; orderIds: string[] }

@@ -40,6 +40,8 @@ import type { UploadedImageFile } from './images/order-image.processor.js';
 import type { ImageDownload } from './images/order-images.service.js';
 import { OrderImageTooLargeFilter } from './order-image-too-large.filter.js';
 import type {
+  AdminOrderSummary,
+  AdminOrderView,
   OrderWarning,
   OrderWithWarnings,
   OwnerOrderView,
@@ -178,6 +180,25 @@ export class OrdersController {
     @Body() dto: CancelOrderDto,
   ): Promise<OwnerOrderView> {
     return this.orders.cancel(user.id, orderId, dto);
+  }
+
+  // T5.4: registro minimo de los pedidos para administradores (solo
+  // lectura): sin direccion, fotos ni descripcion; sin el nombre del cliente
+  // si el pedido fue anonimizado.
+  @Get('admin')
+  @Auth(RoleName.ADMINISTRADOR)
+  listForAdmin(
+    @Query() query: ListOwnOrdersQueryDto,
+  ): Promise<PaginatedOrders<AdminOrderSummary>> {
+    return this.orders.listForAdmin(query);
+  }
+
+  @Get('admin/:orderId')
+  @Auth(RoleName.ADMINISTRADOR)
+  getForAdmin(
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ): Promise<AdminOrderView> {
+    return this.orders.getForAdmin(orderId);
   }
 
   // RF-17: pedidos visibles para un trabajador aprobado (sin direccion ni

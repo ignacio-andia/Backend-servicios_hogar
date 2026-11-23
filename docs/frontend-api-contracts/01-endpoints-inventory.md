@@ -3,7 +3,7 @@
 Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí no existe: ver [09](09-gaps-and-pending-contracts.md).
 
 - Base: `http://localhost:3000/api`. Todas las rutas siguientes incluyen el prefijo `/api`.
-- Total: **66 endpoints**.
+- Total: **68 endpoints**.
 
 | Módulo | Endpoints |
 |---|---|
@@ -12,7 +12,7 @@ Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí 
 | CatalogsModule | 14 |
 | AuditModule | 1 |
 | WorkerProfileModule | 27 |
-| OrdersModule | 13 |
+| OrdersModule | 15 |
 | NotificationsModule | 4 |
 
 ## Códigos comunes (no se repiten en cada fila)
@@ -140,7 +140,7 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 | 48 | POST | `/api/orders/me/:orderId/images` | ✅ | Igual que #47 | `orderId` | `multipart/form-data`: `image` (1 archivo) | `OwnerOrderView` | 201, 400, 401, 403, 404, 409, 413 | 409 `"El pedido ya tiene el máximo de 4 fotografías…"`; 400 sin archivo |
 | 49 | PUT | `/api/orders/me/:orderId/images/:imageId` | ✅ | Igual que #47 | `orderId`, `imageId` | `multipart/form-data`: `image` | `OwnerOrderView` | 200, 400, 401, 403, 404, 409, 413 | 404 `"La fotografía no existe"` |
 | 50 | DELETE | `/api/orders/me/:orderId/images/:imageId` | ✅ | Igual que #47 | `orderId`, `imageId` | — | `OwnerOrderView` (**200 con cuerpo**) | 200, 400, 401, 403, 404, 409 | 409 `"El pedido debe conservar al menos 1 fotografía(s). Use reemplazar."` |
-| 51 | POST | `/api/orders/me/:orderId/cancel` | ✅ | `CLIENTE` dueño; pedido `PUBLICADO` o `EN_NEGOCIACION`, sin vencer | `orderId` | `CancelOrderDto` (JSON, puede ser `{}`) | `OwnerOrderView` | **200**, 400, 401, 403, 404, 409 | 409 con acuerdo (`"…Use «Cancelar trabajo» (RF-34)."`), vencido o en otro estado |
+| 51 | POST | `/api/orders/me/:orderId/cancel` | ✅ | `CLIENTE` dueño; pedido `PUBLICADO` o `EN_NEGOCIACION`, sin vencer | `orderId` | `CancelOrderDto` (JSON, puede ser `{}`) | `OwnerOrderView` | **200**, 400, 401, 403, 404, 409 | 409 con acuerdo (`"…Use «Cancelar trabajo» (RF-34)."`), vencido o en otro estado. Limpia el pedido (T5.4): sin fotos ni dirección y con la descripción anonimizada |
 | 52 | GET | `/api/orders/available` | ✅ | Trab. aprobado | Query: `categoryId?`, `page?`, `limit?` (≤ 50) | `ListAvailableOrdersQueryDto` | `Paginated<WorkerOrderView>` | 200, 400, 401, 403 | 403 con el motivo de no elegibilidad (por ejemplo `"Su perfil de trabajador está pendiente de revisión."`) |
 | 53 | GET | `/api/orders/available/:orderId` | ✅ | Trab. aprobado; pedido visible (ver 05) | `orderId` | — | `WorkerOrderView` | 200, 400, 401, 403, 404 | 404 si no le corresponde verlo |
 | 54 | GET | `/api/orders/available/:orderId/images/:imageId` | ✅ | Igual que #53 | `orderId`, `imageId`; Query: `variant?` | `ImageVariantQueryDto` | Binario `image/webp` | 200, 400, 401, 403, 404 | 404 |
@@ -149,7 +149,12 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 >
 > **Nota (#42, T5.3):** cada pedido tiene de 1 a 4 fotos (JPG, PNG o WebP, validadas por su contenido). El máximo de 4 es fijo (no configurable). Con 5 fotos, el service responde 400 con el mensaje en español; con 6 o más, multer corta la petición con 400 (mensaje de multer en inglés) sin cargar el resto en memoria.
 >
-> **No existen** endpoints de ofertas, historial de estados del pedido, vista administrativa de pedidos, asignación de trabajador ni "Cancelar trabajo".
+| 67 | GET | `/api/orders/admin` | ✅ | Admin | Query: `status?` (estado efectivo), `page?`, `limit?` (≤ 50) | `ListOwnOrdersQueryDto` | `Paginated<AdminOrderSummary>` | 200, 400, 401, 403 | Solo lectura. Registro mínimo: sin dirección, fotos ni descripción; sin el nombre del cliente si el pedido fue anonimizado (T5.4) |
+| 68 | GET | `/api/orders/admin/:orderId` | ✅ | Admin | `orderId` | — | `AdminOrderView` | 200, 400, 401, 403, 404 | Igual que #67, con el historial de estados (sin los motivos si fue anonimizado) |
+
+> **Nota (#44–#45, #51, #67–#68, T5.4): pedidos cerrados.** al vencer o al cancelarlo el cliente, el pedido se **limpia** (T5.4): se borran sus fotos (de la BD y del disco, por la cola de borrado con reintentos) y su dirección exacta, y la descripción se reemplaza por `"Descripción no disponible por cierre del pedido."`; `anonymizedAt` indica cuándo. Se conservan categoría, zona, presupuesto, fechas, estado e historial (nunca se borra). **Nunca** se limpia un pedido que alguna vez tuvo un acuerdo (trabajador asignado o `ACORDADO` o posterior en su historial). Los pedidos cerrados antes de T5.4 se limpian con la misma rutina en cada pasada de la tarea automática. El dueño sigue viendo el registro (#44–#45) con `address: null`, `images: []` y la descripción fija; sus fotos responden 404.
+>
+> **No existen** endpoints de ofertas, asignación de trabajador ni "Cancelar trabajo".
 
 ## NotificationsModule (`/api/notifications`)
 

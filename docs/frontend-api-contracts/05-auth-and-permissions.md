@@ -58,6 +58,7 @@ Columnas:
 | `/worker-profile/admin/*` | ✘ | ✘ | ✘ | ✘ | ✔ | Un administrador no resuelve su propia solicitud de zona ni decide sobre su propio perfil (403) |
 | `POST /orders`, `POST /orders/duplicate-check`, `/orders/me/*` | ✘ | propio | propio (tiene `CLIENTE`) | propio | ✘ (salvo que también tenga `CLIENTE`) | Editar y cancelar solo en `PUBLICADO` o `EN_NEGOCIACION`, sin vencer |
 | `/orders/available/*` | ✘ | ✘ | ✘ (403) | ✔ | ✘ | Regla de visibilidad (abajo) |
+| `GET /orders/admin`, `GET /orders/admin/:orderId` | ✘ | ✘ | ✘ | ✘ | ✔ | Solo lectura; registro mínimo (T5.4) |
 
 > Toda cuenta registrada tiene `CLIENTE`. Un trabajador también es cliente con la misma cuenta (RF-02, RN-14). El primer administrador, creado con `npm run admin:create-first`, solo tiene el rol `ADMINISTRADOR` (no `CLIENTE`).
 
@@ -71,10 +72,10 @@ Columnas:
 | Motivo de observación, rechazo o suspensión | ✘ | — | ✘ | solo el propio (`/me/status`, `/me/eligibility` y su notificación) | lo escribe; lo ve en el detalle (#57) y en la bitácora (#22) |
 | Quién decidió cada cambio de estado | ✘ | — | ✘ | solo `TRABAJADOR` o `ADMINISTRADOR` | nombre e id (#57) |
 | Documentos del trabajador | ✘ | — | ✘ | los propios (listar y descargar) | ✔ listar, ver y descargar (#58–#60), **salvo los de su propio perfil**; cada acceso queda en la bitácora |
-| Pedido (datos generales) | ✘ | ✔ | ✘ | solo los visibles | ✘ (**no hay endpoint**) |
+| Pedido (datos generales) | ✘ | ✔ (también cerrado: registro histórico) | ✘ | solo los visibles | registro mínimo (#67–#68): sin dirección, fotos ni descripción; sin nombre del cliente si fue anonimizado |
 | Dirección exacta del pedido | ✘ | ✔ | ✘ | ✘ (❓ RF-55, pendiente con el docente) | ✘ |
 | Datos del cliente en el pedido | ✘ | — | ✘ | ✘ | ✘ |
-| Fotos del pedido | ✘ | ✔ | ✘ | solo de pedidos visibles | ✘ |
+| Fotos del pedido | ✘ | ✔ (hasta que el pedido vence o se cancela: se borran) | ✘ | solo de pedidos visibles | ✘ |
 | Historial de estados del pedido | ✘ | ✘ (no expuesto) | ✘ | ✘ | ✘ |
 | Bitácora | ✘ | ✘ | ✘ | ✘ | ✔ |
 | Notificaciones | ✘ | las propias | ✘ | las propias | las propias (las de verificación no incluyen datos personales del trabajador ni el motivo) |

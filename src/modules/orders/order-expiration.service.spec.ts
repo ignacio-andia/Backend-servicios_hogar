@@ -1,8 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import type { PrismaService } from '../../prisma/prisma.service.js';
+import type { FileDeletionService } from '../../storage/file-deletion.service.js';
 import { OrderExpirationService } from './order-expiration.service.js';
 import { OrderLifecycleRegistry } from './order-lifecycle.registry.js';
+import type { OrderRetentionService } from './order-retention.service.js';
 import { OrdersConfig } from './orders.config.js';
 
 type Fn = ReturnType<typeof vi.fn>;
@@ -12,6 +14,8 @@ describe('OrderExpirationService', () => {
   let lifecycle: OrderLifecycleRegistry;
   let tx: { $queryRaw: Fn; $executeRaw: Fn; $transaction: Fn };
   let prisma: { $transaction: Fn };
+  let retention: { cleanupClosedOrder: Fn; recoverClosedOrders: Fn };
+  let fileDeletion: { processNow: Fn };
 
   const create = (env: Record<string, string> = {}) => {
     const config = new ConfigService(env);
@@ -21,6 +25,8 @@ describe('OrderExpirationService', () => {
       lifecycle,
       config,
       scheduler,
+      retention as unknown as OrderRetentionService,
+      fileDeletion as unknown as FileDeletionService,
     );
   };
   const due = (...ids: string[]) =>
@@ -41,6 +47,11 @@ describe('OrderExpirationService', () => {
     prisma = {
       $transaction: vi.fn((work: (client: typeof tx) => unknown) => work(tx)),
     };
+    retention = {
+      cleanupClosedOrder: vi.fn().mockResolvedValue([]),
+      recoverClosedOrders: vi.fn().mockResolvedValue({ cleaned: 0, failed: 0 }),
+    };
+    fileDeletion = { processNow: vi.fn().mockResolvedValue(undefined) };
   });
 
   it('toma los pedidos con SKIP LOCKED y vence cada uno en su SAVEPOINT', async () => {
@@ -110,6 +121,46 @@ describe('OrderExpirationService', () => {
     expect(afterCommit).not.toHaveBeenCalled();
   });
 
+  it('limpia cada pedido vencido en su SAVEPOINT y borra los archivos despues de confirmar (T5.4)', async () => {
+    tx.$queryRaw.mockResolvedValueOnce(due('a', 'b'));
+    retention.cleanupClosedOrder
+      .mockResolvedValueOnce(['order-images/a1', 'order-images/a2'])
+      .mockResolvedValueOnce([]);
+    const afterCommit = vi.fn();
+    lifecycle.register({ name: 'spy', afterCommit });
+
+    expect(await create().expireDue(5)).toBe(2);
+
+    expect(retention.cleanupClosedOrder.mock.calls).toEqual([
+      [tx, 'a', 'VENCIDO'],
+      [tx, 'b', 'VENCIDO'],
+    ]);
+    // Primero el borrado fisico de lo encolado, despues los efectos posteriores.
+    expect(fileDeletion.processNow).toHaveBeenCalledWith([
+      'order-images/a1',
+      'order-images/a2',
+    ]);
+    expect(fileDeletion.processNow.mock.invocationCallOrder[0]).toBeLessThan(
+      afterCommit.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('si la limpieza falla, ese pedido no vence en esta pasada y sus archivos no se borran', async () => {
+    tx.$queryRaw.mockResolvedValueOnce(due('a', 'b'));
+    retention.cleanupClosedOrder
+      .mockRejectedValueOnce(new Error('fallo de prueba'))
+      .mockResolvedValueOnce(['order-images/b1']);
+    const afterCommit = vi.fn();
+    lifecycle.register({ name: 'spy', afterCommit });
+
+    expect(await create().expireDue(5)).toBe(1);
+
+    expect(afterCommit.mock.calls.map(([event]) => event.orderId)).toEqual([
+      'b',
+    ]);
+    expect(fileDeletion.processNow).toHaveBeenCalledWith(['order-images/b1']);
+  });
+
   it('un hook que falla solo afecta a su pedido y este se salta en la pasada', async () => {
     tx.$queryRaw
       .mockResolvedValueOnce(due('a', 'b'))
@@ -168,6 +219,22 @@ describe('OrderExpirationService', () => {
       await vi.advanceTimersByTimeAsync(5 * 60_000);
       // Pasada al arrancar y una del intervalo de 5 minutos.
       expect(prisma.$transaction).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cada pasada programada corre la recuperacion despues de vencer (T5.4)', async () => {
+    vi.useFakeTimers();
+    try {
+      const service = create();
+      service.onApplicationBootstrap();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(retention.recoverClosedOrders).toHaveBeenCalledTimes(1);
+      expect(prisma.$transaction.mock.invocationCallOrder[0]).toBeLessThan(
+        retention.recoverClosedOrders.mock.invocationCallOrder[0],
+      );
+      service.onModuleDestroy();
     } finally {
       vi.useRealTimers();
     }

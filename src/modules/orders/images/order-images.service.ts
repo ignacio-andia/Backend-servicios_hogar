@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Readable } from 'node:stream';
+import type { Prisma } from '../../../generated/prisma/client.js';
 import { PrismaService } from '../../../prisma/prisma.service.js';
 import { FileDeletionService } from '../../../storage/file-deletion.service.js';
 import { FileStorage } from '../../../storage/file-storage.js';
@@ -65,6 +66,30 @@ export class OrderImagesService {
       await this.discard(stored);
       throw error;
     }
+  }
+
+  /**
+   * T5.4: libera todas las fotos de un pedido dentro de la transaccion `tx`
+   * del llamador: borra sus filas y encola sus archivos en la misma
+   * transaccion (cola compartida). Devuelve las claves para borrarlas despues
+   * de confirmar (FileDeletionService.processNow). Sin fotos, no hace nada.
+   */
+  async releaseOrderImages(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    reason: string,
+  ): Promise<string[]> {
+    const images = await tx.orderImage.findMany({
+      where: { orderId },
+      select: { storageKey: true, thumbnailKey: true },
+    });
+    if (images.length === 0) {
+      return [];
+    }
+    await tx.orderImage.deleteMany({ where: { orderId } });
+    const keys = imageKeys(images);
+    await this.fileDeletion.enqueue(keys, reason, tx);
+    return keys;
   }
 
   /** Compensacion: archivos guardados cuyo registro en la BD no se confirmo. */

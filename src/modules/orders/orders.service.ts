@@ -31,12 +31,16 @@ import {
 } from './order-lifecycle.registry.js';
 import { catalogRefs, dbNow } from './order-support.js';
 import {
+  ADMIN_ORDER_SELECT,
+  AdminOrderSummary,
+  AdminOrderView,
   effectiveStatus,
   OrderWarning,
   OrderWithWarnings,
   OWNER_ORDER_SELECT,
   OwnerOrderView,
   PaginatedOrders,
+  toAdminSummary,
   toOwnerView,
 } from './order-views.js';
 import {
@@ -50,6 +54,7 @@ import {
   OrderTransitionResult,
   OrderTransitionUsageError,
 } from './order-transition.js';
+import { OrderRetentionService } from './order-retention.service.js';
 import { OrdersConfig } from './orders.config.js';
 import {
   ACTIVE_ORDER_STATUSES,
@@ -81,6 +86,7 @@ export class OrdersService {
     private readonly lifecycle: OrderLifecycleRegistry,
     private readonly workerProfiles: WorkerProfileService,
     private readonly activeWork: WorkerActiveWorkRegistry,
+    private readonly retention: OrderRetentionService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -206,6 +212,73 @@ export class OrdersService {
       dbNow(this.prisma),
     ]);
     return toOwnerView(order, refs, now);
+  }
+
+  // ---------------------------------------------------------------------
+  // T5.4: consulta administrativa del registro minimo (solo lectura). La
+  // autorizacion (rol ADMINISTRADOR y cuenta activa) la hace el controller.
+  // ---------------------------------------------------------------------
+
+  async listForAdmin({
+    status,
+    page,
+    limit,
+  }: ListOwnOrdersQueryDto): Promise<PaginatedOrders<AdminOrderSummary>> {
+    const now = await dbNow(this.prisma);
+    const where = ownStatusFilter(status, now);
+    const [orders, total] = await this.prisma.$transaction([
+      this.prisma.order.findMany({
+        where,
+        select: ADMIN_ORDER_SELECT,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+    const refs = await catalogRefs(this.catalogs, orders);
+    return {
+      data: orders.map((order) => toAdminSummary(order, refs, now)),
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  async getForAdmin(orderId: string): Promise<AdminOrderView> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        ...ADMIN_ORDER_SELECT,
+        statusHistory: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            fromStatus: true,
+            toStatus: true,
+            actorType: true,
+            changedById: true,
+            actorRole: true,
+            systemProcess: true,
+            reason: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+    if (!order) {
+      throw orderNotFound();
+    }
+    const [refs, now] = await Promise.all([
+      catalogRefs(this.catalogs, [order]),
+      dbNow(this.prisma),
+    ]);
+    const anonymized = order.anonymizedAt !== null;
+    return {
+      ...toAdminSummary(order, refs, now),
+      history: order.statusHistory.map((entry) => ({
+        ...entry,
+        // El motivo es texto libre del usuario: no se muestra si se anonimizo.
+        reason: anonymized ? null : entry.reason,
+      })),
+    };
   }
 
   /** Consulta previa orientativa de posibles duplicados (nunca bloquea). */
@@ -533,9 +606,12 @@ export class OrdersService {
   // ---------------------------------------------------------------------
 
   /**
-   * Cancela un pedido PUBLICADO o EN_NEGOCIACION: conserva el pedido y su
-   * historial, borra fisicamente todas sus fotos y avisa a los modulos
-   * registrados (CANCELADO). Con acuerdo se usa "Cancelar trabajo" (RF-34).
+   * Cancela un pedido PUBLICADO o EN_NEGOCIACION y avisa a los modulos
+   * registrados (CANCELADO). En la misma transaccion lo limpia (T5.4): borra
+   * sus fotos (por la cola compartida), su direccion y anonimiza la
+   * descripcion; conserva el registro minimo y el historial. Un pedido que
+   * alguna vez tuvo un acuerdo no se limpia. Con acuerdo se usa "Cancelar
+   * trabajo" (RF-34).
    */
   async cancel(
     clientId: string,
@@ -560,13 +636,6 @@ export class OrdersService {
           actor,
           reason,
         });
-        const images = await tx.orderImage.findMany({
-          where: { orderId },
-          select: { storageKey: true, thumbnailKey: true },
-        });
-        await tx.orderImage.deleteMany({ where: { orderId } });
-        const keys = imageKeys(images);
-        await this.fileDeletion.enqueue(keys, 'cancelacion-pedido', tx);
         const eventList: OrderLifecycleEvent[] = [
           {
             type: 'CANCELADO',
@@ -577,6 +646,12 @@ export class OrdersService {
           },
         ];
         await this.lifecycle.runInTransaction(eventList, tx);
+        // Despues de los hooks (que aun ven los datos originales).
+        const keys = await this.retention.cleanupClosedOrder(
+          tx,
+          orderId,
+          OrderStatus.CANCELADO,
+        );
         return { obsoleteKeys: keys, events: eventList };
       },
     );

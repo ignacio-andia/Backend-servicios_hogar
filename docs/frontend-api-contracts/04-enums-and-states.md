@@ -96,6 +96,8 @@ Transiciones: `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un a
 
 **Vencimiento (T5.1):** todo pedido vence a los **7 días calendario** desde su publicación original (`expiresAt = publishedAt + 7 días`, reloj de la BD). Ese plazo no se reinicia nunca: ni al editar, ni al cambiar de estado, ni al volver a `PUBLICADO` después de una negociación fallida, y no depende de las ofertas.
 
+**Limpieza al cerrar (T5.4):** al vencer o al cancelarlo el cliente, el pedido se **limpia** (T5.4): se borran sus fotos (de la BD y del disco, por la cola de borrado con reintentos) y su dirección exacta, y la descripción se reemplaza por `"Descripción no disponible por cierre del pedido."`; `anonymizedAt` indica cuándo. Se conservan categoría, zona, presupuesto, fechas, estado e historial (nunca se borra). **Nunca** se limpia un pedido que alguna vez tuvo un acuerdo (trabajador asignado o `ACORDADO` o posterior en su historial). Los pedidos cerrados antes de T5.4 se limpian con la misma rutina en cada pasada de la tarea automática.
+
 **Estado efectivo:** un pedido `PUBLICADO` o `EN_NEGOCIACION` cuyo `expiresAt` ya pasó se devuelve como `VENCIDO` en todas las respuestas y ya no admite ediciones, cancelación, ofertas ni cambios de estado, aunque la tarea automática todavía no lo haya registrado. La tarea corre al arrancar el servidor y luego periódicamente; nunca vence dos veces el mismo pedido.
 
 Transiciones implementadas (`ORDER_TRANSITIONS`):
@@ -143,6 +145,7 @@ Notificaciones internas (T3.2, migración `20261122100000_create_notifications`)
 | `SOLICITUD_ZONA_RECHAZADA` | El trabajador | Su solicitud se rechazó (#40) | Sí (obligatorio) |
 | `SOLICITUD_ZONA_CANCELADA` | El trabajador | Su solicitud pendiente se canceló al suspender su perfil (#55) | No (la suspensión llega en su propia notificación `PERFIL_SUSPENDIDO`) |
 | `SOLICITUD_ZONA_RETIRADA` | El trabajador | Confirma que retiró su solicitud (#65, T4.3) | No |
+| `BORRADO_ARCHIVO_ESCALADO` | Cada administrador activo | Un archivo privado no se pudo borrar después de 10 intentos (T5.4). Se avisa una sola vez por archivo; se sigue reintentando cada 6 horas | No (incluye el motivo de cola y la clave, sin rutas) |
 | `ZONA_REASIGNADA` | El trabajador `RECHAZADO` | Un administrador reasignó su zona desactivada (#66, T4.4; `resourceType: PERFIL_TRABAJADOR`; migración `20261122400000_zone_reassignment_notification`) | No (la justificación queda en la bitácora) |
 
 Cada notificación se crea **en la misma transacción** que el evento: si falla, el cambio de estado o el envío tampoco se confirma. `NotificationResourceType`: `PERFIL_TRABAJADOR` (eventos de verificación) o `SOLICITUD_CAMBIO_ZONA` (T4.2).
