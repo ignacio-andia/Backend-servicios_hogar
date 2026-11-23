@@ -47,7 +47,7 @@ import type {
   WorkerOrderView,
 } from './order-views.js';
 import { OrderVisibilityService } from './order-visibility.service.js';
-import { ABSOLUTE_MAX_IMAGES } from './orders.rules.js';
+import { ORDER_MAX_IMAGES } from './orders.rules.js';
 import { OrdersService } from './orders.service.js';
 
 /**
@@ -64,7 +64,9 @@ export class OrdersController {
   // RF-14: crear un pedido (multipart: campos + "images").
   @Post()
   @Auth(RoleName.CLIENTE)
-  @UseInterceptors(FilesInterceptor('images', ABSOLUTE_MAX_IMAGES))
+  // Una foto mas que el maximo: la quinta recibe el mensaje del servicio; con
+  // mas, multer corta la peticion sin cargarlas en memoria (T5.3).
+  @UseInterceptors(FilesInterceptor('images', ORDER_MAX_IMAGES + 1))
   @UseFilters(OrderImageTooLargeFilter)
   create(
     @CurrentUser() user: PublicUser,

@@ -54,7 +54,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 - OffersModule (para pasar a `EN_NEGOCIACION`).
 
 ❓ Pendientes con el docente:
-- Cantidad definitiva de fotos y soporte de HEIC.
+- Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos, T5.3).
 - Retención de fotos de pedidos vencidos.
 
 ## 4. Ofertas y negociación (RF-19 a RF-24)

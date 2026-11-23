@@ -303,16 +303,65 @@ describe('OrdersModule (e2e)', () => {
       await createOrder(client, orderFields(override)).expect(400);
     });
 
-    it('exige entre 1 y 3 fotografias', async () => {
-      await createOrder(client, orderFields(), []).expect(400);
-      const four = Array.from({ length: 4 }, (_, i) => ({
-        content: jpeg,
-        name: `f${i}.jpg`,
-      }));
-      const res = await createOrder(client, orderFields(), four).expect(400);
-      expect(res.body.message).toBe(
-        'Debe adjuntar entre 1 y 3 fotografías en el campo "images"',
+    it('acepta hasta 4 fotografias y rechaza 0, 5 o mas sin dejar archivos (T5.3)', async () => {
+      const photos = (n: number) =>
+        Array.from({ length: n }, (_, i) => ({
+          content: jpeg,
+          name: `f${i}.jpg`,
+        }));
+      const before = await readdir(path.join(storageDir, 'order-images')).catch(
+        () => [],
       );
+      await createOrder(client, orderFields(), []).expect(400);
+      const five = await createOrder(client, orderFields(), photos(5)).expect(
+        400,
+      );
+      expect(five.body.message).toBe(
+        'Debe adjuntar entre 1 y 4 fotografías en el campo "images"',
+      );
+      // Con mas archivos multer corta antes de cargarlos (LIMIT_FILE_COUNT).
+      await createOrder(client, orderFields(), photos(6)).expect(400);
+      expect(
+        await readdir(path.join(storageDir, 'order-images')).catch(() => []),
+      ).toEqual(before);
+
+      const res = await createOrder(client, orderFields(), photos(4)).expect(
+        201,
+      );
+      expect(
+        res.body.order.images.map((i: { position: number }) => i.position),
+      ).toEqual([1, 2, 3, 4]);
+      // Las 4 se ven y se descargan (dueno y trabajador habilitado).
+      for (const image of res.body.order.images as { id: string }[]) {
+        for (const url of [
+          `${BASE}/me/${res.body.order.id}/images/${image.id}`,
+          `${BASE}/available/${res.body.order.id}/images/${image.id}?variant=thumb`,
+        ]) {
+          const file = await http()
+            .get(url)
+            .set('Authorization', auth(url.includes('/me/') ? client : worker))
+            .buffer(true)
+            .parse((r, cb) => {
+              const c: Buffer[] = [];
+              r.on('data', (d: Buffer) => c.push(d));
+              r.on('end', () => cb(null, Buffer.concat(c)));
+            })
+            .expect(200);
+          expect(file.headers['content-type']).toBe('image/webp');
+          expect((await sharp(file.body as Buffer).metadata()).format).toBe(
+            'webp',
+          );
+        }
+      }
+      // Se cancela (borra sus fotos) para no afectar a las demas pruebas.
+      await http()
+        .post(`${BASE}/me/${res.body.order.id}/cancel`)
+        .set('Authorization', auth(client))
+        .send({})
+        .expect(200);
+      expect(
+        await readdir(path.join(storageDir, 'order-images')).catch(() => []),
+      ).toEqual(before);
     });
 
     it('rechaza formatos no permitidos y extensiones falsas', async () => {
@@ -804,11 +853,17 @@ describe('OrdersModule (e2e)', () => {
     });
 
     it('no supera el maximo de fotos y no deja archivos huerfanos', async () => {
-      const order = await newOrder('Reparar tres ventanas rotas del cuarto', 3);
+      const order = await newOrder(
+        'Reparar cuatro ventanas rotas del cuarto',
+        4,
+      );
       const before = await filesOnDisk();
 
       const res = await addImage(client2, order.id).expect(409);
-      expect(res.body.message).toContain('máximo de 3');
+      // T5.3: la quinta foto se rechaza.
+      expect(res.body.message).toBe(
+        'El pedido ya tiene el máximo de 4 fotografías. Elimine o reemplace una.',
+      );
       expect(await filesOnDisk()).toEqual(before);
       await addImage(client2, order.id, Buffer.from('no es imagen')).expect(
         400,

@@ -310,7 +310,7 @@ No acepta otras propiedades (400): la operación no cambia el estado ni otros da
 | `budgetAmount` | string | Obligatorio | `^(?!0+(?:\.0{1,2})?$)\d{1,8}(?:\.\d{1,2})?$`: mayor que 0, hasta 8 enteros y 2 decimales, punto decimal | `@Transform(número→string) @IsString @Matches` | Se devuelve con 2 decimales (`"150.50"`) |
 | `addressLine` | string | Obligatorio | 1 a 255 | `@Trim @IsString @IsNotEmpty @MaxLength(255)` | Dato privado: solo lo ve el dueño |
 | `addressReference` | string | Omitible | ≤ 255 | `@Trim @IsOptional @IsString @MaxLength(255)` | Ver la inconsistencia en 09: `""` se guarda como `""` |
-| `images` | archivo(s) | Obligatorio | 1 a 3 fotos (configurable con `ORDER_MIN_IMAGES` y `ORDER_MAX_IMAGES`) | multer | Ver [06](06-file-contracts.md) |
+| `images` | archivo(s) | Obligatorio | 1 a 4 fotos (T5.3; el máximo de 4 es fijo) | multer | Ver [06](06-file-contracts.md) |
 
 Ejemplos inválidos de `budgetAmount`: `"0"`, `"0.00"`, `"-5"`, `"150,50"`, `"1.234"`, `"123456789"`.
 

@@ -11,8 +11,12 @@ export const ORDER_ADDRESS_MAX_LENGTH = 255;
 // Igual que la columna order_status_history.reason.
 export const ORDER_STATUS_REASON_MAX_LENGTH = 500;
 
-// Topes tecnicos absolutos: la configuracion no puede superarlos.
-export const ABSOLUTE_MAX_IMAGES = 10;
+// Maximo de fotografias por pedido: regla de negocio confirmada (T5.3), no
+// configurable. La variable ORDER_MAX_IMAGES ya no existe: si se define con
+// otro valor, la aplicacion no arranca (OrdersConfig).
+export const ORDER_MAX_IMAGES = 4;
+
+// Tope tecnico absoluto: la configuracion no puede superarlo.
 export const ABSOLUTE_IMAGE_MAX_MB = 25;
 
 /**

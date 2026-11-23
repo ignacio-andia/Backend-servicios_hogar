@@ -233,7 +233,7 @@ Formato: `postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/BASE_DE_DATOS`
 | `SCHEDULED_JOBS_ENABLED` | No (por defecto `true`) | `false` apaga las tareas programadas (vencimiento de pedidos y reintentos de borrado). Las pruebas e2e las apagan. |
 | `FILE_DELETION_RETRY_INTERVAL_MINUTES` | No (por defecto `5`) | Cada cuánto se reintentan los archivos que no se pudieron borrar. |
 | `ORDER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `15`) | Cada cuánto corre la tarea de vencimiento (también corre una vez al arrancar). El plazo de vencimiento no es configurable: son 7 días desde la publicación (T5.1). `ORDER_EXPIRATION_HOURS` ya no existe y se ignora. |
-| `ORDER_MIN_IMAGES` / `ORDER_MAX_IMAGES` | No (por defecto `1` / `3`) | Fotos por pedido (como máximo 10). |
+| `ORDER_MIN_IMAGES` | No (por defecto `1`) | Mínimo de fotos por pedido (como mucho 4). El **máximo es 4 y no es configurable** (T5.3): si se define `ORDER_MAX_IMAGES` con otro valor, la aplicación no arranca. Multer acepta como mucho 5 archivos, para que la quinta foto reciba el mensaje del servicio. |
 | `ORDER_IMAGE_MAX_MB` | No (por defecto `10`) | Peso máximo de cada foto subida, en MB (como máximo 25). |
 | `ORDER_IMAGE_MAX_PIXELS` | No (por defecto `50000000`) | Megapíxeles máximos de la foto original. |
 | `ORDER_IMAGE_MAX_DIMENSION` / `ORDER_IMAGE_QUALITY` / `ORDER_THUMBNAIL_SIZE` | No (por defecto `1600` / `80` / `400`) | Lado mayor, calidad WebP y tamaño de la miniatura de las fotos guardadas. |
@@ -535,7 +535,7 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| `POST` | `/api/orders` | Publica un pedido (`multipart/form-data`): `categoryId`, `zoneId`, `description` (10 a 2000 caracteres), `budgetAmount` (mayor que 0, hasta 2 decimales), `addressLine`, `addressReference?` y de 1 a 3 fotos en el campo `images`. Queda `PUBLICADO` y vence a los 7 días de su publicación (T5.1). Devuelve `{ order, warnings }`. |
+| `POST` | `/api/orders` | Publica un pedido (`multipart/form-data`): `categoryId`, `zoneId`, `description` (10 a 2000 caracteres), `budgetAmount` (mayor que 0, hasta 2 decimales), `addressLine`, `addressReference?` y de 1 a 4 fotos en el campo `images`. Queda `PUBLICADO` y vence a los 7 días de su publicación (T5.1). Devuelve `{ order, warnings }`. |
 | `POST` | `/api/orders/duplicate-check` | Aviso orientativo antes de publicar: `{ categoryId, zoneId, description }` → `{ warnings }`. Nunca bloquea. |
 | `GET` | `/api/orders/me?status&page&limit` | Pedidos propios, del más reciente al más antiguo (`limit` máximo 50). |
 | `GET` | `/api/orders/me/:orderId` | Detalle propio con dirección, fotos, `canEdit` y `canCancel`. |
@@ -590,7 +590,7 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
   - Qué estados cuentan como activos.
   - Visibilidad de la dirección exacta.
   - Si se pueden editar categoría o zona.
-  - Cantidad definitiva de fotos y soporte de HEIC.
+  - Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos).
   - Edición en negociación frente a ofertas existentes.
   - Retención de fotos de pedidos vencidos.
 
