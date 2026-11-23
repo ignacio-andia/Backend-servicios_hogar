@@ -650,4 +650,278 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
         .expect(200);
     });
   });
+
+  describe('POST /api/offers/:offerId/counter (T6.3)', () => {
+    const counter = (user: PublicUser, offerId: string, body: object) =>
+      http()
+        .post(`/api/offers/${offerId}/counter`)
+        .set('Authorization', auth(user))
+        .send(body);
+    /** Pedido de `client` con una oferta de `worker` (ronda 1, turno del cliente). */
+    const negotiation = async () => {
+      const orderId = await newOrder();
+      const created = await offer(worker, orderId).expect(201);
+      return {
+        orderId,
+        offerId: created.body.id as string,
+        original: created.body as Record<string, unknown>,
+      };
+    };
+
+    it('cliente y trabajador se alternan hasta la ronda 3, solo cambia el monto y queda el historial', async () => {
+      const { offerId, original } = await negotiation();
+
+      const first = await counter(client, offerId, { amount: '100' }).expect(
+        200,
+      );
+      expect(first.body).toMatchObject({
+        round: 2,
+        turn: 'TRABAJADOR',
+        amount: '100.00',
+        status: OfferStatus.VIGENTE,
+        worker: { id: worker.id },
+      });
+
+      const second = await counter(worker, offerId, { amount: 110.5 }).expect(
+        200,
+      );
+      expect(second.body).toMatchObject({
+        round: 3,
+        turn: 'CLIENTE',
+        amount: '110.50',
+      });
+      // Condiciones originales intactas.
+      for (const key of [
+        'requiresVisit',
+        'visitCost',
+        'materialsIncluded',
+        'proposedStartAt',
+        'estimatedDurationMinutes',
+        'createdAt',
+      ]) {
+        expect(second.body[key]).toEqual(original[key]);
+      }
+      type EventBody = {
+        type: string;
+        round: number;
+        amount: string;
+        actorRole: string;
+      };
+      expect(
+        (second.body.history as EventBody[]).map((event) => [
+          event.type,
+          event.round,
+          event.amount,
+          event.actorRole,
+        ]),
+      ).toEqual([
+        ['PROPUESTA', 1, '120.50', 'TRABAJADOR'],
+        ['CONTRAOFERTA', 2, '100.00', 'CLIENTE'],
+        ['CONTRAOFERTA', 3, '110.50', 'TRABAJADOR'],
+      ]);
+
+      // Ronda 3 alcanzada: no hay mas contraofertas.
+      const max = await counter(client, offerId, { amount: '105' }).expect(409);
+      expect(max.body.message).toContain('máximo de 3 rondas');
+    });
+
+    it('cada contraoferta reinicia la vigencia de 24 horas', async () => {
+      const { offerId } = await negotiation();
+      await prisma.$executeRaw`UPDATE "offers" SET "expires_at" = now() + interval '1 hour' WHERE "id" = ${offerId}::uuid`;
+
+      const res = await counter(client, offerId, { amount: '100' }).expect(200);
+
+      const [{ now }] = await prisma.$queryRaw<
+        { now: Date }[]
+      >`SELECT now() AS "now"`;
+      const left = Date.parse(res.body.expiresAt) - now.getTime();
+      expect(left).toBeGreaterThan(24 * HOUR - 60_000);
+      expect(left).toBeLessThanOrEqual(24 * HOUR);
+    });
+
+    it('solo responde quien tiene el turno', async () => {
+      const { offerId } = await negotiation();
+      const early = await counter(worker, offerId, { amount: '100' }).expect(
+        409,
+      );
+      expect(early.body.message).toContain('cliente');
+      await counter(client, offerId, { amount: '100' }).expect(200);
+      await counter(client, offerId, { amount: '90' }).expect(409);
+    });
+
+    it('quien no participa recibe 404', async () => {
+      const { offerId } = await negotiation();
+      await counter(client2, offerId, { amount: '100' }).expect(404);
+      await counter(worker2, offerId, { amount: '100' }).expect(404);
+      await counter(workerPending, offerId, { amount: '100' }).expect(404);
+    });
+
+    it('rechaza montos invalidos y cualquier otro campo (400)', async () => {
+      const { offerId } = await negotiation();
+      for (const body of [
+        { amount: '0' },
+        { amount: '-5' },
+        { amount: '10.123' },
+        { amount: 'abc' },
+        {},
+        { amount: '100', requiresVisit: false },
+        { amount: '100', estimatedDurationMinutes: 30 },
+      ]) {
+        await counter(client, offerId, body).expect(400);
+      }
+      const row = await prisma.offer.findUniqueOrThrow({
+        where: { id: offerId },
+      });
+      expect(row.round).toBe(1);
+    });
+
+    it('una oferta vencida o cerrada no admite contraofertas', async () => {
+      const expired = await negotiation();
+      await prisma.$executeRaw`UPDATE "offers" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${expired.offerId}::uuid`;
+      const res = await counter(client, expired.offerId, {
+        amount: '100',
+      }).expect(409);
+      expect(res.body.message).toContain('venció');
+
+      const closed = await negotiation();
+      await closeOffer(closed.offerId, OfferStatus.RETIRADA);
+      const res2 = await counter(client, closed.offerId, {
+        amount: '100',
+      }).expect(409);
+      expect(res2.body.message).toContain('cerrada');
+    });
+
+    it('un pedido cancelado o vencido ya no admite negociacion', async () => {
+      const cancelled = await negotiation();
+      await http()
+        .post(`/api/orders/me/${cancelled.orderId}/cancel`)
+        .set('Authorization', auth(client))
+        .send({})
+        .expect(200);
+      await counter(client, cancelled.offerId, { amount: '100' }).expect(409);
+
+      const expired = await negotiation();
+      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${expired.orderId}::uuid`;
+      const res = await counter(client, expired.offerId, {
+        amount: '100',
+      }).expect(409);
+      expect(res.body.message).toContain('VENCIDO');
+    });
+
+    it('con la categoria o la zona inactiva se bloquea; al reactivarla continua', async () => {
+      const { offerId } = await negotiation();
+      await prisma.serviceCategory.update({
+        where: { id: catA.id },
+        data: { isActive: false },
+      });
+      try {
+        const res = await counter(client, offerId, { amount: '100' }).expect(
+          409,
+        );
+        expect(res.body.message).toContain('categoría');
+      } finally {
+        await prisma.serviceCategory.update({
+          where: { id: catA.id },
+          data: { isActive: true },
+        });
+      }
+      await prisma.zone.update({
+        where: { id: zoneA.id },
+        data: { isActive: false },
+      });
+      try {
+        const res = await counter(client, offerId, { amount: '100' }).expect(
+          409,
+        );
+        expect(res.body.message).toContain('zona');
+      } finally {
+        await prisma.zone.update({
+          where: { id: zoneA.id },
+          data: { isActive: true },
+        });
+      }
+      await counter(client, offerId, { amount: '100' }).expect(200);
+    });
+
+    it('tras un cambio de categoria la negociacion existente continua (decision 12)', async () => {
+      const { orderId, offerId } = await negotiation();
+      await http()
+        .patch(`/api/orders/me/${orderId}`)
+        .set('Authorization', auth(client))
+        .send({ categoryId: catB.id })
+        .expect(200);
+
+      await counter(client, offerId, { amount: '100' }).expect(200);
+      // El trabajador ya no tiene la especialidad de la categoria actual.
+      await counter(worker, offerId, { amount: '105' }).expect(200);
+    });
+
+    it('el historial de contraofertas no se puede modificar ni borrar', async () => {
+      const { offerId } = await negotiation();
+      await counter(client, offerId, { amount: '100' }).expect(200);
+      await expect(
+        prisma.offerEvent.updateMany({
+          where: { offerId, type: 'CONTRAOFERTA' },
+          data: { amount: '1' },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offerEvent.deleteMany({
+          where: { offerId, type: 'CONTRAOFERTA' },
+        }),
+      ).rejects.toThrow();
+      // Tampoco cambian las condiciones de la oferta.
+      await expect(
+        prisma.offer.update({
+          where: { id: offerId },
+          data: { materialsIncluded: true },
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('concurrencia: respuestas simultaneas generan una sola contraoferta por ronda', async () => {
+      const { offerId } = await negotiation();
+
+      const results = await Promise.all([
+        counter(client, offerId, { amount: '100' }),
+        counter(client, offerId, { amount: '101' }),
+        counter(client, offerId, { amount: '102' }),
+      ]);
+
+      expect(results.map((res) => res.status).sort((a, b) => a - b)).toEqual([
+        200, 409, 409,
+      ]);
+      const events = await prisma.offerEvent.findMany({
+        where: { offerId, type: 'CONTRAOFERTA' },
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0].round).toBe(2);
+      const row = await prisma.offer.findUniqueOrThrow({
+        where: { id: offerId },
+      });
+      expect(row).toMatchObject({ round: 2, turn: 'TRABAJADOR' });
+      expect(row.amount.toFixed(2)).toBe(events[0].amount!.toFixed(2));
+    });
+
+    it('concurrencia: cliente y trabajador a la vez, nunca dos eventos de la misma ronda', async () => {
+      const { offerId } = await negotiation();
+
+      const [byClient, byWorker] = await Promise.all([
+        counter(client, offerId, { amount: '100' }),
+        counter(worker, offerId, { amount: '130' }),
+      ]);
+
+      // Si el trabajador toma el bloqueo despues del cliente es su turno; si
+      // lo toma antes, no lo es.
+      expect(byClient.status).toBe(200);
+      expect([200, 409]).toContain(byWorker.status);
+      const rounds = (
+        await prisma.offerEvent.findMany({
+          where: { offerId, type: 'CONTRAOFERTA' },
+          orderBy: { round: 'asc' },
+        })
+      ).map((event) => event.round);
+      expect(rounds).toEqual(byWorker.status === 200 ? [2, 3] : [2]);
+    });
+  });
 });

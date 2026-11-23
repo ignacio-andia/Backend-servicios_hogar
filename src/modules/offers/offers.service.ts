@@ -2,19 +2,32 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
-  NotFoundException,
 } from '@nestjs/common';
 import {
   OfferEventType,
+  OfferParty,
   OfferStatus,
   OrderActorType,
   Prisma,
   RoleName,
+  UserStatus,
 } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { CatalogKind, CatalogsService } from '../catalogs/catalogs.service.js';
 import { OrderVisibilityService } from '../orders/order-visibility.service.js';
-import { OrdersService } from '../orders/orders.service.js';
+import { ORDER_OPEN_FOR_OFFERS_STATUSES } from '../orders/orders.rules.js';
+import { lockOrder, OrdersService } from '../orders/orders.service.js';
+import { UsersService } from '../users/users.service.js';
+import { WorkerProfileService } from '../worker-profile/worker-profile.service.js';
+import type { CounterOfferDto } from './dto/counter-offer.dto.js';
 import type { CreateOfferDto } from './dto/create-offer.dto.js';
+import {
+  assertCanCounter,
+  lockOffer,
+  offerNotFound,
+  otherParty,
+  partyOf,
+} from './offer-negotiation.js';
 import type {
   ListOffersQueryDto,
   ListReceivedOffersQueryDto,
@@ -55,10 +68,6 @@ const REOFFER_BLOCKED_MESSAGE: Readonly<Record<string, string>> = {
     'Su oferta para este pedido quedó sin efecto: no puede volver a ofertar.',
 };
 
-export function offerNotFound(): NotFoundException {
-  return new NotFoundException('Oferta no encontrada');
-}
-
 /** Hora de la BD: la vigencia se calcula siempre con el reloj de PostgreSQL. */
 async function dbNow(db: Db): Promise<Date> {
   const [{ now }] = await db.$queryRaw<{ now: Date }[]>`SELECT now() AS "now"`;
@@ -78,7 +87,156 @@ export class OffersService {
     private readonly prisma: PrismaService,
     private readonly visibility: OrderVisibilityService,
     private readonly orders: OrdersService,
+    private readonly users: UsersService,
+    private readonly workerProfiles: WorkerProfileService,
+    private readonly catalogs: CatalogsService,
   ) {}
+
+  // ---------------------------------------------------------------------
+  // RF-20 y RF-23: contraoferta
+  // ---------------------------------------------------------------------
+
+  /**
+   * Contraoferta del cliente dueno del pedido o del trabajador de la oferta,
+   * segun a quien le toque el turno. Solo cambia el monto: sube la ronda (2 o
+   * 3), pasa el turno a la otra parte y reinicia la vigencia de 24 horas.
+   *
+   * Orden de bloqueos (el del proyecto, extendido a la oferta): cuenta del
+   * cliente (FOR SHARE), trabajador (lockApprovedWorker), pedido (lockOrder),
+   * fila de la oferta (FOR UPDATE) y catalogos (FOR SHARE). Dos respuestas
+   * simultaneas se ejecutan de a una: la segunda ve el turno ya cambiado
+   * (409) y, como respaldo, la BD impide dos eventos de la misma ronda.
+   */
+  async counter(
+    userId: string,
+    offerId: string,
+    dto: CounterOfferDto,
+  ): Promise<OfferDetail<OfferView>> {
+    // Lectura previa sin bloqueo, solo para saber a quien bloquear: todo se
+    // vuelve a comprobar con los bloqueos tomados.
+    const target = await this.prisma.offer.findUnique({
+      where: { id: offerId },
+      select: {
+        workerId: true,
+        orderId: true,
+        order: { select: { clientId: true } },
+      },
+    });
+    const party = target ? partyOf(target, userId) : null;
+    if (!target || !party) {
+      throw offerNotFound();
+    }
+    const { orderId, workerId } = target;
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        // Decision 9: con el cliente o el trabajador suspendidos la oferta
+        // deja de ser valida.
+        const client = await this.users.findByIdForShare(
+          tx,
+          target.order.clientId,
+        );
+        if (client.status !== UserStatus.ACTIVO) {
+          throw new ConflictException(
+            'La cuenta del cliente no está activa: la oferta ya no es válida.',
+          );
+        }
+        // Perfil aprobado, cuenta activa y sin cambio de zona pendiente. No
+        // exige la especialidad de la categoria actual (decision 12).
+        await this.workerProfiles.lockApprovedWorker(tx, workerId);
+        const order = await lockOrder(tx, orderId);
+        if (!order) {
+          throw offerNotFound();
+        }
+        if (!ORDER_OPEN_FOR_OFFERS_STATUSES.includes(order.effectiveStatus)) {
+          throw new ConflictException(
+            `El pedido ya no admite negociación (estado ${order.effectiveStatus}).`,
+          );
+        }
+        const offer = await lockOffer(tx, offerId);
+        if (!offer) {
+          throw offerNotFound();
+        }
+        const now = await dbNow(tx);
+        assertCanCounter(offer, party, now);
+        await this.assertOrderCatalogsActive(tx, orderId);
+
+        const round = offer.round + 1;
+        await tx.offer.update({
+          where: { id: offerId },
+          data: {
+            round,
+            amount: dto.amount,
+            turn: otherParty(party),
+            expiresAt: addHours(now, OFFER_VALIDITY_HOURS),
+          },
+        });
+        await tx.offerEvent.create({
+          data: {
+            offerId,
+            orderId,
+            type: OfferEventType.CONTRAOFERTA,
+            round,
+            amount: dto.amount,
+            actorType: OrderActorType.USUARIO,
+            changedById: userId,
+            actorRole:
+              party === OfferParty.CLIENTE
+                ? RoleName.CLIENTE
+                : RoleName.TRABAJADOR,
+          },
+        });
+      });
+    } catch (error) {
+      // Respaldo de la BD (offer_events_offer_round_key): ya se confirmo
+      // otra contraoferta de esta ronda.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === PRISMA_UNIQUE_VIOLATION
+      ) {
+        throw new ConflictException(
+          'La oferta cambió mientras se procesaba la contraoferta. Vuelva a consultarla.',
+        );
+      }
+      throw error;
+    }
+    return party === OfferParty.CLIENTE
+      ? this.getReceived(userId, offerId)
+      : this.getOwn(userId, offerId);
+  }
+
+  /**
+   * Zona y categoria del pedido activas, bloqueadas (FOR SHARE) hasta
+   * confirmar. Con el pedido bloqueado no cambian. Orden fijo: zona y
+   * categoria, como OrderVisibilityService. 409 si alguna esta inactiva.
+   */
+  private async assertOrderCatalogsActive(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+  ): Promise<void> {
+    const { zoneId, categoryId } = await tx.order.findUniqueOrThrow({
+      where: { id: orderId },
+      select: { zoneId: true, categoryId: true },
+    });
+    const [zone] = await this.catalogs.findByIdsForShare(tx, CatalogKind.ZONE, [
+      zoneId,
+    ]);
+    if (!zone?.isActive) {
+      throw new ConflictException(
+        'La zona del pedido no está activa: por ahora no se puede negociar.',
+      );
+    }
+    const [category] = await this.catalogs.findByIdsForShare(
+      tx,
+      CatalogKind.CATEGORY,
+      [categoryId],
+    );
+    if (!category?.isActive) {
+      throw new ConflictException(
+        'La categoría del pedido no está activa: por ahora no se puede negociar.',
+      );
+    }
+  }
 
   // ---------------------------------------------------------------------
   // RF-19: crear oferta

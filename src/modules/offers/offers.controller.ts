@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Post,
@@ -13,6 +15,7 @@ import { Auth } from '../auth/decorators/auth.decorator.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import type { PublicUser } from '../users/users.service.js';
 import { ApprovedWorkerGuard } from '../worker-profile/approved-worker.guard.js';
+import { CounterOfferDto } from './dto/counter-offer.dto.js';
 import { CreateOfferDto } from './dto/create-offer.dto.js';
 import {
   ListOffersQueryDto,
@@ -46,6 +49,19 @@ export class OffersController {
     @Body() dto: CreateOfferDto,
   ): Promise<OfferDetail<OfferView>> {
     return this.offers.create(user.id, orderId, dto);
+  }
+
+  // RF-20: contraoferta (solo el monto) del cliente dueno del pedido o del
+  // trabajador de la oferta, segun el turno. Quien no participa recibe 404.
+  @Auth(RoleName.CLIENTE, RoleName.TRABAJADOR)
+  @Post(':offerId/counter')
+  @HttpCode(HttpStatus.OK)
+  counter(
+    @CurrentUser() user: PublicUser,
+    @Param('offerId', ParseUUIDPipe) offerId: string,
+    @Body() dto: CounterOfferDto,
+  ): Promise<OfferDetail<OfferView>> {
+    return this.offers.counter(user.id, offerId, dto);
   }
 
   // Sus ofertas se consultan aunque el perfil ya no este aprobado.

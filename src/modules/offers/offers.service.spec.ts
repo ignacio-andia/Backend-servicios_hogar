@@ -98,6 +98,9 @@ describe('OffersService (T6.2)', () => {
       prisma as unknown as PrismaService,
       visibility as unknown as OrderVisibilityService,
       orders as unknown as OrdersService,
+      {} as never,
+      {} as never,
+      {} as never,
     );
   });
 
