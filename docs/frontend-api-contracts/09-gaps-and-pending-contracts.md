@@ -49,7 +49,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | D4 | **Resuelto (T2.2 y T2.3).** Vista de un perfil y sus documentos para el administrador | RF-10, RF-47, RF-56 |
 | D5 | Vista administrativa de pedidos y reportes | RF-50, RF-52 |
 | D6 | Filtros o búsqueda en `GET /users` | Administración de usuarios |
-| D7 | Configuración pública (mínimo y máximo de fotos, tamaños, vencimiento) | Hoy hay que reproducir los valores en el frontend (1–3 fotos, 10 MB, 48 h); si el backend cambia su configuración, el frontend no se entera |
+| D7 | Configuración pública (mínimo y máximo de fotos, tamaños, vencimiento) | Hoy hay que reproducir los valores en el frontend (1–4 fotos, 10 MB, 7 días); si el backend cambia su configuración, el frontend no se entera |
 | D8 | Endpoint de reactivación de catálogos | Administración |
 | D9 | Nombre del archivo en la descarga (header no expuesto por CORS) | Usar `originalName` del listado |
 
@@ -61,14 +61,15 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | Administradores adicionales y gestión de roles (RF-04). El primero ya tiene comando interno (T2.1) | ⛔ | Decisión del equipo |
 | Verificación de perfiles (RF-10, RF-47) | ✅ Listado, detalle, documentos y decisión (#55–#60) | — |
 | Notificaciones de verificación de perfiles | ✅ (T3.2) Decisiones al trabajador y envíos a los administradores; tipos en 04 | — |
-| Cambio de zona: bloqueo de ofertas con una solicitud pendiente (T4.3) | 🟡 Implementado en `lockApprovedWorker`, que usa `assertOpenForOffers`; no hay endpoints de ofertas que lo ejerzan | OffersModule: crear, modificar, aceptar o contraofertar debe llamar a `OrderVisibilityService.assertOpenForOffers` dentro de su transacción, y registrar la fuente `OFERTAS` en `WorkerActiveWorkRegistry` (sin ella, toda solicitud de cambio de zona sigue bloqueada con `VERIFICACION_NO_DISPONIBLE`) |
+| Cambio de zona: bloqueo de ofertas con una solicitud pendiente (T4.3) | ✅ Lo aplican #69, #74 y #77 (409). La fuente `OFERTAS` del trabajo activo **no** se registra (decisión 15): las solicitudes de cambio de zona siguen bloqueadas por `VERIFICACION_NO_DISPONIBLE` | OffersModule: crear, modificar, aceptar o contraofertar debe llamar a `OrderVisibilityService.assertOpenForOffers` dentro de su transacción, y registrar la fuente `OFERTAS` en `WorkerActiveWorkRegistry` (sin ella, toda solicitud de cambio de zona sigue bloqueada con `VERIFICACION_NO_DISPONIBLE`) |
 | Notificaciones de pedidos, ofertas, visitas y reclamos | ⛔ | Sus módulos. Deben usar `NotificationsService.create` o `createForRole` con el cliente de su transacción |
 | Notificaciones por correo, SMS o push | ⛔ Fuera de alcance | — |
 | Indicación de perfil revisado (RF-12) | ❓ | Texto del docente |
 | Perfil público y búsqueda de trabajadores (RF-11, RF-16) | ⛔ | Calificaciones; decisión sobre datos públicos |
-| **Ofertas y negociación (RF-19 a RF-24)** | 📐 (solo integración interna) | OffersModule |
+| Ofertas y negociación (RF-19 a RF-24) | ✅ #69–#79 (T6). Pendientes: notificaciones, historial para el administrador, parámetros configurables (RF-23) | — |
+| Vista del pedido acordado y dirección exacta para el trabajador aceptado (adenda §2.2) | ✅ #80 y #81 (G2). Pendiente: cómo se revoca el acceso si se sale de `ACORDADO` sin cerrar (RF-34) | — |
 | Visitas, presupuesto adicional y ejecución (RF-25 a RF-28) | ⛔ | Ofertas |
-| Agenda de trabajos y cruces (RF-30, RF-31) | ⛔ | Ofertas |
+| Agenda de trabajos y cruces (RF-30, RF-31) | 🟡 Cruces comprobados al aceptar (#77); sin agenda ni reservas | — |
 | Línea de tiempo y avisos (RF-32, RF-33) | 🟡 | Endpoint de historial; avisos de pedidos (la bandeja #61–#64 ya existe) |
 | Cancelar trabajo (RF-34), inasistencia (RF-36), reclamos (RF-37, RF-38, RF-51) | ⛔ ❓ | Decisiones del docente |
 | Aviso de vencimiento (RF-35) | 🟡 | Integrarlo con `NotificationsService` (la bandeja ya existe) |
@@ -79,18 +80,25 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 ## F. Decisiones pendientes que afectan a la interfaz
 
 **Del docente**
-- Si vence `EN_NEGOCIACION`.
 - Cuándo se llega a `SIN_ACUERDO`.
 - Cómo se sale de `ACORDADO` (RF-34).
 - Qué estados cuentan como activos.
-- Si el trabajador ve la dirección exacta (RF-55).
-- Si se pueden editar la categoría o la zona del pedido.
-- Cantidad definitiva de fotos y soporte de HEIC.
-- Retención de fotos de pedidos vencidos.
+- Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos, T5.3).
 - Si aprobar un cambio de zona devuelve el perfil a revisión.
 - Si se vuelve a verificar el trabajo activo al aprobar.
 - Texto de RF-12.
 
 **Del equipo**
-- Qué pasa con las ofertas enviadas si se desactiva un catálogo o se suspende al cliente.
 - Cómo se crean administradores adicionales. El primero ya está resuelto (T2.1).
+
+## G. Discrepancias detectadas al documentar OffersModule (T6.7)
+
+No se corrigieron: se informan para decidir.
+
+| # | Hallazgo | Impacto en Angular | Prioridad |
+|---|---|---|---|
+| G1 | **Resuelto.** `proposedStartAt` (#69) exige fecha, hora y zona horaria explícita (`Z` o `±hh:mm`); sin zona responde 400 | Enviar `toISOString()` o la hora local con `-04:00` | — |
+| G2 | **Resuelto.** El trabajador asignado consulta el pedido acordado con descripción, fotos, dirección exacta y nombre del cliente (#80, #81). Otros trabajadores: 404 | Usar #80 después de aceptar | — |
+| G3 | El contacto por WhatsApp (#78, #79) se entrega también para ofertas **cerradas** (por ejemplo, una rechazada), igual que el detalle de la oferta (decisión de T6.6) | Si no se quiere ofrecer el botón en ofertas cerradas, ocultarlo según `status`; conviene revisar la regla de privacidad | Media |
+| G4 | **Resuelto.** El historial de ofertas ya no expone `changedById`; el autor se identifica por `actorRole` y la BD conserva el id | No incluir el campo en el modelo de Angular | — |
+

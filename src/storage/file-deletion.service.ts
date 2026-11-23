@@ -6,7 +6,9 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SchedulerRegistry } from '@nestjs/schedule';
+import { NotificationType, RoleName } from '../generated/prisma/client.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { NotificationsService } from '../modules/notifications/notifications.service.js';
 import {
   readPositiveInt,
   scheduledJobsEnabled,
@@ -22,6 +24,21 @@ const LEASE_MINUTES = 10;
 const BASE_BACKOFF_MINUTES = 5;
 const MAX_BACKOFF_MINUTES = 360;
 const MAX_ERROR_LENGTH = 500;
+// T5.4: a partir de este intento se avisa una sola vez a los administradores.
+// La clave sigue en la cola y se reintenta (como mucho cada 6 horas).
+export const ESCALATION_ATTEMPTS = 10;
+
+interface FailureRow {
+  id: string;
+  attempts: number;
+  escalated: boolean;
+}
+
+interface EscalatedRow {
+  storageKey: string;
+  reason: string;
+  attempts: number;
+}
 
 interface ClaimedDeletion {
   id: string;
@@ -53,6 +70,7 @@ export class FileDeletionService
     private readonly storage: FileStorage,
     private readonly config: ConfigService,
     private readonly scheduler: SchedulerRegistry,
+    private readonly notifications: NotificationsService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -69,6 +87,8 @@ export class FileDeletionService
       RETRY_INTERVAL_NAME,
       setInterval(() => void this.runScheduledRetry(), minutes * 60_000),
     );
+    // T5.4: tras un reinicio, los borrados pendientes se reintentan enseguida.
+    void this.runScheduledRetry();
   }
 
   onModuleDestroy(): void {
@@ -180,7 +200,10 @@ export class FileDeletionService
     }
   }
 
-  /** Guarda el error y programa el proximo intento con espera creciente. */
+  /**
+   * Guarda el error y programa el proximo intento con espera creciente. Si
+   * la clave llego a ESCALATION_ATTEMPTS intentos, escala (una sola vez).
+   */
   private async recordFailure(
     target: { id: string } | { storageKey: string },
     error: unknown,
@@ -194,20 +217,26 @@ export class FileDeletionService
       MAX_BACKOFF_MINUTES,
     );
     try {
-      if ('id' in target) {
-        // El reintento programado ya sumo el intento al reservar la clave.
-        await this.prisma.$executeRaw`
-          UPDATE "pending_file_deletions"
-          SET "last_error" = ${message},
-              "next_attempt_at" = now() + make_interval(mins => ${minutes}::int)
-          WHERE "id" = ${target.id}::uuid`;
-      } else {
-        await this.prisma.$executeRaw`
-          UPDATE "pending_file_deletions"
-          SET "last_error" = ${message},
-              "attempts" = "attempts" + 1,
-              "next_attempt_at" = now() + make_interval(mins => ${minutes}::int)
-          WHERE "storage_key" = ${target.storageKey}`;
+      const rows =
+        'id' in target
+          ? // El reintento programado ya sumo el intento al reservar la clave.
+            await this.prisma.$queryRaw<FailureRow[]>`
+              UPDATE "pending_file_deletions"
+              SET "last_error" = ${message},
+                  "next_attempt_at" = now() + make_interval(mins => ${minutes}::int)
+              WHERE "id" = ${target.id}::uuid
+              RETURNING "id", "attempts", "escalated_at" IS NOT NULL AS "escalated"`
+          : await this.prisma.$queryRaw<FailureRow[]>`
+              UPDATE "pending_file_deletions"
+              SET "last_error" = ${message},
+                  "attempts" = "attempts" + 1,
+                  "next_attempt_at" = now() + make_interval(mins => ${minutes}::int)
+              WHERE "storage_key" = ${target.storageKey}
+              RETURNING "id", "attempts", "escalated_at" IS NOT NULL AS "escalated"`;
+      for (const row of rows) {
+        if (!row.escalated && row.attempts >= ESCALATION_ATTEMPTS) {
+          await this.escalate(row.id);
+        }
       }
     } catch (updateError) {
       this.logger.error(
@@ -215,5 +244,38 @@ export class FileDeletionService
         updateError,
       );
     }
+  }
+
+  /**
+   * T5.4: fallo persistente. Marca escalated_at y avisa a los administradores
+   * activos, en la misma transaccion y una sola vez por clave (la condicion
+   * sobre escalated_at evita avisos duplicados con varias instancias). La
+   * fila nunca se borra: se sigue reintentando.
+   */
+  private async escalate(id: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const [row] = await tx.$queryRaw<EscalatedRow[]>`
+        UPDATE "pending_file_deletions"
+        SET "escalated_at" = now()
+        WHERE "id" = ${id}::uuid AND "escalated_at" IS NULL
+        RETURNING "storage_key" AS "storageKey", "reason", "attempts"`;
+      if (!row) {
+        return;
+      }
+      this.logger.error(
+        `El archivo ${row.storageKey} (${row.reason}) no se pudo borrar tras ${row.attempts} intentos; se seguira reintentando`,
+      );
+      // Sin la ruta ni el detalle del error: quedan en la fila de la cola.
+      await this.notifications.createForRole(
+        RoleName.ADMINISTRADOR,
+        {
+          type: NotificationType.BORRADO_ARCHIVO_ESCALADO,
+          title: 'Archivo pendiente de borrado',
+          message: `Un archivo privado no se pudo borrar después de ${row.attempts} intentos (motivo: ${row.reason}). Se seguirá reintentando cada 6 horas. Clave: ${row.storageKey}.`,
+        },
+        {},
+        tx,
+      );
+    });
   }
 }

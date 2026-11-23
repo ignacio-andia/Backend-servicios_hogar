@@ -37,10 +37,56 @@ export const OWNER_ORDER_SELECT = {
   ...ORDER_PUBLIC_SELECT,
   clientId: true,
   cancelledAt: true,
+  anonymizedAt: true,
   createdAt: true,
   updatedAt: true,
   address: { select: { addressLine: true, reference: true } },
 } satisfies Prisma.OrderSelect;
+
+/**
+ * G2 (T6.7): lo que ve el trabajador ASIGNADO a un pedido con acuerdo: lo
+ * necesario para atenderlo, incluida la direccion exacta (adenda §2.2) y el
+ * nombre del cliente. Nunca su correo ni su telefono (el contacto es por
+ * WhatsApp, en OffersModule).
+ */
+export const ASSIGNED_ORDER_SELECT = {
+  ...ORDER_PUBLIC_SELECT,
+  address: { select: { addressLine: true, reference: true } },
+  client: { select: { firstName: true, lastName: true } },
+} satisfies Prisma.OrderSelect;
+
+/**
+ * Registro minimo para administradores (T5.4): nunca la direccion, las
+ * fotos ni la descripcion. El nombre del cliente solo si el pedido no fue
+ * anonimizado.
+ */
+export const ADMIN_ORDER_SELECT = {
+  id: true,
+  categoryId: true,
+  zoneId: true,
+  budgetAmount: true,
+  status: true,
+  revision: true,
+  publishedAt: true,
+  expiresAt: true,
+  lastEditedAt: true,
+  cancelledAt: true,
+  anonymizedAt: true,
+  createdAt: true,
+  updatedAt: true,
+  clientId: true,
+  assignedWorkerId: true,
+  client: { select: { id: true, firstName: true, lastName: true } },
+  _count: { select: { images: true } },
+} satisfies Prisma.OrderSelect;
+
+export type AdminOrderRecord = Prisma.OrderGetPayload<{
+  select: typeof ADMIN_ORDER_SELECT;
+}>;
+
+export type AssignedOrderRecord = Prisma.OrderGetPayload<{
+  select: typeof ASSIGNED_ORDER_SELECT;
+}>;
 
 export type PublicOrderRecord = Prisma.OrderGetPayload<{
   select: typeof ORDER_PUBLIC_SELECT;
@@ -84,10 +130,56 @@ export interface WorkerOrderView {
 export interface OwnerOrderView extends WorkerOrderView {
   address: { addressLine: string; reference: string | null } | null;
   cancelledAt: Date | null;
+  /** T5.4: cuando se anonimizo (sin direccion, fotos ni descripcion). */
+  anonymizedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
   canEdit: boolean;
   canCancel: boolean;
+}
+
+/** G2: pedido con acuerdo, para el trabajador asignado. */
+export interface AssignedOrderView extends WorkerOrderView {
+  address: { addressLine: string; reference: string | null } | null;
+  client: { firstName: string; lastName: string };
+}
+
+/** Registro minimo de un pedido para administradores (T5.4). */
+export interface AdminOrderSummary {
+  id: string;
+  status: OrderStatus;
+  category: CatalogRef;
+  zone: CatalogRef;
+  budgetAmount: string;
+  revision: number;
+  publishedAt: Date;
+  expiresAt: Date;
+  lastEditedAt: Date | null;
+  cancelledAt: Date | null;
+  anonymizedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  clientId: string;
+  /** Null si el pedido fue anonimizado. */
+  client: { id: string; firstName: string; lastName: string } | null;
+  assignedWorkerId: string | null;
+  imageCount: number;
+}
+
+export interface AdminOrderHistoryEntry {
+  fromStatus: OrderStatus | null;
+  toStatus: OrderStatus;
+  actorType: 'USUARIO' | 'SISTEMA';
+  changedById: string | null;
+  actorRole: string | null;
+  systemProcess: string | null;
+  /** Null si el pedido fue anonimizado (texto libre del usuario). */
+  reason: string | null;
+  createdAt: Date;
+}
+
+export interface AdminOrderView extends AdminOrderSummary {
+  history: AdminOrderHistoryEntry[];
 }
 
 export type OrderWarningCode = 'POSIBLE_DUPLICADO' | 'POSIBLE_DATO_PERSONAL';
@@ -157,9 +249,48 @@ export function toOwnerView(
     ...base,
     address: order.address,
     cancelledAt: order.cancelledAt,
+    anonymizedAt: order.anonymizedAt,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
     canEdit: ORDER_EDITABLE_STATUSES.includes(base.status),
     canCancel: ORDER_CANCELLABLE_STATUSES.includes(base.status),
+  };
+}
+
+export function toAssignedView(
+  order: AssignedOrderRecord,
+  refs: { categories: Map<string, CatalogRef>; zones: Map<string, CatalogRef> },
+  now: Date,
+): AssignedOrderView {
+  return {
+    ...toWorkerView(order, refs, now),
+    address: order.address,
+    client: order.client,
+  };
+}
+
+export function toAdminSummary(
+  order: AdminOrderRecord,
+  refs: { categories: Map<string, CatalogRef>; zones: Map<string, CatalogRef> },
+  now: Date,
+): AdminOrderSummary {
+  return {
+    id: order.id,
+    status: effectiveStatus(order, now),
+    category: refs.categories.get(order.categoryId)!,
+    zone: refs.zones.get(order.zoneId)!,
+    budgetAmount: order.budgetAmount.toFixed(2),
+    revision: order.revision,
+    publishedAt: order.publishedAt,
+    expiresAt: order.expiresAt,
+    lastEditedAt: order.lastEditedAt,
+    cancelledAt: order.cancelledAt,
+    anonymizedAt: order.anonymizedAt,
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt,
+    clientId: order.clientId,
+    client: order.anonymizedAt ? null : order.client,
+    assignedWorkerId: order.assignedWorkerId,
+    imageCount: order._count.images,
   };
 }

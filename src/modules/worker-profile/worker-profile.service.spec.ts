@@ -26,6 +26,7 @@ import {
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { PublicUser, UsersService } from '../users/users.service.js';
 import { WorkerActiveWorkRegistry } from './active-work.registry.js';
+import { WorkerProfileStatusRegistry } from './profile-status.registry.js';
 import {
   AdminWorkerProfileView,
   WorkerProfileService,
@@ -137,6 +138,10 @@ describe('WorkerProfileService', () => {
   >;
   let audit: { record: ReturnType<typeof vi.fn> };
   let zoneRequests: { cancelPendingOnSuspension: ReturnType<typeof vi.fn> };
+  let profileStatus: WorkerProfileStatusRegistry;
+  let onProfileSuspended: ReturnType<
+    typeof vi.fn<(tx: unknown, event: unknown) => Promise<void>>
+  >;
   let notifications: Record<
     'create' | 'createForRole',
     ReturnType<typeof vi.fn>
@@ -207,6 +212,15 @@ describe('WorkerProfileService', () => {
     zoneRequests = {
       cancelPendingOnSuspension: vi.fn().mockResolvedValue(false),
     };
+    onProfileSuspended = vi
+      .fn<(tx: unknown, event: unknown) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    profileStatus = new WorkerProfileStatusRegistry();
+    profileStatus.register({
+      name: 'prueba',
+      onSuspended: (tx, event) =>
+        onProfileSuspended(tx, event) as Promise<void>,
+    });
     service = new WorkerProfileService(
       prisma as unknown as PrismaService,
       users as unknown as UsersService,
@@ -215,6 +229,7 @@ describe('WorkerProfileService', () => {
       new WorkerActiveWorkRegistry(),
       notifications as unknown as NotificationsService,
       zoneRequests as unknown as ZoneChangeRequestsService,
+      profileStatus,
     );
   });
 
@@ -1304,6 +1319,41 @@ describe('WorkerProfileService', () => {
       );
     });
 
+    it('al suspender avisa a los modulos registrados en la misma transaccion (T6.5.2)', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.APROBADO }),
+      );
+
+      await service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
+        status: WorkerProfileStatus.SUSPENDIDO,
+        reason: 'Reclamos reiterados',
+      });
+
+      expect(onProfileSuspended).toHaveBeenCalledWith(prisma, {
+        profileId: PROFILE_ID,
+        userId: USER_ID,
+        actorId: ADMIN_ID,
+      });
+      // Con el perfil ya bloqueado por el cambio de estado.
+      expect(
+        prisma.workerProfile.updateMany.mock.invocationCallOrder[0],
+      ).toBeLessThan(onProfileSuspended.mock.invocationCallOrder[0]);
+    });
+
+    it('si un efecto de la suspension falla, la suspension falla', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.APROBADO }),
+      );
+      onProfileSuspended.mockRejectedValue(new Error('fallo de ofertas'));
+
+      await expect(
+        service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
+          status: WorkerProfileStatus.SUSPENDIDO,
+          reason: 'Motivo',
+        }),
+      ).rejects.toThrow('fallo de ofertas');
+    });
+
     it.each([
       [WorkerProfileStatus.PENDIENTE, WorkerProfileStatus.OBSERVADO],
       [WorkerProfileStatus.PENDIENTE, WorkerProfileStatus.RECHAZADO],
@@ -1319,6 +1369,7 @@ describe('WorkerProfileService', () => {
       });
 
       expect(zoneRequests.cancelPendingOnSuspension).not.toHaveBeenCalled();
+      expect(onProfileSuspended).not.toHaveBeenCalled();
     });
 
     it('si la cancelacion falla, la suspension falla (misma transaccion)', async () => {

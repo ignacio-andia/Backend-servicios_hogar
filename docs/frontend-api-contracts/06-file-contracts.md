@@ -7,14 +7,14 @@
 | Subir | `POST /api/worker-profile/me/documents` | Al crear: `POST /api/orders`. Agregar: `POST /api/orders/me/:orderId/images` |
 | Reemplazar | `POST /api/worker-profile/me/documents/:documentId/replace` | `PUT /api/orders/me/:orderId/images/:imageId` |
 | Borrar | **No existe** (el reemplazo conserva el anterior en el historial) | `DELETE /api/orders/me/:orderId/images/:imageId` |
-| Descargar | `GET /api/worker-profile/me/documents/:documentId/download` | Dueño: `GET /api/orders/me/:orderId/images/:imageId?variant=`. Trabajador aprobado: `GET /api/orders/available/:orderId/images/:imageId?variant=` |
+| Descargar | `GET /api/worker-profile/me/documents/:documentId/download` | Dueño: `GET /api/orders/me/:orderId/images/:imageId?variant=`. Trabajador aprobado: `GET /api/orders/available/:orderId/images/:imageId?variant=`. Trabajador asignado (G2): `GET /api/orders/assigned/:orderId/images/:imageId?variant=` |
 | Content-Type de la subida | `multipart/form-data` | `multipart/form-data` |
-| Campos | `type` (texto) y `file` (1 archivo). El reemplazo usa solo `file` | Crear: los campos de `CreateOrderDto` y `images` (1 a 3 archivos). Agregar o reemplazar: `image` (1 archivo) |
+| Campos | `type` (texto) y `file` (1 archivo). El reemplazo usa solo `file` | Crear: los campos de `CreateOrderDto` y `images` (1 a 4 archivos). Agregar o reemplazar: `image` (1 archivo) |
 | Formatos aceptados | PDF, JPG o PNG, detectados por el **contenido** (firma de bytes), no por la extensión ni por el Content-Type | JPEG, PNG o WebP, detectados por el contenido con `sharp` (GIF, HEIC u otros responden 400) |
 | Tamaño máximo | 5 MB por defecto (`WORKER_DOCUMENT_MAX_MB`, tope 20) | 10 MB por foto (`ORDER_IMAGE_MAX_MB`, tope 25) y 50 megapíxeles |
-| Cantidad | 1 por petición | Al crear, 1 a 3 (`ORDER_MIN_IMAGES` y `ORDER_MAX_IMAGES`). Total del pedido entre el mínimo y el máximo |
+| Cantidad | 1 por petición | Al crear, 1 a 4 (T5.3; el máximo de 4 es fijo, no configurable). Total del pedido entre el mínimo y el máximo: una quinta foto se rechaza |
 | Procesamiento | Se guarda tal cual, con nombre aleatorio | Se reorienta según EXIF, se convierte a **WebP sRGB** (máximo 1600 px de lado, calidad 80) más una miniatura de 400 px. Se eliminan EXIF, GPS, XMP e ICC |
-| Estado requerido | Perfil `BORRADOR`, `OBSERVADO`, `RECHAZADO` o `SUSPENDIDO` para subir o reemplazar (409). Descargar en cualquier estado | Pedido `PUBLICADO` (sin vencer) o `EN_NEGOCIACION` para subir, reemplazar o borrar (409) |
+| Estado requerido | Perfil `BORRADOR`, `OBSERVADO`, `RECHAZADO` o `SUSPENDIDO` para subir o reemplazar (409). Descargar en cualquier estado | Pedido `PUBLICADO` o `EN_NEGOCIACION`, sin vencer para subir, reemplazar o borrar (409) |
 | Respuesta de la subida | `WorkerDocumentView` (201) | Crear: `OrderWithWarnings` (201). Agregar: `OwnerOrderView` (201). Reemplazar: `OwnerOrderView` (200). Borrar: `OwnerOrderView` (200) |
 
 ## Errores
@@ -26,8 +26,8 @@
 | Imagen dañada | — | 400 `"El archivo no es una imagen válida o está dañado"` |
 | Demasiados píxeles | — | 400 `"La imagen supera el máximo de 50 megapíxeles"` |
 | Archivo demasiado grande | **413** `"El archivo supera el tamaño máximo permitido de 5 MB"` | **413** `"Cada fotografía puede pesar como máximo 10 MB"` |
-| Cantidad de fotos al crear | — | 400 `"Debe adjuntar entre 1 y 3 fotografías en el campo \"images\""`; más de 10 archivos: 400 de multer (en inglés) |
-| Máximo de fotos al agregar | — | 409 `"El pedido ya tiene el máximo de 3 fotografías. Elimine o reemplace una."` |
+| Cantidad de fotos al crear | — | 400 `"Debe adjuntar entre 1 y 4 fotografías en el campo \"images\""`; el máximo de 4 es fijo (no configurable). Con 5 fotos, el service responde 400 con el mensaje en español; con 6 o más, multer corta la petición con 400 (mensaje de multer en inglés) sin cargar el resto en memoria |
+| Máximo de fotos al agregar | — | 409 `"El pedido ya tiene el máximo de 4 fotografías. Elimine o reemplace una."` |
 | Mínimo de fotos al borrar | — | 409 `"El pedido debe conservar al menos 1 fotografía(s). Use reemplazar."` |
 | Documento ya reemplazado | 409 | — |
 | Recurso ajeno o inexistente | 404 | 404 |
@@ -48,7 +48,7 @@ Si la operación falla después de guardar el archivo (por ejemplo, un error de 
 
 - Los archivos se guardan en una carpeta privada (`FILE_STORAGE_DIR`) con nombres aleatorios. **Ninguna respuesta expone rutas ni claves de almacenamiento.**
 - Solo se descargan por las rutas autorizadas anteriores, que verifican el token, el rol y la pertenencia o visibilidad. Un recurso que no corresponde responde 404.
-- Las fotos de un pedido cancelado se borran físicamente. Las de un pedido vencido se conservan (❓ retención pendiente con el docente).
+- Las fotos de un pedido vencido o cancelado por el cliente se borran físicamente (T5.4): sus filas y el encolado de sus archivos van en la misma transacción que el cierre, y el borrado se hace después de confirmar. Si falla, la clave queda en `pending_file_deletions` y se reintenta (también al arrancar el servidor). A los 10 intentos se avisa a los administradores (una vez) y se sigue reintentando cada 6 horas; la fila nunca se borra sin haber borrado el archivo. Un pedido que alguna vez tuvo un acuerdo conserva sus fotos.
 - Los administradores consultan los documentos con `GET /api/worker-profile/admin/profiles/:profileId/documents` y los abren con `…/documents/:documentId/view` (`inline`) o `…/download` (`attachment`). Nunca los de su propio perfil (403). El documento debe pertenecer a ese perfil (404 si no). Cada acceso exitoso queda en la bitácora (`CONSULTA_DOCUMENTOS`, `VISUALIZACION_DOCUMENTO`, `DESCARGA_DOCUMENTO`); un intento rechazado, o un archivo que falta en el almacenamiento (404), no deja registro.
 - Para Angular, `view` y `download` se piden igual (con `HttpClient` y `responseType: 'blob'`). Use `view` para mostrar el documento en pantalla y `download` para guardarlo: cada uno queda registrado con su acción.
 

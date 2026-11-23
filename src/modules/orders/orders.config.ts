@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { readPositiveInt } from '../../common/config-values.js';
-import { ABSOLUTE_IMAGE_MAX_MB, ABSOLUTE_MAX_IMAGES } from './orders.rules.js';
+import { ABSOLUTE_IMAGE_MAX_MB, ORDER_MAX_IMAGES } from './orders.rules.js';
 
 /**
  * Parametros configurables de pedidos (§5.5: no deben quedar escritos en el
@@ -9,10 +9,11 @@ import { ABSOLUTE_IMAGE_MAX_MB, ABSOLUTE_MAX_IMAGES } from './orders.rules.js';
  */
 @Injectable()
 export class OrdersConfig {
-  /** Plazo de vencimiento de un pedido publicado (y tras cada edicion). */
-  readonly expirationHours: number;
+  // El plazo de vencimiento (7 dias) es una regla de negocio confirmada, no
+  // un parametro: ver ORDER_EXPIRATION_DAYS (T5.1). Aqui solo se configura cada
+  // cuanto corre la tarea que marca los vencidos.
   readonly expirationIntervalMinutes: number;
-  /** PENDIENTE DE CONFIRMAR CON EL DOCENTE: cantidad definitiva de fotos. */
+  /** Fotos por pedido: de 1 a 4 (especificacion v1.0 §3, T5.3). */
   readonly minImages: number;
   readonly maxImages: number;
   readonly imageMaxBytes: number;
@@ -23,31 +24,27 @@ export class OrdersConfig {
   readonly duplicateWindowDays: number;
 
   constructor(config: ConfigService) {
-    this.expirationHours = readPositiveInt(
-      config,
-      'ORDER_EXPIRATION_HOURS',
-      48,
-      {
-        max: 24 * 365,
-      },
-    );
     this.expirationIntervalMinutes = readPositiveInt(
       config,
       'ORDER_EXPIRATION_INTERVAL_MINUTES',
       15,
       { max: 1440 },
     );
-    this.minImages = readPositiveInt(config, 'ORDER_MIN_IMAGES', 1, {
-      max: ABSOLUTE_MAX_IMAGES,
-    });
-    this.maxImages = readPositiveInt(config, 'ORDER_MAX_IMAGES', 3, {
-      max: ABSOLUTE_MAX_IMAGES,
-    });
-    if (this.minImages > this.maxImages) {
+    // El maximo es fijo (4, T5.3). Una configuracion distinta detiene el
+    // arranque en lugar de ignorarse en silencio.
+    const configuredMax = config.get<string>('ORDER_MAX_IMAGES');
+    if (
+      configuredMax !== undefined &&
+      configuredMax.trim() !== String(ORDER_MAX_IMAGES)
+    ) {
       throw new Error(
-        'ORDER_MIN_IMAGES no puede ser mayor que ORDER_MAX_IMAGES',
+        `ORDER_MAX_IMAGES ya no es configurable: el maximo de fotografias por pedido es ${ORDER_MAX_IMAGES}. Quite la variable del entorno.`,
       );
     }
+    this.maxImages = ORDER_MAX_IMAGES;
+    this.minImages = readPositiveInt(config, 'ORDER_MIN_IMAGES', 1, {
+      max: ORDER_MAX_IMAGES,
+    });
     this.imageMaxBytes =
       readPositiveInt(config, 'ORDER_IMAGE_MAX_MB', 10, {
         max: ABSOLUTE_IMAGE_MAX_MB,

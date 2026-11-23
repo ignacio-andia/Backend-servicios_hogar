@@ -31,12 +31,19 @@ import {
 } from './order-lifecycle.registry.js';
 import { catalogRefs, dbNow } from './order-support.js';
 import {
+  ADMIN_ORDER_SELECT,
+  ASSIGNED_ORDER_SELECT,
+  AssignedOrderView,
+  AdminOrderSummary,
+  AdminOrderView,
   effectiveStatus,
   OrderWarning,
   OrderWithWarnings,
   OWNER_ORDER_SELECT,
   OwnerOrderView,
   PaginatedOrders,
+  toAdminSummary,
+  toAssignedView,
   toOwnerView,
 } from './order-views.js';
 import {
@@ -50,6 +57,7 @@ import {
   OrderTransitionResult,
   OrderTransitionUsageError,
 } from './order-transition.js';
+import { OrderRetentionService } from './order-retention.service.js';
 import { OrdersConfig } from './orders.config.js';
 import {
   ACTIVE_ORDER_STATUSES,
@@ -58,7 +66,7 @@ import {
   ORDER_CANCELLABLE_STATUSES,
   ORDER_EDITABLE_STATUSES,
   ORDER_EXPIRABLE_STATUSES,
-  ORDER_EXPIRATION_RESET_TARGETS,
+  ORDER_EXPIRATION_DAYS,
   ORDER_INTERNAL_TARGETS,
   ORDER_TRANSITIONS,
   ORDER_WORKER_REQUIRED_STATUSES,
@@ -81,6 +89,7 @@ export class OrdersService {
     private readonly lifecycle: OrderLifecycleRegistry,
     private readonly workerProfiles: WorkerProfileService,
     private readonly activeWork: WorkerActiveWorkRegistry,
+    private readonly retention: OrderRetentionService,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -139,10 +148,12 @@ export class OrdersService {
           },
           select: { id: true },
         });
+        // Unico lugar donde se fija el vencimiento (T5.1): 7 dias calendario
+        // desde la publicacion, con el reloj de la BD. Nada lo reinicia despues.
         await tx.$executeRaw`
           UPDATE "orders"
           SET "published_at" = now(),
-              "expires_at" = now() + make_interval(hours => ${this.settings.expirationHours}::int)
+              "expires_at" = now() + make_interval(days => ${ORDER_EXPIRATION_DAYS}::int)
           WHERE "id" = ${id}::uuid`;
         await recordStatusChange(tx, {
           orderId: id,
@@ -206,6 +217,119 @@ export class OrdersService {
     return toOwnerView(order, refs, now);
   }
 
+  // ---------------------------------------------------------------------
+  // G2 (T6.7): pedido con acuerdo para el trabajador asignado
+  // ---------------------------------------------------------------------
+
+  /**
+   * El trabajador asignado consulta el pedido mientras tiene un acuerdo
+   * vigente (ACORDADO y estados posteriores con acuerdo): descripcion,
+   * fotos, direccion exacta y nombre del cliente. Otro trabajador, un pedido
+   * sin acuerdo o uno ya cerrado o cancelado responden 404 (igual que uno
+   * inexistente).
+   */
+  async getAssigned(
+    workerUserId: string,
+    orderId: string,
+  ): Promise<AssignedOrderView> {
+    const order = await this.prisma.order.findFirst({
+      where: assignedOrderWhere(workerUserId, orderId),
+      select: ASSIGNED_ORDER_SELECT,
+    });
+    if (!order) {
+      throw orderNotFound();
+    }
+    const [refs, now] = await Promise.all([
+      catalogRefs(this.catalogs, [order]),
+      dbNow(this.prisma),
+    ]);
+    return toAssignedView(order, refs, now);
+  }
+
+  /** Abre una foto de un pedido asignado (mismas reglas que getAssigned). */
+  async openAssignedImage(
+    workerUserId: string,
+    orderId: string,
+    imageId: string,
+    variant: 'full' | 'thumb',
+  ) {
+    const order = await this.prisma.order.findFirst({
+      where: assignedOrderWhere(workerUserId, orderId),
+      select: { id: true },
+    });
+    if (!order) {
+      throw orderNotFound();
+    }
+    return this.images.open(orderId, imageId, variant);
+  }
+
+  // ---------------------------------------------------------------------
+  // T5.4: consulta administrativa del registro minimo (solo lectura). La
+  // autorizacion (rol ADMINISTRADOR y cuenta activa) la hace el controller.
+  // ---------------------------------------------------------------------
+
+  async listForAdmin({
+    status,
+    page,
+    limit,
+  }: ListOwnOrdersQueryDto): Promise<PaginatedOrders<AdminOrderSummary>> {
+    const now = await dbNow(this.prisma);
+    const where = ownStatusFilter(status, now);
+    const [orders, total] = await this.prisma.$transaction([
+      this.prisma.order.findMany({
+        where,
+        select: ADMIN_ORDER_SELECT,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+    const refs = await catalogRefs(this.catalogs, orders);
+    return {
+      data: orders.map((order) => toAdminSummary(order, refs, now)),
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  }
+
+  async getForAdmin(orderId: string): Promise<AdminOrderView> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        ...ADMIN_ORDER_SELECT,
+        statusHistory: {
+          orderBy: { createdAt: 'asc' },
+          select: {
+            fromStatus: true,
+            toStatus: true,
+            actorType: true,
+            changedById: true,
+            actorRole: true,
+            systemProcess: true,
+            reason: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+    if (!order) {
+      throw orderNotFound();
+    }
+    const [refs, now] = await Promise.all([
+      catalogRefs(this.catalogs, [order]),
+      dbNow(this.prisma),
+    ]);
+    const anonymized = order.anonymizedAt !== null;
+    return {
+      ...toAdminSummary(order, refs, now),
+      history: order.statusHistory.map((entry) => ({
+        ...entry,
+        // El motivo es texto libre del usuario: no se muestra si se anonimizo.
+        reason: anonymized ? null : entry.reason,
+      })),
+    };
+  }
+
   /** Consulta previa orientativa de posibles duplicados (nunca bloquea). */
   async checkDuplicates(
     clientId: string,
@@ -226,8 +350,9 @@ export class OrdersService {
   }
 
   // ---------------------------------------------------------------------
-  // RF-18: edicion (datos y fotos). Toda edicion efectiva sube la revision,
-  // reinicia el vencimiento y avisa a los modulos registrados (EDITADO).
+  // RF-18: edicion (datos y fotos). Toda edicion efectiva sube la revision y
+  // avisa a los modulos registrados (EDITADO). No cambia el vencimiento (T5.1)
+  // ni toca ofertas, estado, asignacion, dueno ni zona (T5.2).
   // ---------------------------------------------------------------------
 
   async update(
@@ -236,6 +361,7 @@ export class OrdersService {
     dto: UpdateOrderDto,
   ): Promise<OrderWithWarnings> {
     if (
+      dto.categoryId === undefined &&
       dto.description === undefined &&
       dto.budgetAmount === undefined &&
       dto.addressLine === undefined &&
@@ -263,7 +389,22 @@ export class OrdersService {
           address: { select: { addressLine: true, reference: true } },
         },
       });
-      const orderData: Prisma.OrderUpdateInput = {};
+      const orderData: Prisma.OrderUncheckedUpdateInput = {};
+      // T5.2: la categoria se edita; la zona no. La nueva se valida con un
+      // bloqueo compartido (orden del proyecto: pedido y luego catalogos): no
+      // puede desactivarse hasta que la edicion se confirme. La visibilidad
+      // para trabajadores sigue al categoryId guardado (OrderVisibilityService).
+      if (
+        dto.categoryId !== undefined &&
+        dto.categoryId !== current.categoryId
+      ) {
+        await this.catalogs.assertActiveForShare(
+          tx,
+          CatalogKind.CATEGORY,
+          dto.categoryId,
+        );
+        orderData.categoryId = dto.categoryId;
+      }
       if (
         dto.description !== undefined &&
         dto.description !== current.description
@@ -291,7 +432,7 @@ export class OrdersService {
         }
       }
 
-      // Una edicion sin cambios reales no reinicia el vencimiento (equipo).
+      // Una edicion sin cambios reales no sube la revision ni avisa (equipo).
       if (
         Object.keys(orderData).length === 0 &&
         Object.keys(addressData).length === 0
@@ -304,11 +445,16 @@ export class OrdersService {
       if (Object.keys(addressData).length > 0) {
         await tx.orderAddress.update({ where: { orderId }, data: addressData });
       }
-      if (orderData.description !== undefined) {
+      // Los avisos se recalculan con los datos ya guardados si cambio la
+      // descripcion o la categoria (los duplicados dependen de ambas).
+      if (
+        orderData.description !== undefined ||
+        orderData.categoryId !== undefined
+      ) {
         warningInput = {
-          categoryId: current.categoryId,
+          categoryId: dto.categoryId ?? current.categoryId,
           zoneId: current.zoneId,
-          description: dto.description!,
+          description: dto.description ?? current.description,
         };
       }
       return [];
@@ -407,16 +553,17 @@ export class OrdersService {
   }
 
   /**
-   * Edicion atomica: bloquea el pedido, valida que se pueda modificar,
-   * aplica el cambio, sube la revision, reinicia el vencimiento, encola los
-   * archivos que dejan de usarse y ejecuta los hooks; despues de confirmar,
-   * borra esos archivos y corre los efectos posteriores.
+   * Edicion atomica: bloquea el pedido, valida que se pueda modificar (con
+   * el reloj de la BD: un pedido ya vencido no se edita), aplica el cambio,
+   * sube la revision, encola los archivos que dejan de usarse y ejecuta los
+   * hooks; despues de confirmar, borra esos archivos y corre los efectos
+   * posteriores. El vencimiento no se toca (T5.1).
    */
   private async runEdit(
     clientId: string,
     orderId: string,
     // Devuelve las claves de archivos que dejan de usarse, o null si no hubo
-    // cambios reales (entonces no sube la revision ni reinicia el plazo).
+    // cambios reales (entonces no sube la revision).
     change: (tx: Db) => Promise<string[] | null>,
   ): Promise<boolean> {
     const actor = clientActor(clientId);
@@ -431,7 +578,6 @@ export class OrdersService {
           UPDATE "orders"
           SET "revision" = "revision" + 1,
               "last_edited_at" = now(),
-              "expires_at" = now() + make_interval(hours => ${this.settings.expirationHours}::int),
               "updated_at" = now()
           WHERE "id" = ${orderId}::uuid
           RETURNING "revision"`;
@@ -509,9 +655,12 @@ export class OrdersService {
   // ---------------------------------------------------------------------
 
   /**
-   * Cancela un pedido PUBLICADO o EN_NEGOCIACION: conserva el pedido y su
-   * historial, borra fisicamente todas sus fotos y avisa a los modulos
-   * registrados (CANCELADO). Con acuerdo se usa "Cancelar trabajo" (RF-34).
+   * Cancela un pedido PUBLICADO o EN_NEGOCIACION y avisa a los modulos
+   * registrados (CANCELADO). En la misma transaccion lo limpia (T5.4): borra
+   * sus fotos (por la cola compartida), su direccion y anonimiza la
+   * descripcion; conserva el registro minimo y el historial. Un pedido que
+   * alguna vez tuvo un acuerdo no se limpia. Con acuerdo se usa "Cancelar
+   * trabajo" (RF-34).
    */
   async cancel(
     clientId: string,
@@ -536,13 +685,6 @@ export class OrdersService {
           actor,
           reason,
         });
-        const images = await tx.orderImage.findMany({
-          where: { orderId },
-          select: { storageKey: true, thumbnailKey: true },
-        });
-        await tx.orderImage.deleteMany({ where: { orderId } });
-        const keys = imageKeys(images);
-        await this.fileDeletion.enqueue(keys, 'cancelacion-pedido', tx);
         const eventList: OrderLifecycleEvent[] = [
           {
             type: 'CANCELADO',
@@ -553,6 +695,12 @@ export class OrdersService {
           },
         ];
         await this.lifecycle.runInTransaction(eventList, tx);
+        // Despues de los hooks (que aun ven los datos originales).
+        const keys = await this.retention.cleanupClosedOrder(
+          tx,
+          orderId,
+          OrderStatus.CANCELADO,
+        );
         return { obsoleteKeys: keys, events: eventList };
       },
     );
@@ -706,9 +854,32 @@ export class OrdersService {
   }
 
   /**
+   * T6.4.2 (para ofertas y agenda, RF-30): ids de los pedidos asignados al
+   * trabajador que cuentan como trabajo activo segun ACTIVE_ORDER_STATUSES
+   * (la definicion oficial de OrdersModule). Solo lectura, con `tx`, la
+   * transaccion del llamador: si este ya bloqueo al trabajador
+   * (lockApprovedWorker), ninguna asignacion nueva a ese trabajador puede
+   * confirmarse mientras tanto, porque transition() tambien lo bloquea.
+   */
+  async findActiveAssignedOrderIds(
+    tx: Db,
+    workerUserId: string,
+  ): Promise<string[]> {
+    const orders = await tx.order.findMany({
+      where: {
+        assignedWorkerId: workerUserId,
+        status: { in: [...ACTIVE_ORDER_STATUSES] },
+      },
+      select: { id: true },
+    });
+    return orders.map((order) => order.id);
+  }
+
+  /**
    * Aplica una transicion ya bloqueada en una sola sentencia (estado,
-   * asignacion, marcas de tiempo y plazo) y deja el historial en la misma
-   * transaccion.
+   * asignacion y marcas de tiempo) y deja el historial en la misma
+   * transaccion. Nunca cambia el vencimiento (T5.1): volver a PUBLICADO
+   * conserva el plazo original.
    */
   private async applyTransition(
     tx: Db,
@@ -727,7 +898,6 @@ export class OrdersService {
       );
     }
     const cancelled = change.to === OrderStatus.CANCELADO;
-    const resetExpiration = ORDER_EXPIRATION_RESET_TARGETS.includes(change.to);
     const setWorker = change.assignedWorkerId !== undefined;
     const workerId = change.assignedWorkerId?.value ?? null;
     await tx.$executeRaw`
@@ -735,9 +905,6 @@ export class OrdersService {
       SET "status" = ${change.to}::"OrderStatus",
           "cancelled_at" = CASE WHEN ${cancelled} THEN now() ELSE "cancelled_at" END,
           "assigned_worker_id" = CASE WHEN ${setWorker} THEN ${workerId}::uuid ELSE "assigned_worker_id" END,
-          "expires_at" = CASE WHEN ${resetExpiration}
-            THEN now() + make_interval(hours => ${this.settings.expirationHours}::int)
-            ELSE "expires_at" END,
           "updated_at" = now()
       WHERE "id" = ${change.orderId}::uuid`;
     await recordStatusChange(tx, {
@@ -878,6 +1045,21 @@ export function notModifiable(
   return new ConflictException(
     `No se puede ${action} un pedido en estado ${status}`,
   );
+}
+
+/**
+ * G2: pedido asignado a ese trabajador con un acuerdo vigente. Un pedido
+ * CERRADO o CANCELADO ya no da acceso a la direccion.
+ */
+function assignedOrderWhere(
+  workerUserId: string,
+  orderId: string,
+): Prisma.OrderWhereInput {
+  return {
+    id: orderId,
+    assignedWorkerId: workerUserId,
+    status: { in: [...ORDER_AGREED_STATUSES] },
+  };
 }
 
 export function isAllowedTransition(

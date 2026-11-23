@@ -40,6 +40,9 @@ import type { UploadedImageFile } from './images/order-image.processor.js';
 import type { ImageDownload } from './images/order-images.service.js';
 import { OrderImageTooLargeFilter } from './order-image-too-large.filter.js';
 import type {
+  AdminOrderSummary,
+  AssignedOrderView,
+  AdminOrderView,
   OrderWarning,
   OrderWithWarnings,
   OwnerOrderView,
@@ -47,7 +50,7 @@ import type {
   WorkerOrderView,
 } from './order-views.js';
 import { OrderVisibilityService } from './order-visibility.service.js';
-import { ABSOLUTE_MAX_IMAGES } from './orders.rules.js';
+import { ORDER_MAX_IMAGES } from './orders.rules.js';
 import { OrdersService } from './orders.service.js';
 
 /**
@@ -64,7 +67,9 @@ export class OrdersController {
   // RF-14: crear un pedido (multipart: campos + "images").
   @Post()
   @Auth(RoleName.CLIENTE)
-  @UseInterceptors(FilesInterceptor('images', ABSOLUTE_MAX_IMAGES))
+  // Una foto mas que el maximo: la quinta recibe el mensaje del servicio; con
+  // mas, multer corta la peticion sin cargarlas en memoria (T5.3).
+  @UseInterceptors(FilesInterceptor('images', ORDER_MAX_IMAGES + 1))
   @UseFilters(OrderImageTooLargeFilter)
   create(
     @CurrentUser() user: PublicUser,
@@ -118,7 +123,7 @@ export class OrdersController {
     );
   }
 
-  // RF-18: editar datos. Toda edicion efectiva reinicia el vencimiento.
+  // RF-18: editar datos. No cambia el vencimiento (T5.1).
   @Patch('me/:orderId')
   @Auth(RoleName.CLIENTE)
   update(
@@ -176,6 +181,52 @@ export class OrdersController {
     @Body() dto: CancelOrderDto,
   ): Promise<OwnerOrderView> {
     return this.orders.cancel(user.id, orderId, dto);
+  }
+
+  // T5.4: registro minimo de los pedidos para administradores (solo
+  // lectura): sin direccion, fotos ni descripcion; sin el nombre del cliente
+  // si el pedido fue anonimizado.
+  @Get('admin')
+  @Auth(RoleName.ADMINISTRADOR)
+  listForAdmin(
+    @Query() query: ListOwnOrdersQueryDto,
+  ): Promise<PaginatedOrders<AdminOrderSummary>> {
+    return this.orders.listForAdmin(query);
+  }
+
+  @Get('admin/:orderId')
+  @Auth(RoleName.ADMINISTRADOR)
+  getForAdmin(
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ): Promise<AdminOrderView> {
+    return this.orders.getForAdmin(orderId);
+  }
+
+  // G2 (T6.7): el trabajador asignado consulta el pedido con acuerdo, con la
+  // direccion exacta. Sin ApprovedWorkerGuard: la regla es ser el asignado y
+  // que el acuerdo siga vigente. Otro trabajador recibe 404.
+  @Auth(RoleName.TRABAJADOR)
+  @Get('assigned/:orderId')
+  getAssigned(
+    @CurrentUser() user: PublicUser,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ): Promise<AssignedOrderView> {
+    return this.orders.getAssigned(user.id, orderId);
+  }
+
+  @Auth(RoleName.TRABAJADOR)
+  @Get('assigned/:orderId/images/:imageId')
+  @Header('Cache-Control', 'private, no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async downloadAssignedImage(
+    @CurrentUser() user: PublicUser,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Param('imageId', ParseUUIDPipe) imageId: string,
+    @Query() { variant }: ImageVariantQueryDto,
+  ): Promise<StreamableFile> {
+    return toStreamable(
+      await this.orders.openAssignedImage(user.id, orderId, imageId, variant),
+    );
   }
 
   // RF-17: pedidos visibles para un trabajador aprobado (sin direccion ni

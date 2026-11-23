@@ -13,6 +13,7 @@ import { ApprovedWorkerGuard } from './approved-worker.guard.js';
 import { documentMaxBytes } from './document-file.js';
 import { DocumentTooLargeFilter } from './document-too-large.filter.js';
 import { WorkerDocumentsService } from './worker-documents.service.js';
+import { WorkerProfileStatusRegistry } from './profile-status.registry.js';
 import { WorkerProfileController } from './worker-profile.controller.js';
 import { WorkerProfileService } from './worker-profile.service.js';
 import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
@@ -47,6 +48,8 @@ import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
     // T4-F3: cancela la solicitud de zona pendiente al suspender la cuenta.
     ZoneRequestsAccountSuspensionHook,
     WorkerActiveWorkRegistry,
+    // T6.5.2: efectos de otros modulos al suspender un perfil.
+    WorkerProfileStatusRegistry,
     DocumentTooLargeFilter,
     ApprovedWorkerGuard,
   ],
@@ -57,6 +60,7 @@ import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
     WorkerDocumentsService,
     ZoneChangeRequestsService,
     WorkerActiveWorkRegistry,
+    WorkerProfileStatusRegistry,
     ApprovedWorkerGuard,
   ],
 })

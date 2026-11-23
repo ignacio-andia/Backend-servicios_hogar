@@ -31,7 +31,13 @@ import { UpdateSchedulesDto } from './dto/update-schedules.dto.js';
 import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
 import { UpdateWorkerProfileDto } from './dto/update-worker-profile.dto.js';
 import { WorkerActiveWorkRegistry } from './active-work.registry.js';
-import { normalizeSchedules, toTime } from './schedules.js';
+import { WorkerProfileStatusRegistry } from './profile-status.registry.js';
+import {
+  isWithinSchedules,
+  normalizeSchedules,
+  SCHEDULE_TIME_ZONE,
+  toTime,
+} from './schedules.js';
 import {
   decisionNotification,
   submissionNotification,
@@ -269,6 +275,7 @@ export class WorkerProfileService {
     private readonly activeWork: WorkerActiveWorkRegistry,
     private readonly notifications: NotificationsService,
     private readonly zoneRequests: ZoneChangeRequestsService,
+    private readonly profileStatus: WorkerProfileStatusRegistry,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -641,6 +648,38 @@ export class WorkerProfileService {
   }
 
   /**
+   * RF-29 (disponible para la agenda; NO se usa al ofertar: el trabajador
+   * oferta a cualquier hora y negocia el horario, aclaracion del docente).
+   * El trabajo [start, start + duracion) debe
+   * quedar dentro de los horarios de atencion activos del trabajador, en hora
+   * de America/La_Paz. Lee con `tx`, la transaccion del llamador, que ya
+   * bloqueo al trabajador (lockApprovedWorker): los horarios no cambian
+   * mientras se decide. No valida cruces con otros trabajos (RF-30).
+   * Fuera del horario: 400.
+   */
+  async assertWithinSchedule(
+    tx: Prisma.TransactionClient,
+    userId: string,
+    start: Date,
+    durationMinutes: number,
+  ): Promise<void> {
+    const rows = await tx.workerSchedule.findMany({
+      where: { profile: { userId }, isActive: true },
+      select: {
+        dayOfWeek: true,
+        startMinutes: true,
+        endMinutes: true,
+        isActive: true,
+      },
+    });
+    if (!isWithinSchedules(rows, start, durationMinutes)) {
+      throw new BadRequestException(
+        `La disponibilidad propuesta debe quedar completa dentro de su horario de atención (hora de Bolivia, ${SCHEDULE_TIME_ZONE}).`,
+      );
+    }
+  }
+
+  /**
    * Trabajadores elegibles para una categoria y zona: perfil APROBADO,
    * cuenta activa, rol de trabajador vigente y sin una solicitud de cambio de
    * zona pendiente (T4.3: no son candidatos para trabajos nuevos). Si la categoria o la zona
@@ -805,6 +844,12 @@ export class WorkerProfileService {
         await this.zoneRequests.cancelPendingOnSuspension(tx, adminId, {
           id: profileId,
           userId: profile.userId,
+        });
+        // T6.5.2: efectos de otros modulos (ofertas), en esta transaccion.
+        await this.profileStatus.runSuspended(tx, {
+          profileId,
+          userId: profile.userId,
+          actorId: adminId,
         });
       }
     });

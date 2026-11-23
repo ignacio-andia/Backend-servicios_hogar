@@ -12,7 +12,9 @@ export type OrderLifecycleEvent =
       actor: OrderActor;
       reason: string | null;
     }
-  | { type: 'VENCIDO'; orderId: string };
+  // fromStatus: PUBLICADO o EN_NEGOCIACION (T5.1: tambien vence en
+  // negociacion; el modulo de ofertas lo usa para cerrar sus ofertas).
+  | { type: 'VENCIDO'; orderId: string; fromStatus: OrderStatus };
 
 /**
  * Lo que registra un modulo interesado (ofertas, notificaciones). Ninguno

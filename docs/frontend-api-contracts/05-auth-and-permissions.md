@@ -56,8 +56,16 @@ Columnas:
 | `POST /worker-profile` | ✘ | ✔ | ✔ | — | ✘ (salvo que también tenga `CLIENTE`) | Cuenta `ACTIVO`; un solo perfil por cuenta |
 | `/worker-profile/me/*` | ✘ | ✘ (403 hasta tener el rol) | propio | propio | ✘ (salvo que también tenga `TRABAJADOR`) | Ver los estados en 04 |
 | `/worker-profile/admin/*` | ✘ | ✘ | ✘ | ✘ | ✔ | Un administrador no resuelve su propia solicitud de zona ni decide sobre su propio perfil (403) |
-| `POST /orders`, `POST /orders/duplicate-check`, `/orders/me/*` | ✘ | propio | propio (tiene `CLIENTE`) | propio | ✘ (salvo que también tenga `CLIENTE`) | Editar y cancelar solo en `PUBLICADO` (sin vencer) o `EN_NEGOCIACION` |
+| `POST /orders`, `POST /orders/duplicate-check`, `/orders/me/*` | ✘ | propio | propio (tiene `CLIENTE`) | propio | ✘ (salvo que también tenga `CLIENTE`) | Editar y cancelar solo en `PUBLICADO` o `EN_NEGOCIACION`, sin vencer |
 | `/orders/available/*` | ✘ | ✘ | ✘ (403) | ✔ | ✘ | Regla de visibilidad (abajo) |
+| `GET /orders/assigned/:orderId[/images/:imageId]` | ✘ | ✘ (403) | solo el **asignado** | solo el **asignado** | ✘ (salvo que también sea el asignado) | Acuerdo vigente (`ACORDADO` a `EN_RECLAMO`); cualquier otro: 404 |
+| `GET /orders/admin`, `GET /orders/admin/:orderId` | ✘ | ✘ | ✘ | ✘ | ✔ | Solo lectura; registro mínimo (T5.4) |
+| `POST /offers/orders/:orderId` | ✘ | ✘ | ✘ (403) | ✔ | ✘ | Pedido visible para el trabajador (abajo); 404 si no |
+| `GET /offers/me[/:offerId]`, `GET /offers/me/:offerId/whatsapp` | ✘ | ✘ (403) | propio | propio | ✘ (salvo que también tenga `TRABAJADOR`) | Oferta ajena: 404 |
+| `GET /offers/received[/:offerId]`, `GET /offers/received/:offerId/whatsapp` | ✘ | propio | propio (tiene `CLIENTE`) | propio | ✘ (salvo que también tenga `CLIENTE`) | Solo ofertas de pedidos propios: 404 si no |
+| `POST /offers/:offerId/counter` | ✘ | propio, en su turno | propio, en su turno | propio, en su turno | ✘ | Cliente del pedido o trabajador de la oferta; quien no participa: 404 |
+| `POST /offers/:offerId/reject`, `/accept` | ✘ | propio, en su turno | — | — | ✘ | El trabajador de la oferta recibe 403 |
+| `POST /offers/:offerId/withdraw` | ✘ | ✘ (403) | propio | propio | ✘ | En cualquier turno |
 
 > Toda cuenta registrada tiene `CLIENTE`. Un trabajador también es cliente con la misma cuenta (RF-02, RN-14). El primer administrador, creado con `npm run admin:create-first`, solo tiene el rol `ADMINISTRADOR` (no `CLIENTE`).
 
@@ -66,15 +74,16 @@ Columnas:
 | Dato | Visitante | Cliente dueño | Otro cliente | Trabajador aprobado | Administrador |
 |---|---|---|---|---|---|
 | Datos de una cuenta (`PublicUser`) | ✘ | la propia | ✘ | la propia | todas |
-| Teléfono y correo de un trabajador | ✘ | ✘ | ✘ | el propio | ✔ (en solicitudes de zona y usuarios) |
+| Teléfono y correo de un trabajador | ✘ | el teléfono, solo dentro del enlace de WhatsApp de una oferta recibida (#78) | ✘ | el propio | ✔ (en solicitudes de zona y usuarios) |
 | Perfil de trabajador completo | ✘ | — | ✘ | el propio | ✔ listado (#56) y detalle (#57), **salvo el propio** |
 | Motivo de observación, rechazo o suspensión | ✘ | — | ✘ | solo el propio (`/me/status`, `/me/eligibility` y su notificación) | lo escribe; lo ve en el detalle (#57) y en la bitácora (#22) |
 | Quién decidió cada cambio de estado | ✘ | — | ✘ | solo `TRABAJADOR` o `ADMINISTRADOR` | nombre e id (#57) |
 | Documentos del trabajador | ✘ | — | ✘ | los propios (listar y descargar) | ✔ listar, ver y descargar (#58–#60), **salvo los de su propio perfil**; cada acceso queda en la bitácora |
-| Pedido (datos generales) | ✘ | ✔ | ✘ | solo los visibles | ✘ (**no hay endpoint**) |
-| Dirección exacta del pedido | ✘ | ✔ | ✘ | ✘ (❓ RF-55, pendiente con el docente) | ✘ |
-| Datos del cliente en el pedido | ✘ | — | ✘ | ✘ | ✘ |
-| Fotos del pedido | ✘ | ✔ | ✘ | solo de pedidos visibles | ✘ |
+| Pedido (datos generales) | ✘ | ✔ (también cerrado: registro histórico) | ✘ | solo los visibles | registro mínimo (#67–#68): sin dirección, fotos ni descripción; sin nombre del cliente si fue anonimizado |
+| Dirección exacta del pedido | ✘ | ✔ | ✘ | solo el trabajador **asignado**, con acuerdo vigente (#80; adenda §2.2) | ✘ |
+| Datos del cliente en el pedido | ✘ | — | ✘ | el asignado: nombre (#80); el teléfono, solo dentro del enlace de WhatsApp de su propia oferta (#79) | ✘ |
+| Ofertas e historial de negociación | ✘ | las de sus pedidos, con nombre del trabajador (#72, #73) | ✘ | las propias (#70, #71) | ✘ (no hay endpoint) |
+| Fotos del pedido | ✘ | ✔ (hasta que el pedido vence o se cancela: se borran) | ✘ | de pedidos visibles; el asignado, del pedido acordado (#81) | ✘ |
 | Historial de estados del pedido | ✘ | ✘ (no expuesto) | ✘ | ✘ | ✘ |
 | Bitácora | ✘ | ✘ | ✘ | ✘ | ✔ |
 | Notificaciones | ✘ | las propias | ✘ | las propias | las propias (las de verificación no incluyen datos personales del trabajador ni el motivo) |
@@ -88,7 +97,7 @@ Columnas:
 3. `pedido.categoryId` está entre sus especialidades, y esa categoría está **activa**.
 4. El pedido no es suyo como cliente (RN-14).
 5. La cuenta del cliente está `ACTIVO`.
-6. El estado es `EN_NEGOCIACION`, o `PUBLICADO` con `expiresAt` todavía en el futuro.
+6. El estado es `PUBLICADO` o `EN_NEGOCIACION`, con `expiresAt` todavía en el futuro (T5.1: ambos vencen).
 
 Si no se cumple alguna condición, responde **404** (igual que un pedido inexistente).
 
@@ -103,6 +112,7 @@ Si no se cumple alguna condición, responde **404** (igual que un pedido inexist
 | Rechazar un cambio de zona | Administrador activo, no su propia solicitud; motivo no vacío | 403 o 400 |
 | Retirar una solicitud de cambio de zona | Solo la propia (404 si es ajena) y `PENDIENTE` | 404 o 409 |
 | Reasignar la zona de un perfil (#66) | Administrador activo, no su propio perfil (403); perfil `RECHAZADO`, `OBSERVADO`, `PENDIENTE` o `SUSPENDIDO` (409), que conserva su estado, con la zona actual inactiva (409); zona destino existente (404), activa y distinta (400); justificación no vacía (400) | 400, 403, 404 o 409 |
+| Contraofertar, rechazar, retirar o aceptar (#74–#77) | Oferta `VIGENTE` sin vencer; pedido `PUBLICADO` o `EN_NEGOCIACION` sin vencer (aceptar: `EN_NEGOCIACION`); turno propio (salvo retirar); contraofertar y aceptar además exigen zona y categoría activas, cliente activo y trabajador aprobado | 403, 404 o 409 |
 | Ofertar o recibir un trabajo nuevo | Perfil `APROBADO`, cuenta activa y **sin** solicitud de cambio de zona `PENDIENTE` (T4.3). Los trabajos ya acordados no se afectan | 403 o 409 `"Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire."` |
 | Enviar a revisión (o reenviar) | `BORRADOR`, `OBSERVADO` o `RECHAZADO`, sin requisitos pendientes | 409 o 400 |
 | Solicitar cambio de zona | Perfil `APROBADO` (T4.2); sin solicitud pendiente; sin trabajo activo; fuentes de verificación disponibles | 409 con un arreglo de motivos |

@@ -310,7 +310,7 @@ No acepta otras propiedades (400): la operación no cambia el estado ni otros da
 | `budgetAmount` | string | Obligatorio | `^(?!0+(?:\.0{1,2})?$)\d{1,8}(?:\.\d{1,2})?$`: mayor que 0, hasta 8 enteros y 2 decimales, punto decimal | `@Transform(número→string) @IsString @Matches` | Se devuelve con 2 decimales (`"150.50"`) |
 | `addressLine` | string | Obligatorio | 1 a 255 | `@Trim @IsString @IsNotEmpty @MaxLength(255)` | Dato privado: solo lo ve el dueño |
 | `addressReference` | string | Omitible | ≤ 255 | `@Trim @IsOptional @IsString @MaxLength(255)` | Ver la inconsistencia en 09: `""` se guarda como `""` |
-| `images` | archivo(s) | Obligatorio | 1 a 3 fotos (configurable con `ORDER_MIN_IMAGES` y `ORDER_MAX_IMAGES`) | multer | Ver [06](06-file-contracts.md) |
+| `images` | archivo(s) | Obligatorio | 1 a 4 fotos (T5.3; el máximo de 4 es fijo) | multer | Ver [06](06-file-contracts.md) |
 
 Ejemplos inválidos de `budgetAmount`: `"0"`, `"0.00"`, `"-5"`, `"150,50"`, `"1.234"`, `"123456789"`.
 
@@ -326,15 +326,18 @@ Ejemplos inválidos de `budgetAmount`: `"0"`, `"0.00"`, `"-5"`, `"150,50"`, `"1.
 
 | Propiedad | Tipo | Omitir / null | Restricciones | Reglas |
 |---|---|---|---|---|
+| `categoryId` | string | Omitible, **no admite null** | UUID | T5.2: debe existir (404) y estar activa (400). Se valida con un bloqueo compartido dentro de la edición. El pedido pasa a ser visible para los trabajadores de la nueva categoría y deja de serlo para los de la anterior |
 | `description` | string | Omitible, **no admite null** | 10 a 2000 | — |
 | `budgetAmount` | string (o número JSON) | Omitible, **no admite null** | mismo patrón que al crear | `"150.5"` y `"150.50"` son el mismo valor: no cuenta como cambio |
 | `addressLine` | string | Omitible, **no admite null** | 1 a 255 | — |
 | `addressReference` | string \| null | Omitible, admite null | ≤ 255 | `null` o `""` borra la referencia |
 
 - Hay que enviar al menos una propiedad (400).
-- `categoryId` y `zoneId` **no** se pueden editar (400; ❓ pendiente con el docente).
-- Si no hay cambios reales, responde 200 sin subir la revisión ni reiniciar el plazo.
-- Todo cambio real sube `revision`, actualiza `lastEditedAt` y reinicia el vencimiento (48 h).
+- `zoneId` **no** se puede editar (400): para otra zona se cancela el pedido (#51) y se crea uno nuevo.
+- Tampoco se aceptan `status`, `clientId`, `id`, `publishedAt`, `expiresAt`, `revision`, `assignedWorkerId` ni otros campos internos: cualquier propiedad no declarada responde 400 y no se modifica nada.
+- Editar no cambia el estado, la asignación ni las ofertas existentes, que siguen vigentes (T5.2); solo avisa a los módulos registrados con el evento `EDITADO` y la nueva `revision`.
+- Si no hay cambios reales, responde 200 sin subir la revisión.
+- Todo cambio real sube `revision` y actualiza `lastEditedAt`. **No cambia** `publishedAt` ni `expiresAt` (T5.1): el pedido vence igual a los 7 días de su publicación.
 
 ```json
 { "budgetAmount": "200", "addressReference": null }
@@ -368,6 +371,43 @@ Ejemplos inválidos de `budgetAmount`: `"0"`, `"0.00"`, `"-5"`, `"150,50"`, `"1.
 | `variant` | `'full' \| 'thumb'` | Omitible (`full`) | Otro valor responde 400 `"variant debe ser full o thumb"` |
 
 ---
+
+## OffersModule
+
+### `CreateOfferDto`: `POST /api/offers/orders/:orderId` (JSON)
+
+| Propiedad | Tipo | Omitir / null | Restricciones |
+|---|---|---|---|
+| `amount` | string (o number) | Obligatorio | Mayor que 0, hasta 8 dígitos enteros y 2 decimales |
+| `requiresVisit` | boolean | Obligatorio | RF-24: `true` = "Requiere visita"; `false` = "Cotización por fotos" |
+| `visitCost` | string (o number) | **Obligatorio** si `requiresVisit`; **prohibido** si no (400) | 0 o mayor (`"0"` = visita gratis), hasta 8 dígitos enteros y 2 decimales |
+| `materialsIncluded` | boolean | Obligatorio | |
+| `proposedStartAt` | string | Obligatorio | ISO 8601 con fecha, hora y **zona horaria explícita** (`Z` o `±hh:mm`), y **futuro** (reloj de la BD). Válidos: `2026-11-30T10:00:00-04:00`, `2026-11-30T14:00:00Z`, `2026-11-30T14:00:00.000Z`. Inválidos (400): `2026-11-30T10:00:00`, `2026-11-30`. El horario de atención **no** lo limita |
+| `estimatedDurationMinutes` | number | Obligatorio | Entero de 1 a 2147483647 (límite de la columna, no una regla de negocio) |
+
+### `CounterOfferDto`: `POST /api/offers/:offerId/counter` (JSON)
+
+| Propiedad | Tipo | Omitir / null | Restricciones |
+|---|---|---|---|
+| `amount` | string (o number) | Obligatorio | Mismo formato que en `CreateOfferDto`. **Ningún otro campo** (400): las demás condiciones no se negocian |
+
+### `ListOffersQueryDto`: `GET /api/offers/me` (query)
+
+| Propiedad | Tipo | Omitir | Restricciones |
+|---|---|---|---|
+| `status` | `OfferStatus` | Omitible | Se filtra por **estado efectivo** (una `VIGENTE` vencida cuenta como `VENCIDA`) |
+| `page` | number | Omitible (1) | ≥ 1 |
+| `limit` | number | Omitible (20) | 1 a 50 |
+
+### `ListReceivedOffersQueryDto`: `GET /api/offers/received` (query)
+
+Igual que `ListOffersQueryDto`, más:
+
+| Propiedad | Tipo | Omitir | Restricciones |
+|---|---|---|---|
+| `orderId` | string | Omitible | UUID de un pedido **propio** (si no, 404) |
+
+`POST /api/offers/:offerId/reject`, `/withdraw` y `/accept` no tienen cuerpo: lo que se envíe se ignora.
 
 ## NotificationsModule
 

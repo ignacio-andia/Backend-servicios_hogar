@@ -5,6 +5,7 @@ import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { CatalogsModule } from './modules/catalogs/catalogs.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
+import { OffersModule } from './modules/offers/offers.module.js';
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 import { WorkerProfileModule } from './modules/worker-profile/worker-profile.module.js';
@@ -21,6 +22,7 @@ import { WorkerProfileModule } from './modules/worker-profile/worker-profile.mod
     CatalogsModule,
     WorkerProfileModule,
     OrdersModule,
+    OffersModule,
   ],
 })
 export class AppModule {}

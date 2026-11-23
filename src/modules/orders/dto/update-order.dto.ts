@@ -3,6 +3,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   Matches,
   MaxLength,
   MinLength,
@@ -24,10 +25,19 @@ const isPresent = (_dto: object, value: unknown): boolean =>
   value !== undefined;
 
 /**
- * Datos editables del pedido (RF-18). Categoria y zona no se editan:
- * PENDIENTE DE CONFIRMAR CON EL DOCENTE. Las fotos se editan con sus rutas.
+ * Datos editables del pedido (RF-18; especificacion v1.0 §3, T5.2): categoria,
+ * descripcion, presupuesto y direccion. La zona NO se edita: para otra zona se
+ * cancela el pedido y se crea uno nuevo. Tampoco el estado, el dueno, las
+ * fechas de publicacion y vencimiento ni los campos internos: el
+ * ValidationPipe global rechaza cualquier otra propiedad (400). Las fotos se
+ * editan con sus rutas.
  */
 export class UpdateOrderDto {
+  /** Nueva categoria: debe existir (404) y estar activa (400). */
+  @ValidateIf(isPresent)
+  @IsUUID()
+  categoryId?: string;
+
   @Trim()
   @ValidateIf(isPresent)
   @IsString()

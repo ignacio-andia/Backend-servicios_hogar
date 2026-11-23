@@ -34,43 +34,41 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 **Dependencias:**
 - Catálogos (zonas y categorías activas).
 - Cuentas (teléfono y rol).
-- OffersModule, para habilitar los cambios de zona.
+- Decisión del equipo para habilitar los cambios de zona: hoy OffersModule no registra la fuente `OFERTAS` del trabajo activo, así que la solicitud sigue bloqueada (`VERIFICACION_NO_DISPONIBLE`).
 - Un futuro módulo de verificación, para RF-10.
 
 ## 3. Pedidos (RF-14 a RF-18)
 
 | RF | Estado | Contrato disponible | Notas |
 |---|---|---|---|
-| RF-14 Crear pedido (descripción, categoría, fotos, ubicación, monto) | ✅ | #42 (multipart `CreateOrderDto` + `images` → `OrderWithWarnings`) | Vence a las 48 h |
+| RF-14 Crear pedido (descripción, categoría, fotos, ubicación, monto) | ✅ | #42 (multipart `CreateOrderDto` + `images` → `OrderWithWarnings`) | Vence a los 7 días de la publicación (T5.1) |
 | RF-15 Varios pedidos activos, uno por categoría | 🟡 | #43 aviso de duplicado; avisos en #42 y #47 | Hoy **no se bloquea** un segundo pedido de la misma categoría: solo se avisa (decisión provisional del equipo) |
 | RF-16 Encontrar trabajadores de su zona | ⛔ | — | Falta decidir qué datos del trabajador son públicos |
 | RF-17 Visibilidad para trabajadores aprobados de la categoría y zona | ✅ | #52–#54 (`WorkerOrderView`) | Regla completa en 05 |
-| RF-18 Editar o cancelar sin acuerdo | ✅ | #47–#51 (`UpdateOrderDto`, `CancelOrderDto` → `OwnerOrderView`) | Categoría y zona no editables (❓) |
+| RF-18 Editar o cancelar sin acuerdo | ✅ | #47–#51 (`UpdateOrderDto`, `CancelOrderDto` → `OwnerOrderView`) | Categoría editable (T5.2); la zona no (cancelar y crear otro). Las ofertas existentes siguen vigentes |
 | Consulta propia | ✅ | #44–#46 | — |
 
 **Dependencias:**
 - Catálogos.
 - WorkerProfile (elegibilidad y especialidades).
-- OffersModule (para pasar a `EN_NEGOCIACION`).
+- OffersModule: lleva el pedido a `EN_NEGOCIACION` con la primera oferta (#69), a `ACORDADO` al aceptar (#77) y de vuelta a `PUBLICADO` cuando no quedan ofertas vigentes.
 
 ❓ Pendientes con el docente:
-- Si vence `EN_NEGOCIACION`.
-- Si se pueden editar la categoría o la zona.
-- Cantidad definitiva de fotos y soporte de HEIC.
-- Retención de fotos de pedidos vencidos.
+- Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos, T5.3).
 
 ## 4. Ofertas y negociación (RF-19 a RF-24)
 
 | RF | Estado | Contrato |
 |---|---|---|
-| RF-19 a RF-24 | 📐 / ⛔ | **No existe OffersModule ni ningún endpoint, DTO o modelo de ofertas.** |
+| RF-19 Enviar una oferta | ✅ | #69 `CreateOfferDto` → `OfferDetail<OfferView>` |
+| RF-20 Aceptar, rechazar o contraofertar | ✅ | #74 `CounterOfferDto`, #75 rechazar, #76 retirar, #77 aceptar (asigna al trabajador). Sin `SIN_ACUERDO`: sin ofertas vigentes el pedido vuelve a `PUBLICADO` |
+| RF-21 Historial de la negociación | ✅ | `history` en #71 y #73 (solo inserción). El administrador **no** tiene endpoint todavía |
+| RF-22 Condiciones claras antes de aceptar | ✅ | `OfferView`: monto, visita y su costo, materiales, horario y duración |
+| RF-23 Vigencia y máximo de rondas | ✅ | 24 h (se reinicia en cada contraoferta) y 3 rondas, **fijos en el código** (`offers.rules.ts`); el administrador no los configura. Vencimiento automático |
+| RF-24 Cotización por fotos o visita | ✅ | `requiresVisit` / `visitCost` |
+| Contacto entre las partes | ✅ | #78, #79: enlace de WhatsApp (canal externo, T6.6). No hay chat interno |
 
-Solo hay puntos de integración internos en OrdersModule:
-- `OrdersService.transition()` con las transiciones `PUBLICADO → EN_NEGOCIACION`, `EN_NEGOCIACION → ACORDADO` (asigna al trabajador) y `EN_NEGOCIACION → PUBLICADO`.
-- `OrderVisibilityService.assertOpenForOffers()`.
-- Eventos `EDITADO`, `CANCELADO` y `VENCIDO`.
-
-No son contratos HTTP. ❓ Decisión pendiente del equipo: qué pasa con las ofertas enviadas si se desactiva un catálogo o se suspende al cliente.
+Reglas y ejemplos: [`src/modules/offers/README.md`](../../src/modules/offers/README.md). Las ofertas se cierran solas al cancelarse o vencer el pedido y al suspenderse la cuenta del cliente, la del trabajador o su perfil.
 
 ## 5. Visitas, presupuestos y ejecución (RF-25 a RF-28)
 
@@ -81,8 +79,8 @@ No son contratos HTTP. ❓ Decisión pendiente del equipo: qué pasa con las ofe
 | RF | Estado | Contrato |
 |---|---|---|
 | RF-29 Días y horarios de atención | ✅ | #27 `UpdateSchedulesDto` → `WorkerProfileView.schedules` |
-| RF-30 Impedir cruces de trabajos | ⛔ | — |
-| RF-31 Duración estimada en la oferta | ⛔ | Depende de ofertas |
+| RF-30 Impedir cruces de trabajos | 🟡 | Al aceptar (#77): 409 si el horario se cruza con otro trabajo activo del trabajador. No hay agenda de reservas ni consulta de disponibilidad |
+| RF-31 Duración estimada en la oferta | ✅ | `proposedStartAt` y `estimatedDurationMinutes` en #69 |
 
 Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 
@@ -98,7 +96,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF | Estado | Contrato |
 |---|---|---|
 | RF-34 "Cancelar trabajo" (con acuerdo) | ⛔ ❓ | Los 409 de edición y cancelación sugieren usarlo, pero no existe |
-| RF-35 Vencimiento del pedido | 🟡 | Vencimiento automático implementado (48 h, cada 15 min; el estado efectivo se ve en #44–#45). El **aviso al cliente** no existe |
+| RF-35 Vencimiento del pedido | 🟡 | Vencimiento automático a los 7 días de la publicación, también en negociación y sin reinicios (T5.1); la tarea corre al arrancar y cada 15 min, y el estado efectivo se ve en #44–#45. Al vencer se borran las fotos y la dirección y se anonimiza la descripción (T5.4). El **aviso al cliente** no existe |
 | RF-36 Inasistencia del trabajador | ⛔ | — |
 | RF-37, RF-38 Reclamos | ⛔ | — |
 | Cancelación antes del acuerdo (RF-18) | ✅ | #51 |
@@ -118,7 +116,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF-47 Revisar y suspender trabajadores | 🟡 | Listar (#56), ver (#57), documentos (#58–#60), suspender y reactivar (#55; la reactivación exige los requisitos vigentes, T4-F1; mientras está suspendido el trabajador puede regularizar su perfil, T4-F7). Además, #41 (perfiles con zona inactiva), #66 (reasignación de zona) y la decisión de cambios de zona (#38–#40) |
 | RF-48 Categorías | ✅ | #8, #9, #12, #13, #16–#18 (sin reactivación) |
 | RF-49 Zonas | ✅ | #10, #11, #14, #15, #19–#21 (sin reactivación). Perfiles afectados: #41; un perfil `RECHAZADO` con la zona desactivada recibe otra zona por reasignación administrativa (#66, T4.4) |
-| RF-50 Supervisar pedidos | ⛔ | No hay vista administrativa de pedidos |
+| RF-50 Supervisar pedidos | 🟡 | Registro mínimo de solo lectura: #67–#68 (T5.4). Sin acciones administrativas sobre pedidos |
 | RF-51 Atender reclamos | ⛔ | — |
 | RF-52 Reportes | ⛔ | — |
 | RF-53 Bitácora | ✅ | #22 (catálogos, decisiones de zona, decisiones sobre perfiles con `CAMBIO_ESTADO`, y accesos a documentos) |
@@ -129,7 +127,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF | Estado | Contrato |
 |---|---|---|
 | RF-54 Visitante solo ve información pública | 🟡 | Hoy lo único público son los catálogos (#8–#11). Todo lo demás exige sesión |
-| RF-55 Dirección exacta a quien la necesita | 🟡 ❓ | Solo la ve el cliente dueño. Para el trabajador, pendiente con el docente (no hay acuerdos todavía) |
+| RF-55 Dirección exacta a quien la necesita | ✅ | El cliente dueño (#45) y el trabajador **asignado** mientras el acuerdo sigue vigente (#80, adenda §2.2). Nadie más |
 | RF-56 Documentación solo para administradores | ✅ | Administradores: #58–#60, con bitácora y nunca sobre su propio perfil. El trabajador ve los suyos (v1.0 §5; ❓ contradicción X2 con el texto de RF-56). Ningún otro rol accede |
 | Protección de datos en pedidos | ✅ | `WorkerOrderView` excluye la dirección, el cliente y `clientId`; aviso `POSIBLE_DATO_PERSONAL` |
 | Privacidad de fotos | ✅ | Sin metadatos; rutas autorizadas; borrado físico al cancelar |

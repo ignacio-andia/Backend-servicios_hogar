@@ -11,8 +11,12 @@ export const ORDER_ADDRESS_MAX_LENGTH = 255;
 // Igual que la columna order_status_history.reason.
 export const ORDER_STATUS_REASON_MAX_LENGTH = 500;
 
-// Topes tecnicos absolutos: la configuracion no puede superarlos.
-export const ABSOLUTE_MAX_IMAGES = 10;
+// Maximo de fotografias por pedido: regla de negocio confirmada (T5.3), no
+// configurable. La variable ORDER_MAX_IMAGES ya no existe: si se define con
+// otro valor, la aplicacion no arranca (OrdersConfig).
+export const ORDER_MAX_IMAGES = 4;
+
+// Tope tecnico absoluto: la configuracion no puede superarlo.
 export const ABSOLUTE_IMAGE_MAX_MB = 25;
 
 /**
@@ -34,11 +38,21 @@ export const ORDER_WORKER_VISIBLE_STATUSES: readonly OrderStatus[] = [
 ];
 
 /**
- * Estados que vencen al pasar el plazo (§5.5: pedido sin ofertas).
- * PENDIENTE DE CONFIRMAR CON EL DOCENTE: si EN_NEGOCIACION tambien vence.
+ * Plazo de vigencia de un pedido (especificacion v1.0 §3 y adenda v1.1 §2.3,
+ * T5.1): 7 dias calendario desde la publicacion original. Se fija una sola vez
+ * al crear el pedido (expires_at = published_at + 7 dias, con el reloj de la
+ * BD) y nunca se reinicia: ni al editar, ni al cambiar de estado, ni al volver
+ * a PUBLICADO despues de una negociacion fallida. No depende de las ofertas.
+ */
+export const ORDER_EXPIRATION_DAYS = 7;
+
+/**
+ * Estados que vencen al cumplirse el plazo (T5.1): tambien EN_NEGOCIACION.
+ * Con acuerdo (ACORDADO en adelante) el pedido ya no vence.
  */
 export const ORDER_EXPIRABLE_STATUSES: readonly OrderStatus[] = [
   OrderStatus.PUBLICADO,
+  OrderStatus.EN_NEGOCIACION,
 ];
 
 /**
@@ -71,6 +85,30 @@ export type OrderAgreedStatus = (typeof AGREED_STATUSES)[number];
 export const ORDER_AGREED_STATUSES: readonly OrderStatus[] = AGREED_STATUSES;
 
 /**
+ * Estados que indican que el pedido alguna vez tuvo un acuerdo (T5.4): los
+ * estados con acuerdo y CERRADO, que solo se alcanza despues de uno. Si el
+ * historial tiene alguno, el pedido nunca se limpia automaticamente.
+ */
+export const ORDER_EVER_AGREED_STATUSES: readonly OrderStatus[] = [
+  ...AGREED_STATUSES,
+  OrderStatus.CERRADO,
+];
+
+/**
+ * Estados cerrados sin acuerdo que se limpian (T5.4): se borran las fotos y
+ * la direccion y se anonimiza la descripcion. Se conservan categoria, zona,
+ * presupuesto, fechas, estado e historial; nunca se borra el historial.
+ */
+export const ORDER_CLEANUP_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.VENCIDO,
+  OrderStatus.CANCELADO,
+];
+
+/** Texto fijo que reemplaza la descripcion de un pedido limpiado (T5.4). */
+export const ORDER_ANONYMIZED_DESCRIPTION =
+  'Descripción no disponible por cierre del pedido.';
+
+/**
  * Transiciones permitidas. Cada modulo (ofertas, pagos, visitas, agenda,
  * reclamos) agrega aqui las suyas al integrarse y las ejecuta con
  * OrdersService.transition(). CANCELADO y VENCIDO tienen efectos propios
@@ -80,9 +118,12 @@ export const ORDER_AGREED_STATUSES: readonly OrderStatus[] = AGREED_STATUSES;
  * Transiciones de ofertas (decision del equipo):
  * - PUBLICADO -> EN_NEGOCIACION: al recibir la primera oferta.
  * - EN_NEGOCIACION -> ACORDADO: al aceptar una oferta; asigna el trabajador.
- * - EN_NEGOCIACION -> PUBLICADO: sin ofertas vigentes; reinicia el plazo.
+ * - EN_NEGOCIACION -> PUBLICADO: sin ofertas vigentes; conserva el
+ *   vencimiento original (T5.1).
+ * - PUBLICADO o EN_NEGOCIACION -> VENCIDO: al cumplirse el plazo (T5.1), solo
+ *   por OrderExpirationService.
  * PENDIENTE DE CONFIRMAR CON EL DOCENTE (no se agregan): cuando se llega a
- * SIN_ACUERDO, si EN_NEGOCIACION vence y como se sale de ACORDADO (RF-34).
+ * SIN_ACUERDO y como se sale de ACORDADO (RF-34).
  */
 export const ORDER_TRANSITIONS: Readonly<
   Partial<Record<OrderStatus, readonly OrderStatus[]>>
@@ -96,6 +137,7 @@ export const ORDER_TRANSITIONS: Readonly<
     OrderStatus.ACORDADO,
     OrderStatus.PUBLICADO,
     OrderStatus.CANCELADO,
+    OrderStatus.VENCIDO,
   ],
 };
 
@@ -108,14 +150,6 @@ export const ORDER_WORKER_REQUIRED_STATUSES = ORDER_AGREED_STATUSES;
 /** Unico destino que asigna al trabajador: aceptar una oferta. */
 export const ORDER_ASSIGNMENT_TARGET = OrderStatus.ACORDADO;
 export type OrderAssignmentTarget = typeof ORDER_ASSIGNMENT_TARGET;
-
-/**
- * Destinos que reinician el plazo de vencimiento (now() + ORDER_EXPIRATION_HOURS):
- * volver a PUBLICADO desde EN_NEGOCIACION (decision del equipo).
- */
-export const ORDER_EXPIRATION_RESET_TARGETS: readonly OrderStatus[] = [
-  OrderStatus.PUBLICADO,
-];
 
 /** Destinos que solo alcanza OrdersModule (ver ORDER_TRANSITIONS). */
 const INTERNAL_TARGETS = [OrderStatus.CANCELADO, OrderStatus.VENCIDO] as const;
