@@ -118,7 +118,7 @@ export class OrdersController {
     );
   }
 
-  // RF-18: editar datos. Toda edicion efectiva reinicia el vencimiento.
+  // RF-18: editar datos. No cambia el vencimiento (T5.1).
   @Patch('me/:orderId')
   @Auth(RoleName.CLIENTE)
   update(

@@ -25,6 +25,8 @@ describe('OrderExpirationService', () => {
   };
   const due = (...ids: string[]) =>
     ids.map((id) => ({ id, status: 'PUBLICADO' }));
+  const dueIn = (status: string, ...ids: string[]) =>
+    ids.map((id) => ({ id, status }));
   const sqlOf = (call: unknown[]) => (call[0] as string[]).join('?');
 
   beforeEach(() => {
@@ -59,11 +61,53 @@ describe('OrderExpirationService', () => {
     expect(sqlOf(history[0])).toContain("'SISTEMA'");
     expect(history[0]).toContain('VENCIMIENTO');
     expect(afterCommit.mock.calls.map(([event]) => event)).toEqual([
-      { type: 'VENCIDO', orderId: 'a' },
-      { type: 'VENCIDO', orderId: 'b' },
+      { type: 'VENCIDO', orderId: 'a', fromStatus: 'PUBLICADO' },
+      { type: 'VENCIDO', orderId: 'b', fromStatus: 'PUBLICADO' },
     ]);
     // Toda la pasada usa un tiempo limite explicito.
     expect(prisma.$transaction.mock.calls[0][1]).toEqual({ timeout: 30_000 });
+  });
+
+  it('busca pedidos PUBLICADO y EN_NEGOCIACION vencidos con el reloj de la BD (T5.1)', async () => {
+    await create().expireDue(5);
+
+    const [query, ...params] = tx.$queryRaw.mock.calls[0] as [
+      string[],
+      ...unknown[],
+    ];
+    expect(query.join('?')).toContain('"expires_at" <= now()');
+    expect(params[0]).toEqual(['PUBLICADO', 'EN_NEGOCIACION']);
+  });
+
+  it('vence un pedido EN_NEGOCIACION con su historial y el estado de origen en el evento', async () => {
+    tx.$queryRaw.mockResolvedValueOnce(dueIn('EN_NEGOCIACION', 'n'));
+    const inTransaction = vi.fn().mockResolvedValue(undefined);
+    lifecycle.register({ name: 'spy', inTransaction });
+
+    expect(await create().expireDue(5)).toBe(1);
+
+    const [update, history] = tx.$executeRaw.mock.calls;
+    // El UPDATE repite las condiciones: estado y plazo, con el reloj de la BD.
+    expect(sqlOf(update)).toContain('"expires_at" <= now()');
+    expect(update).toContain('EN_NEGOCIACION');
+    expect(sqlOf(history)).toContain('order_status_history');
+    expect(history).toContain('EN_NEGOCIACION');
+    expect(inTransaction).toHaveBeenCalledWith(
+      { type: 'VENCIDO', orderId: 'n', fromStatus: 'EN_NEGOCIACION' },
+      tx,
+    );
+  });
+
+  it('si el pedido ya no coincide al actualizarlo, no lo vence ni deja historial', async () => {
+    tx.$queryRaw.mockResolvedValueOnce(due('a'));
+    tx.$executeRaw.mockResolvedValueOnce(0);
+    const afterCommit = vi.fn();
+    lifecycle.register({ name: 'spy', afterCommit });
+
+    expect(await create().expireDue(5)).toBe(0);
+
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(afterCommit).not.toHaveBeenCalled();
   });
 
   it('un hook que falla solo afecta a su pedido y este se salta en la pasada', async () => {
@@ -97,19 +141,23 @@ describe('OrderExpirationService', () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(2);
   });
 
-  it('corre cada 15 minutos (configurable) solo si las tareas estan activas', () => {
+  it('al arrancar corre una pasada y luego cada 15 minutos (configurable), solo si las tareas estan activas', async () => {
     vi.useFakeTimers();
     try {
       create({ SCHEDULED_JOBS_ENABLED: 'false' }).onApplicationBootstrap();
       expect(scheduler.getIntervals()).toEqual([]);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
 
       const service = create();
       service.onApplicationBootstrap();
       expect(scheduler.getIntervals()).toEqual(['order-expiration']);
-      vi.advanceTimersByTime(14 * 60_000);
-      expect(prisma.$transaction).not.toHaveBeenCalled();
-      vi.advanceTimersByTime(60_000);
+      // Recuperacion tras un reinicio: primera pasada inmediata.
+      await vi.advanceTimersByTimeAsync(0);
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(14 * 60_000);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(2);
 
       service.onModuleDestroy();
       expect(scheduler.getIntervals()).toEqual([]);
@@ -117,8 +165,33 @@ describe('OrderExpirationService', () => {
       create({
         ORDER_EXPIRATION_INTERVAL_MINUTES: '5',
       }).onApplicationBootstrap();
-      vi.advanceTimersByTime(5 * 60_000);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      // Pasada al arrancar y una del intervalo de 5 minutos.
+      expect(prisma.$transaction).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('dos pasadas del mismo proceso no se superponen', async () => {
+    let finish!: () => void;
+    prisma.$transaction.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ claimed: 0, events: [], failed: [] });
+        }),
+    );
+    vi.useFakeTimers();
+    try {
+      const service = create({ ORDER_EXPIRATION_INTERVAL_MINUTES: '1' });
+      service.onApplicationBootstrap();
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+      // La primera pasada sigue en curso: las del intervalo no arrancan.
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      finish();
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+      service.onModuleDestroy();
     } finally {
       vi.useRealTimers();
     }

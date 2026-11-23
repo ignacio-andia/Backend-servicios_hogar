@@ -94,7 +94,9 @@ Transiciones: `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un a
 | `VENCIDO` | Tarea automática (cada 15 min) o estado efectivo (ver abajo) | ✘ | ✘ |
 | `CANCELADO` | `POST /orders/me/:id/cancel` | ✘ | ✘ |
 
-**Estado efectivo:** un pedido `PUBLICADO` cuyo `expiresAt` ya pasó se devuelve como `VENCIDO` en todas las respuestas, aunque la tarea automática todavía no lo haya registrado.
+**Vencimiento (T5.1):** todo pedido vence a los **7 días calendario** desde su publicación original (`expiresAt = publishedAt + 7 días`, reloj de la BD). Ese plazo no se reinicia nunca: ni al editar, ni al cambiar de estado, ni al volver a `PUBLICADO` después de una negociación fallida, y no depende de las ofertas.
+
+**Estado efectivo:** un pedido `PUBLICADO` o `EN_NEGOCIACION` cuyo `expiresAt` ya pasó se devuelve como `VENCIDO` en todas las respuestas y ya no admite ediciones, cancelación, ofertas ni cambios de estado, aunque la tarea automática todavía no lo haya registrado. La tarea corre al arrancar el servidor y luego periódicamente; nunca vence dos veces el mismo pedido.
 
 Transiciones implementadas (`ORDER_TRANSITIONS`):
 
@@ -103,10 +105,10 @@ Transiciones implementadas (`ORDER_TRANSITIONS`):
 | (nuevo) | `PUBLICADO` | Crear | ✅ |
 | `PUBLICADO` | `CANCELADO` | Cancelar (cliente) | ✅ |
 | `EN_NEGOCIACION` | `CANCELADO` | Cancelar (cliente) | ✅ (pero ningún pedido llega hoy a `EN_NEGOCIACION`) |
-| `PUBLICADO` | `VENCIDO` | Tarea automática (`SISTEMA`, proceso `VENCIMIENTO`) | — |
+| `PUBLICADO` o `EN_NEGOCIACION` | `VENCIDO` | Tarea automática (`SISTEMA`, proceso `VENCIMIENTO`), a los 7 días de la publicación | — |
 | `PUBLICADO` | `EN_NEGOCIACION` | `OrdersService.transition()` (interna) | 📐 No |
 | `EN_NEGOCIACION` | `ACORDADO` (asigna al trabajador) | `transition()` (interna) | 📐 No |
-| `EN_NEGOCIACION` | `PUBLICADO` (reinicia el plazo de 48 h) | `transition()` (interna) | 📐 No |
+| `EN_NEGOCIACION` | `PUBLICADO` (conserva el vencimiento original) | `transition()` (interna) | 📐 No |
 
 Todo lo demás está **sin implementar**: el resto del flujo hasta `CERRADO`, `SIN_ACUERDO` y la salida desde `ACORDADO` (❓ pendientes con el docente).
 

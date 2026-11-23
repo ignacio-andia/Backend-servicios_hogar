@@ -8,7 +8,9 @@ import {
   INestApplication,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { SchedulerRegistry } from '@nestjs/schedule';
 import { Test } from '@nestjs/testing';
 import sharp from 'sharp';
 import request from 'supertest';
@@ -33,12 +35,16 @@ import {
 } from '../src/modules/users/users.service.js';
 import { OrderExpirationService } from '../src/modules/orders/order-expiration.service.js';
 import { clientActor } from '../src/modules/orders/order-history.js';
-import { OrderLifecycleRegistry } from '../src/modules/orders/order-lifecycle.registry.js';
+import {
+  OrderLifecycleEvent,
+  OrderLifecycleRegistry,
+} from '../src/modules/orders/order-lifecycle.registry.js';
 import {
   OrderTransitionRequest,
   OrderTransitionUsageError,
 } from '../src/modules/orders/order-transition.js';
 import { OrderVisibilityService } from '../src/modules/orders/order-visibility.service.js';
+import { OrdersConfig } from '../src/modules/orders/orders.config.js';
 import { OrdersService } from '../src/modules/orders/orders.service.js';
 import {
   ActiveWorkKind,
@@ -222,7 +228,7 @@ describe('OrdersModule (e2e)', () => {
   });
 
   describe('RF-14: creacion', () => {
-    it('crea el pedido PUBLICADO con fotos procesadas y vencimiento de 48 h', async () => {
+    it('crea el pedido PUBLICADO con fotos procesadas y vencimiento a los 7 días (T5.1)', async () => {
       const second = await photo(3000, 2000, '#aa3300');
       const res = await createOrder(client, orderFields(), [
         { content: jpeg, name: 'foto1.jpg' },
@@ -246,11 +252,11 @@ describe('OrdersModule (e2e)', () => {
       expect(order.images).toHaveLength(2);
       expect(order.images[1]).toMatchObject({ width: 1600, height: 1067 });
       expect(res.body.warnings).toEqual([]);
-      const hours =
-        (new Date(order.expiresAt).getTime() -
-          new Date(order.publishedAt).getTime()) /
-        3_600_000;
-      expect(hours).toBeCloseTo(48, 5);
+      // T5.1: vence exactamente 7 dias calendario despues de publicarse.
+      expect(
+        new Date(order.expiresAt).getTime() -
+          new Date(order.publishedAt).getTime(),
+      ).toBe(7 * 24 * 60 * 60 * 1000);
       orderId = order.id;
 
       const history = await prisma.orderStatusHistory.findMany({
@@ -641,6 +647,12 @@ describe('OrdersModule (e2e)', () => {
     /** Lleva el vencimiento al pasado cercano/futuro con el reloj de la BD. */
     const setExpiresIn = (id: string, minutes: number) =>
       prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() + make_interval(mins => ${minutes}::int) WHERE "id" = ${id}::uuid`;
+    /** Fechas de publicacion y de vencimiento guardadas. */
+    const datesOf = (id: string) =>
+      prisma.order.findUniqueOrThrow({
+        where: { id },
+        select: { publishedAt: true, expiresAt: true },
+      });
     /** Horas que faltan para vencer, medidas con el reloj de la BD. */
     const hoursLeft = async (id: string) => {
       const [row] = await prisma.$queryRaw<{ hours: number }[]>`
@@ -664,10 +676,9 @@ describe('OrdersModule (e2e)', () => {
       };
     };
 
-    it('una edicion efectiva sube la revision y reinicia el vencimiento', async () => {
+    it('una edicion efectiva sube la revision y no cambia la publicacion ni el vencimiento (T5.1)', async () => {
       const order = await newOrder('Cambiar el grifo del baño principal');
-      await setExpiresIn(order.id, 60);
-      expect(await hoursLeft(order.id)).toBeLessThan(1.1);
+      const before = await datesOf(order.id);
 
       const res = await patch(client2, order.id, {
         description: 'Cambiar el grifo y la ducha del baño principal',
@@ -680,16 +691,18 @@ describe('OrdersModule (e2e)', () => {
         description: 'Cambiar el grifo y la ducha del baño principal',
         budgetAmount: '200.00',
         address: { addressLine: 'Av. Siempre Viva 742', reference: null },
+        expiresAt: before.expiresAt.toISOString(),
+        publishedAt: before.publishedAt.toISOString(),
       });
       expect(res.body.order.lastEditedAt).not.toBeNull();
-      expect(await hoursLeft(order.id)).toBeCloseTo(48, 1);
+      expect(await datesOf(order.id)).toEqual(before);
       // Editar no es un cambio de estado: el historial no crece.
       expect(
         await prisma.orderStatusHistory.count({ where: { orderId: order.id } }),
       ).toBe(1);
     });
 
-    it('una edicion sin cambios reales no reinicia el vencimiento', async () => {
+    it('una edicion sin cambios reales no sube la revision ni cambia el vencimiento', async () => {
       const order = await newOrder('Revisar el tanque de agua de la terraza');
       await setExpiresIn(order.id, 60);
 
@@ -776,7 +789,7 @@ describe('OrdersModule (e2e)', () => {
       expect(cancelled.body.message).toContain('CANCELADO');
     });
 
-    it('agregar una foto la guarda en la siguiente posicion y cuenta como edicion', async () => {
+    it('agregar una foto la guarda en la siguiente posicion y cuenta como edicion, sin cambiar el vencimiento', async () => {
       const order = await newOrder('Cambiar las tejas rotas del techo');
       await setExpiresIn(order.id, 60);
 
@@ -785,7 +798,9 @@ describe('OrdersModule (e2e)', () => {
       expect(
         res.body.images.map((i: { position: number }) => i.position),
       ).toEqual([1, 2]);
-      expect(await hoursLeft(order.id)).toBeCloseTo(48, 1);
+      // T5.1: sigue venciendo en la misma fecha (aqui, en una hora).
+      expect(await hoursLeft(order.id)).toBeGreaterThan(0.9);
+      expect(await hoursLeft(order.id)).toBeLessThan(1.1);
     });
 
     it('no supera el maximo de fotos y no deja archivos huerfanos', async () => {
@@ -1180,12 +1195,6 @@ describe('OrdersModule (e2e)', () => {
     };
     const stored = (id: string) =>
       prisma.order.findUniqueOrThrow({ where: { id } });
-    const hoursLeft = async (id: string) => {
-      const [row] = await prisma.$queryRaw<{ hours: number }[]>`
-        SELECT EXTRACT(EPOCH FROM ("expires_at" - now())) / 3600 AS "hours"
-        FROM "orders" WHERE "id" = ${id}::uuid`;
-      return Number(row.hours);
-    };
     const toNegotiation = (id: string) =>
       prisma.$transaction((tx) =>
         service.transition(tx, {
@@ -1356,11 +1365,13 @@ describe('OrdersModule (e2e)', () => {
       });
     });
 
-    it('EN_NEGOCIACION -> PUBLICADO reinicia el plazo y puede liberar la asignacion', async () => {
+    it('EN_NEGOCIACION -> PUBLICADO conserva el vencimiento original y puede liberar la asignacion (T5.1)', async () => {
       const id = await newOrder('Reparar la bomba de la cisterna');
+      const original = await stored(id);
       await toNegotiation(id);
-      // Plazo ya cumplido mientras estaba en negociacion (no vence).
-      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '2 hours', "assigned_worker_id" = ${workerOtherCategory.id}::uuid WHERE "id" = ${id}::uuid`;
+      // Cambiar de estado no toca el plazo.
+      expect((await stored(id)).expiresAt).toEqual(original.expiresAt);
+      await prisma.$executeRaw`UPDATE "orders" SET "assigned_worker_id" = ${workerOtherCategory.id}::uuid WHERE "id" = ${id}::uuid`;
 
       await prisma.$transaction((tx) =>
         service.transition(tx, {
@@ -1375,8 +1386,9 @@ describe('OrdersModule (e2e)', () => {
       expect(await stored(id)).toMatchObject({
         status: OrderStatus.PUBLICADO,
         assignedWorkerId: null,
+        publishedAt: original.publishedAt,
+        expiresAt: original.expiresAt,
       });
-      expect(await hoursLeft(id)).toBeCloseTo(48, 1);
     });
 
     it('bloquea primero al trabajador y despues el pedido', async () => {
@@ -1515,12 +1527,16 @@ describe('OrdersModule (e2e)', () => {
   describe('Vencimiento automatico (§5.5)', () => {
     let expiration: OrderExpirationService;
     const vencidos: string[] = [];
+    const vencidosEventos: OrderLifecycleEvent[] = [];
     beforeAll(() => {
       expiration = app.get(OrderExpirationService);
       app.get(OrderLifecycleRegistry).register({
         name: 'orders-e2e-vencimiento',
         afterCommit: async (event) => {
-          if (event.type === 'VENCIDO') vencidos.push(event.orderId);
+          if (event.type === 'VENCIDO') {
+            vencidos.push(event.orderId);
+            vencidosEventos.push(event);
+          }
         },
       });
     });
@@ -1562,7 +1578,8 @@ describe('OrdersModule (e2e)', () => {
         },
       ]);
       expect(vencidos).toContain(due);
-      // Fotos de pedidos vencidos: se conservan (pendiente con el docente).
+      // Fotos de pedidos vencidos: por ahora se conservan (su borrado es una
+      // tarea aparte de T5.1).
       await access(path.join(storageDir, image.storageKey));
       const own = await http()
         .get(`${BASE}/me/${due}`)
@@ -1580,15 +1597,29 @@ describe('OrdersModule (e2e)', () => {
       expect(await expirationHistory(due)).toHaveLength(1);
     });
 
-    it('no vence pedidos EN_NEGOCIACION (pendiente con el docente)', async () => {
+    it('vence tambien los pedidos EN_NEGOCIACION y avisa el estado de origen (T5.1)', async () => {
       const id = await newOrder('Instalar el calefón en la lavandería');
       await prisma.order.update({
         where: { id },
         data: { status: OrderStatus.EN_NEGOCIACION },
       });
       await makeDue([id]);
+
       await expiration.expireDue();
-      expect(await statusOf(id)).toBe(OrderStatus.EN_NEGOCIACION);
+
+      expect(await statusOf(id)).toBe(OrderStatus.VENCIDO);
+      expect(await expirationHistory(id)).toMatchObject([
+        {
+          fromStatus: OrderStatus.EN_NEGOCIACION,
+          actorType: 'SISTEMA',
+          systemProcess: 'VENCIMIENTO',
+        },
+      ]);
+      expect(vencidosEventos.find((event) => event.orderId === id)).toEqual({
+        type: 'VENCIDO',
+        orderId: id,
+        fromStatus: OrderStatus.EN_NEGOCIACION,
+      });
     });
 
     it('procesa por lotes hasta terminar', async () => {
@@ -1610,6 +1641,11 @@ describe('OrdersModule (e2e)', () => {
           newOrder(`Pedido concurrente de prueba número ${i}`),
         ),
       );
+      // La mitad en negociacion: tambien vencen (T5.1).
+      await prisma.order.updateMany({
+        where: { id: { in: ids.slice(0, 3) } },
+        data: { status: OrderStatus.EN_NEGOCIACION },
+      });
       await makeDue(ids);
 
       await Promise.all([
@@ -1618,9 +1654,14 @@ describe('OrdersModule (e2e)', () => {
         expiration.expireDue(2),
       ]);
 
-      for (const id of ids) {
+      for (const [index, id] of ids.entries()) {
         expect(await statusOf(id)).toBe(OrderStatus.VENCIDO);
-        expect(await expirationHistory(id)).toHaveLength(1);
+        expect(await expirationHistory(id)).toMatchObject([
+          {
+            fromStatus:
+              index < 3 ? OrderStatus.EN_NEGOCIACION : OrderStatus.PUBLICADO,
+          },
+        ]);
       }
     });
 
@@ -1657,6 +1698,263 @@ describe('OrdersModule (e2e)', () => {
         .expect(409);
       await expiration.expireDue();
       expect(await statusOf(id)).toBe(OrderStatus.VENCIDO);
+    });
+
+    describe('T5.1: plazo de 7 días desde la publicación', () => {
+      const SEVEN_DAYS_S = 7 * 24 * 60 * 60;
+      const service = () => app.get(OrdersService);
+      const datesOf = (id: string) =>
+        prisma.order.findUniqueOrThrow({
+          where: { id },
+          select: { publishedAt: true, expiresAt: true },
+        });
+      /**
+       * Simula el paso del tiempo: el pedido se publico hace `seconds`
+       * segundos y vence 7 dias despues de esa publicacion (la regla se
+       * conserva: expires_at = published_at + 7 dias).
+       */
+      const publishedSecondsAgo = (id: string, seconds: number) =>
+        prisma.$executeRaw`
+          UPDATE "orders"
+          SET "published_at" = now() - make_interval(secs => ${seconds}::int),
+              "expires_at" = now() - make_interval(secs => ${seconds}::int) + interval '7 days'
+          WHERE "id" = ${id}::uuid`;
+      const toNegotiation = (id: string) =>
+        prisma.$transaction((tx) =>
+          service().transition(tx, {
+            orderId: id,
+            from: OrderStatus.PUBLICADO,
+            to: OrderStatus.EN_NEGOCIACION,
+            actor: {
+              type: 'USUARIO',
+              userId: workerOtherCategory.id,
+              role: RoleName.TRABAJADOR,
+            },
+          }),
+        );
+      const history = (id: string) =>
+        prisma.orderStatusHistory.findMany({
+          where: { orderId: id },
+          orderBy: { createdAt: 'asc' },
+        });
+      const ownView = (id: string) =>
+        http()
+          .get(`${BASE}/me/${id}`)
+          .set('Authorization', auth(client2))
+          .expect(200);
+
+      it('vence al cumplirse 7 días desde la publicación; un minuto antes, no', async () => {
+        const due = await newOrder('Cambiar el cerrojo de la puerta principal');
+        const notYet = await newOrder(
+          'Revisar el calentador del baño de visitas',
+        );
+        await publishedSecondsAgo(due, SEVEN_DAYS_S + 1);
+        await publishedSecondsAgo(notYet, SEVEN_DAYS_S - 60);
+
+        await expiration.expireDue();
+
+        expect(await statusOf(due)).toBe(OrderStatus.VENCIDO);
+        expect(await statusOf(notYet)).toBe(OrderStatus.PUBLICADO);
+        expect((await ownView(notYet)).body).toMatchObject({
+          status: OrderStatus.PUBLICADO,
+          canEdit: true,
+        });
+      });
+
+      it('un pedido en negociación (con ofertas) vence igual y ninguna transición lo prolonga', async () => {
+        const id = await newOrder('Reparar la instalación de la cocina');
+        const original = await datesOf(id);
+
+        // La primera oferta lo pasa a EN_NEGOCIACION: el plazo no cambia.
+        await toNegotiation(id);
+        expect(await datesOf(id)).toEqual(original);
+
+        // Se cumplen los 7 dias mientras negocia.
+        await publishedSecondsAgo(id, SEVEN_DAYS_S + 1);
+        const due = await datesOf(id);
+
+        // Antes de que corra la tarea ya se trata como vencido.
+        expect((await ownView(id)).body).toMatchObject({
+          status: OrderStatus.VENCIDO,
+          canEdit: false,
+          canCancel: false,
+        });
+        await http()
+          .get(`${BASE}/available/${id}`)
+          .set('Authorization', auth(worker))
+          .expect(404);
+        // Ni aceptar una oferta ni volver a PUBLICADO lo reviven.
+        for (const change of [
+          {
+            to: OrderStatus.ACORDADO,
+            assignWorkerId: workerOtherCategory.id,
+          } as const,
+          { to: OrderStatus.PUBLICADO } as const,
+        ]) {
+          await expect(
+            prisma.$transaction((tx) =>
+              service().transition(tx, {
+                orderId: id,
+                from: OrderStatus.EN_NEGOCIACION,
+                actor: clientActor(client2.id),
+                ...change,
+              }),
+            ),
+          ).rejects.toThrow('El pedido venció y ya no se puede modificar.');
+        }
+
+        await expiration.expireDue();
+
+        expect(
+          await prisma.order.findUniqueOrThrow({ where: { id } }),
+        ).toMatchObject({
+          status: OrderStatus.VENCIDO,
+          assignedWorkerId: null,
+          expiresAt: due.expiresAt,
+        });
+        expect(
+          (await history(id)).map((row) => [
+            row.fromStatus,
+            row.toStatus,
+            row.actorType,
+          ]),
+        ).toEqual([
+          [null, OrderStatus.PUBLICADO, 'USUARIO'],
+          [OrderStatus.PUBLICADO, OrderStatus.EN_NEGOCIACION, 'USUARIO'],
+          [OrderStatus.EN_NEGOCIACION, OrderStatus.VENCIDO, 'SISTEMA'],
+        ]);
+        expect(vencidosEventos.find((event) => event.orderId === id)).toEqual({
+          type: 'VENCIDO',
+          orderId: id,
+          fromStatus: OrderStatus.EN_NEGOCIACION,
+        });
+      });
+
+      it('si la tarea corre con días de atraso, vence igual y antes ya nadie podía modificarlo', async () => {
+        const id = await newOrder('Cambiar las bisagras del ropero grande');
+        await publishedSecondsAgo(id, SEVEN_DAYS_S + 3 * 24 * 60 * 60);
+
+        expect((await ownView(id)).body.status).toBe(OrderStatus.VENCIDO);
+        const edit = await http()
+          .patch(`${BASE}/me/${id}`)
+          .set('Authorization', auth(client2))
+          .send({ budgetAmount: '99' })
+          .expect(409);
+        expect(edit.body.message).toBe(
+          'El pedido venció y ya no se puede modificar.',
+        );
+        await http()
+          .post(`${BASE}/me/${id}/cancel`)
+          .set('Authorization', auth(client2))
+          .send({})
+          .expect(409);
+
+        await expiration.expireDue();
+
+        expect(await statusOf(id)).toBe(OrderStatus.VENCIDO);
+        expect(await expirationHistory(id)).toHaveLength(1);
+        expect(
+          await prisma.order.findUniqueOrThrow({ where: { id } }),
+        ).toMatchObject({ revision: 1, lastEditedAt: null });
+      });
+
+      it('tras un reinicio, la primera pasada vence lo que caducó con el servidor detenido', async () => {
+        const id = await newOrder('Revisar la bomba de agua del edificio');
+        await publishedSecondsAgo(id, SEVEN_DAYS_S + 60 * 60);
+
+        // Una instancia nueva del servicio, como al arrancar el servidor, con
+        // las tareas programadas activas (las pruebas e2e las desactivan).
+        const previous = process.env.SCHEDULED_JOBS_ENABLED;
+        process.env.SCHEDULED_JOBS_ENABLED = 'true';
+        const restarted = new OrderExpirationService(
+          prisma,
+          app.get(OrdersConfig),
+          app.get(OrderLifecycleRegistry),
+          new ConfigService(),
+          new SchedulerRegistry(),
+        );
+        try {
+          restarted.onApplicationBootstrap();
+          // No espera al intervalo (15 minutos): la pasada inicial lo vence.
+          await vi.waitFor(
+            async () => expect(await statusOf(id)).toBe(OrderStatus.VENCIDO),
+            { timeout: 10_000, interval: 100 },
+          );
+          await vi.waitFor(
+            () =>
+              expect(
+                (restarted as unknown as { running: boolean }).running,
+              ).toBe(false),
+            { timeout: 10_000, interval: 50 },
+          );
+        } finally {
+          restarted.onModuleDestroy();
+          process.env.SCHEDULED_JOBS_ENABLED = previous;
+        }
+        expect(await expirationHistory(id)).toHaveLength(1);
+      });
+
+      it('vencimiento y edición a la vez: un pedido vencido no se edita; uno vigente se edita sin cambiar el plazo', async () => {
+        const expired = await newOrder('Arreglar la cerradura del portón');
+        const active = await newOrder('Pintar el pasillo del segundo piso');
+        await publishedSecondsAgo(expired, SEVEN_DAYS_S + 1);
+        const activeDates = await datesOf(active);
+        const edit = (id: string) =>
+          http()
+            .patch(`${BASE}/me/${id}`)
+            .set('Authorization', auth(client2))
+            .send({ budgetAmount: '321' });
+
+        const [, expiredEdit, activeEdit] = await Promise.all([
+          expiration.expireDue(),
+          edit(expired),
+          edit(active),
+        ]);
+
+        expect(expiredEdit.status).toBe(409);
+        expect(activeEdit.status).toBe(200);
+        // Si la tarea lo encontro bloqueado por la edicion, lo vence ahora.
+        await expiration.expireDue();
+        expect(
+          await prisma.order.findUniqueOrThrow({ where: { id: expired } }),
+        ).toMatchObject({ status: OrderStatus.VENCIDO, revision: 1 });
+        expect(await expirationHistory(expired)).toHaveLength(1);
+        expect(
+          await prisma.order.findUniqueOrThrow({ where: { id: active } }),
+        ).toMatchObject({
+          status: OrderStatus.PUBLICADO,
+          revision: 2,
+          expiresAt: activeDates.expiresAt,
+          publishedAt: activeDates.publishedAt,
+        });
+      });
+
+      it('vencimiento y cambio de estado a la vez: el pedido vencido no avanza; el vigente avanza sin cambiar el plazo', async () => {
+        const expired = await newOrder('Reparar el cielo raso del comedor');
+        const active = await newOrder('Instalar dos tomacorrientes nuevos');
+        await publishedSecondsAgo(expired, SEVEN_DAYS_S + 1);
+        const activeDates = await datesOf(active);
+
+        const [, expiredMove, activeMove] = await Promise.allSettled([
+          expiration.expireDue(),
+          toNegotiation(expired),
+          toNegotiation(active),
+        ]);
+
+        expect(expiredMove.status).toBe('rejected');
+        expect(activeMove.status).toBe('fulfilled');
+        await expiration.expireDue();
+        expect((await history(expired)).map((row) => row.toStatus)).toEqual([
+          OrderStatus.PUBLICADO,
+          OrderStatus.VENCIDO,
+        ]);
+        expect(
+          await prisma.order.findUniqueOrThrow({ where: { id: active } }),
+        ).toMatchObject({
+          status: OrderStatus.EN_NEGOCIACION,
+          expiresAt: activeDates.expiresAt,
+        });
+      });
     });
   });
 

@@ -333,8 +333,8 @@ Ejemplos inválidos de `budgetAmount`: `"0"`, `"0.00"`, `"-5"`, `"150,50"`, `"1.
 
 - Hay que enviar al menos una propiedad (400).
 - `categoryId` y `zoneId` **no** se pueden editar (400; ❓ pendiente con el docente).
-- Si no hay cambios reales, responde 200 sin subir la revisión ni reiniciar el plazo.
-- Todo cambio real sube `revision`, actualiza `lastEditedAt` y reinicia el vencimiento (48 h).
+- Si no hay cambios reales, responde 200 sin subir la revisión.
+- Todo cambio real sube `revision` y actualiza `lastEditedAt`. **No cambia** `publishedAt` ni `expiresAt` (T5.1): el pedido vence igual a los 7 días de su publicación.
 
 ```json
 { "budgetAmount": "200", "addressReference": null }

@@ -56,7 +56,7 @@ Columnas:
 | `POST /worker-profile` | ✘ | ✔ | ✔ | — | ✘ (salvo que también tenga `CLIENTE`) | Cuenta `ACTIVO`; un solo perfil por cuenta |
 | `/worker-profile/me/*` | ✘ | ✘ (403 hasta tener el rol) | propio | propio | ✘ (salvo que también tenga `TRABAJADOR`) | Ver los estados en 04 |
 | `/worker-profile/admin/*` | ✘ | ✘ | ✘ | ✘ | ✔ | Un administrador no resuelve su propia solicitud de zona ni decide sobre su propio perfil (403) |
-| `POST /orders`, `POST /orders/duplicate-check`, `/orders/me/*` | ✘ | propio | propio (tiene `CLIENTE`) | propio | ✘ (salvo que también tenga `CLIENTE`) | Editar y cancelar solo en `PUBLICADO` (sin vencer) o `EN_NEGOCIACION` |
+| `POST /orders`, `POST /orders/duplicate-check`, `/orders/me/*` | ✘ | propio | propio (tiene `CLIENTE`) | propio | ✘ (salvo que también tenga `CLIENTE`) | Editar y cancelar solo en `PUBLICADO` o `EN_NEGOCIACION`, sin vencer |
 | `/orders/available/*` | ✘ | ✘ | ✘ (403) | ✔ | ✘ | Regla de visibilidad (abajo) |
 
 > Toda cuenta registrada tiene `CLIENTE`. Un trabajador también es cliente con la misma cuenta (RF-02, RN-14). El primer administrador, creado con `npm run admin:create-first`, solo tiene el rol `ADMINISTRADOR` (no `CLIENTE`).
@@ -88,7 +88,7 @@ Columnas:
 3. `pedido.categoryId` está entre sus especialidades, y esa categoría está **activa**.
 4. El pedido no es suyo como cliente (RN-14).
 5. La cuenta del cliente está `ACTIVO`.
-6. El estado es `EN_NEGOCIACION`, o `PUBLICADO` con `expiresAt` todavía en el futuro.
+6. El estado es `PUBLICADO` o `EN_NEGOCIACION`, con `expiresAt` todavía en el futuro (T5.1: ambos vencen).
 
 Si no se cumple alguna condición, responde **404** (igual que un pedido inexistente).
 

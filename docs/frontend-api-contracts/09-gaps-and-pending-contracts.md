@@ -49,7 +49,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | D4 | **Resuelto (T2.2 y T2.3).** Vista de un perfil y sus documentos para el administrador | RF-10, RF-47, RF-56 |
 | D5 | Vista administrativa de pedidos y reportes | RF-50, RF-52 |
 | D6 | Filtros o búsqueda en `GET /users` | Administración de usuarios |
-| D7 | Configuración pública (mínimo y máximo de fotos, tamaños, vencimiento) | Hoy hay que reproducir los valores en el frontend (1–3 fotos, 10 MB, 48 h); si el backend cambia su configuración, el frontend no se entera |
+| D7 | Configuración pública (mínimo y máximo de fotos, tamaños, vencimiento) | Hoy hay que reproducir los valores en el frontend (1–3 fotos, 10 MB, 7 días); si el backend cambia su configuración, el frontend no se entera |
 | D8 | Endpoint de reactivación de catálogos | Administración |
 | D9 | Nombre del archivo en la descarga (header no expuesto por CORS) | Usar `originalName` del listado |
 
@@ -79,7 +79,6 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 ## F. Decisiones pendientes que afectan a la interfaz
 
 **Del docente**
-- Si vence `EN_NEGOCIACION`.
 - Cuándo se llega a `SIN_ACUERDO`.
 - Cómo se sale de `ACORDADO` (RF-34).
 - Qué estados cuentan como activos.

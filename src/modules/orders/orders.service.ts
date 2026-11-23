@@ -58,7 +58,7 @@ import {
   ORDER_CANCELLABLE_STATUSES,
   ORDER_EDITABLE_STATUSES,
   ORDER_EXPIRABLE_STATUSES,
-  ORDER_EXPIRATION_RESET_TARGETS,
+  ORDER_EXPIRATION_DAYS,
   ORDER_INTERNAL_TARGETS,
   ORDER_TRANSITIONS,
   ORDER_WORKER_REQUIRED_STATUSES,
@@ -139,10 +139,12 @@ export class OrdersService {
           },
           select: { id: true },
         });
+        // Unico lugar donde se fija el vencimiento (T5.1): 7 dias calendario
+        // desde la publicacion, con el reloj de la BD. Nada lo reinicia despues.
         await tx.$executeRaw`
           UPDATE "orders"
           SET "published_at" = now(),
-              "expires_at" = now() + make_interval(hours => ${this.settings.expirationHours}::int)
+              "expires_at" = now() + make_interval(days => ${ORDER_EXPIRATION_DAYS}::int)
           WHERE "id" = ${id}::uuid`;
         await recordStatusChange(tx, {
           orderId: id,
@@ -226,8 +228,8 @@ export class OrdersService {
   }
 
   // ---------------------------------------------------------------------
-  // RF-18: edicion (datos y fotos). Toda edicion efectiva sube la revision,
-  // reinicia el vencimiento y avisa a los modulos registrados (EDITADO).
+  // RF-18: edicion (datos y fotos). Toda edicion efectiva sube la revision y
+  // avisa a los modulos registrados (EDITADO). No cambia el vencimiento (T5.1).
   // ---------------------------------------------------------------------
 
   async update(
@@ -291,7 +293,7 @@ export class OrdersService {
         }
       }
 
-      // Una edicion sin cambios reales no reinicia el vencimiento (equipo).
+      // Una edicion sin cambios reales no sube la revision ni avisa (equipo).
       if (
         Object.keys(orderData).length === 0 &&
         Object.keys(addressData).length === 0
@@ -407,16 +409,17 @@ export class OrdersService {
   }
 
   /**
-   * Edicion atomica: bloquea el pedido, valida que se pueda modificar,
-   * aplica el cambio, sube la revision, reinicia el vencimiento, encola los
-   * archivos que dejan de usarse y ejecuta los hooks; despues de confirmar,
-   * borra esos archivos y corre los efectos posteriores.
+   * Edicion atomica: bloquea el pedido, valida que se pueda modificar (con
+   * el reloj de la BD: un pedido ya vencido no se edita), aplica el cambio,
+   * sube la revision, encola los archivos que dejan de usarse y ejecuta los
+   * hooks; despues de confirmar, borra esos archivos y corre los efectos
+   * posteriores. El vencimiento no se toca (T5.1).
    */
   private async runEdit(
     clientId: string,
     orderId: string,
     // Devuelve las claves de archivos que dejan de usarse, o null si no hubo
-    // cambios reales (entonces no sube la revision ni reinicia el plazo).
+    // cambios reales (entonces no sube la revision).
     change: (tx: Db) => Promise<string[] | null>,
   ): Promise<boolean> {
     const actor = clientActor(clientId);
@@ -431,7 +434,6 @@ export class OrdersService {
           UPDATE "orders"
           SET "revision" = "revision" + 1,
               "last_edited_at" = now(),
-              "expires_at" = now() + make_interval(hours => ${this.settings.expirationHours}::int),
               "updated_at" = now()
           WHERE "id" = ${orderId}::uuid
           RETURNING "revision"`;
@@ -707,8 +709,9 @@ export class OrdersService {
 
   /**
    * Aplica una transicion ya bloqueada en una sola sentencia (estado,
-   * asignacion, marcas de tiempo y plazo) y deja el historial en la misma
-   * transaccion.
+   * asignacion y marcas de tiempo) y deja el historial en la misma
+   * transaccion. Nunca cambia el vencimiento (T5.1): volver a PUBLICADO
+   * conserva el plazo original.
    */
   private async applyTransition(
     tx: Db,
@@ -727,7 +730,6 @@ export class OrdersService {
       );
     }
     const cancelled = change.to === OrderStatus.CANCELADO;
-    const resetExpiration = ORDER_EXPIRATION_RESET_TARGETS.includes(change.to);
     const setWorker = change.assignedWorkerId !== undefined;
     const workerId = change.assignedWorkerId?.value ?? null;
     await tx.$executeRaw`
@@ -735,9 +737,6 @@ export class OrdersService {
       SET "status" = ${change.to}::"OrderStatus",
           "cancelled_at" = CASE WHEN ${cancelled} THEN now() ELSE "cancelled_at" END,
           "assigned_worker_id" = CASE WHEN ${setWorker} THEN ${workerId}::uuid ELSE "assigned_worker_id" END,
-          "expires_at" = CASE WHEN ${resetExpiration}
-            THEN now() + make_interval(hours => ${this.settings.expirationHours}::int)
-            ELSE "expires_at" END,
           "updated_at" = now()
       WHERE "id" = ${change.orderId}::uuid`;
     await recordStatusChange(tx, {

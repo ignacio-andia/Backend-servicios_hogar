@@ -440,8 +440,8 @@ Excluidos: `storageKey`, `thumbnailKey`, `sha256` y `mimeType` (siempre `image/w
 | `budgetAmount` | string | no | ✔ | 2 decimales (`"150.50"`) |
 | `images` | `OrderImageView[]` | no | | |
 | `revision` | number | no | | Sube con cada edición efectiva |
-| `publishedAt` | string | no | | |
-| `expiresAt` | string | no | | |
+| `publishedAt` | string | no | | Fecha de publicación original. No cambia al editar ni al cambiar de estado |
+| `expiresAt` | string | no | | `publishedAt` + 7 días calendario (T5.1). Nunca se reinicia |
 | `lastEditedAt` | string | **sí** | | |
 
 Excluidos para el trabajador:

@@ -232,8 +232,7 @@ Formato: `postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/BASE_DE_DATOS`
 | `WORKER_DOCUMENT_MAX_MB` | No (por defecto `5`) | Tamaño máximo de cada documento, en MB (como máximo 20). |
 | `SCHEDULED_JOBS_ENABLED` | No (por defecto `true`) | `false` apaga las tareas programadas (vencimiento de pedidos y reintentos de borrado). Las pruebas e2e las apagan. |
 | `FILE_DELETION_RETRY_INTERVAL_MINUTES` | No (por defecto `5`) | Cada cuánto se reintentan los archivos que no se pudieron borrar. |
-| `ORDER_EXPIRATION_HOURS` | No (por defecto `48`) | Plazo de vencimiento de un pedido publicado; se reinicia con cada edición. |
-| `ORDER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `15`) | Cada cuánto corre la tarea de vencimiento. |
+| `ORDER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `15`) | Cada cuánto corre la tarea de vencimiento (también corre una vez al arrancar). El plazo de vencimiento no es configurable: son 7 días desde la publicación (T5.1). `ORDER_EXPIRATION_HOURS` ya no existe y se ignora. |
 | `ORDER_MIN_IMAGES` / `ORDER_MAX_IMAGES` | No (por defecto `1` / `3`) | Fotos por pedido (como máximo 10). |
 | `ORDER_IMAGE_MAX_MB` | No (por defecto `10`) | Peso máximo de cada foto subida, en MB (como máximo 25). |
 | `ORDER_IMAGE_MAX_PIXELS` | No (por defecto `50000000`) | Megapíxeles máximos de la foto original. |
@@ -536,7 +535,7 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
 
 | Método | Ruta | Descripción |
 |---|---|---|
-| `POST` | `/api/orders` | Publica un pedido (`multipart/form-data`): `categoryId`, `zoneId`, `description` (10 a 2000 caracteres), `budgetAmount` (mayor que 0, hasta 2 decimales), `addressLine`, `addressReference?` y de 1 a 3 fotos en el campo `images`. Queda `PUBLICADO` y vence a las 48 h. Devuelve `{ order, warnings }`. |
+| `POST` | `/api/orders` | Publica un pedido (`multipart/form-data`): `categoryId`, `zoneId`, `description` (10 a 2000 caracteres), `budgetAmount` (mayor que 0, hasta 2 decimales), `addressLine`, `addressReference?` y de 1 a 3 fotos en el campo `images`. Queda `PUBLICADO` y vence a los 7 días de su publicación (T5.1). Devuelve `{ order, warnings }`. |
 | `POST` | `/api/orders/duplicate-check` | Aviso orientativo antes de publicar: `{ categoryId, zoneId, description }` → `{ warnings }`. Nunca bloquea. |
 | `GET` | `/api/orders/me?status&page&limit` | Pedidos propios, del más reciente al más antiguo (`limit` máximo 50). |
 | `GET` | `/api/orders/me/:orderId` | Detalle propio con dirección, fotos, `canEdit` y `canCancel`. |
@@ -546,13 +545,14 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
 | `DELETE` | `/api/orders/me/:orderId/images/:imageId` | Borra una foto del disco. `200` con el pedido actualizado (nueva `revision` y vencimiento); `409` si quedaría por debajo del mínimo (hay que reemplazarla). |
 | `POST` | `/api/orders/me/:orderId/cancel` | Cancela: `{ reason? }` (hasta 500 caracteres). `200` con el pedido. Borra todas las fotos y conserva el pedido y su historial. |
 | `GET` | `/api/orders/me/:orderId/images/:imageId?variant=full\|thumb` | Descarga una foto propia. |
-| `GET` | `/api/orders/available?categoryId&page&limit` | Pedidos visibles para el trabajador: misma zona, categoría entre sus especialidades, `PUBLICADO` sin vencer o `EN_NEGOCIACION`, zona y categoría activas, cuenta del cliente `ACTIVO`, y nunca los suyos como cliente (RN-14). Sin dirección ni datos del cliente. |
+| `GET` | `/api/orders/available?categoryId&page&limit` | Pedidos visibles para el trabajador: misma zona, categoría entre sus especialidades, `PUBLICADO` o `EN_NEGOCIACION` sin vencer, zona y categoría activas, cuenta del cliente `ACTIVO`, y nunca los suyos como cliente (RN-14). Sin dirección ni datos del cliente. |
 | `GET` | `/api/orders/available/:orderId` | Detalle con la misma regla. Un pedido no visible responde `404`. |
 | `GET` | `/api/orders/available/:orderId/images/:imageId?variant=full\|thumb` | Foto de un pedido visible. |
 
 - **Edición:** solo en `PUBLICADO` o `EN_NEGOCIACION` y antes de vencer.
-  - Toda edición efectiva sube `revision`, actualiza `lastEditedAt` y reinicia el vencimiento a 48 h. Agregar, reemplazar o borrar una foto también cuenta como edición.
-  - Una edición sin cambios reales no reinicia nada.
+  - Toda edición efectiva sube `revision` y actualiza `lastEditedAt`. Agregar, reemplazar o borrar una foto también cuenta como edición.
+  - Una edición sin cambios reales no sube la revisión.
+- **Vencimiento (T5.1):** todo pedido vence a los **7 días calendario** desde su publicación original (`expiresAt = publishedAt + 7 días`, reloj de la BD). Ese plazo no se reinicia nunca: ni al editar, ni al cambiar de estado, ni al volver a `PUBLICADO` después de una negociación fallida, y no depende de las ofertas. También vence en `EN_NEGOCIACION`. Pasado `expiresAt`, las respuestas ya lo muestran `VENCIDO` y no se puede editar, cancelar, ofertar ni cambiarle el estado, aunque la tarea automática no haya corrido. La tarea corre al arrancar y cada `ORDER_EXPIRATION_INTERVAL_MINUTES`, toma los pedidos con `FOR UPDATE SKIP LOCKED` (nunca vence dos veces el mismo) y deja el historial con actor `SISTEMA`. El evento `VENCIDO` de `OrderLifecycleRegistry` incluye `fromStatus`.
   - Con acuerdo (`ACORDADO` en adelante), editar o cancelar responde `409` e indica usar «Cancelar trabajo» (RF-34). Un pedido vencido responde `409`.
 - **Avisos (`warnings`):**
   - `POSIBLE_DUPLICADO`: pedido activo parecido del mismo cliente, categoría y zona en los últimos 7 días.
@@ -578,15 +578,14 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
   - Transiciones habilitadas para ofertas:
     - `PUBLICADO → EN_NEGOCIACION`: primera oferta.
     - `EN_NEGOCIACION → ACORDADO`: exige `assignWorkerId`, un trabajador aprobado distinto del cliente.
-    - `EN_NEGOCIACION → PUBLICADO`: reinicia el plazo de 48 h; con `releaseWorker` libera la asignación.
-    - `SIN_ACUERDO`, el vencimiento de `EN_NEGOCIACION` y la salida desde `ACORDADO` siguen pendientes con el docente.
+    - `EN_NEGOCIACION → PUBLICADO`: conserva el vencimiento original (T5.1); con `releaseWorker` libera la asignación.
+    - `SIN_ACUERDO` y la salida desde `ACORDADO` siguen pendientes con el docente.
   - `OrderVisibilityService.assertOpenForOffers(tx, workerUserId, orderId)`: dentro de la transacción del llamador, bloquea y relee al trabajador, bloquea el pedido, lee zona y categorías con `FOR SHARE` (`CatalogsService`) y aplica la misma regla de visibilidad. Devuelve `{ worker, order }`.
   - `create()` también vuelve a validar la zona y la categoría dentro de su transacción, con `FOR SHARE`.
   - **Decisión pendiente del equipo:** qué pasa con las ofertas ya enviadas cuando se desactiva la zona o la categoría, o se suspende al cliente. Hoy solo se impide **ofertar**; no se cambia ninguna oferta existente.
-  - `OrderLifecycleRegistry.register({ name, inTransaction?, afterCommit? })` recibe los eventos `EDITADO`, `CANCELADO` y `VENCIDO`.
+  - `OrderLifecycleRegistry.register({ name, inTransaction?, afterCommit? })` recibe los eventos `EDITADO`, `CANCELADO` y `VENCIDO` (con `fromStatus`: `PUBLICADO` o `EN_NEGOCIACION`).
   - OrdersModule registra la fuente `PEDIDOS` en `WorkerActiveWorkRegistry`: pedidos asignados en estados activos.
 - **Pendiente del docente:** todo está centralizado en `src/modules/orders/orders.rules.ts` y `orders.config.ts`.
-  - Si `EN_NEGOCIACION` vence.
   - Cuándo se llega a `SIN_ACUERDO` y cómo se sale de `ACORDADO` (RF-34).
   - Qué estados cuentan como activos.
   - Visibilidad de la dirección exacta.

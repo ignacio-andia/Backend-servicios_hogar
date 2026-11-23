@@ -9,8 +9,9 @@ import { ABSOLUTE_IMAGE_MAX_MB, ABSOLUTE_MAX_IMAGES } from './orders.rules.js';
  */
 @Injectable()
 export class OrdersConfig {
-  /** Plazo de vencimiento de un pedido publicado (y tras cada edicion). */
-  readonly expirationHours: number;
+  // El plazo de vencimiento (7 dias) es una regla de negocio confirmada, no
+  // un parametro: ver ORDER_EXPIRATION_DAYS (T5.1). Aqui solo se configura cada
+  // cuanto corre la tarea que marca los vencidos.
   readonly expirationIntervalMinutes: number;
   /** PENDIENTE DE CONFIRMAR CON EL DOCENTE: cantidad definitiva de fotos. */
   readonly minImages: number;
@@ -23,14 +24,6 @@ export class OrdersConfig {
   readonly duplicateWindowDays: number;
 
   constructor(config: ConfigService) {
-    this.expirationHours = readPositiveInt(
-      config,
-      'ORDER_EXPIRATION_HOURS',
-      48,
-      {
-        max: 24 * 365,
-      },
-    );
     this.expirationIntervalMinutes = readPositiveInt(
       config,
       'ORDER_EXPIRATION_INTERVAL_MINUTES',

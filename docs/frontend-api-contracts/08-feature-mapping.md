@@ -41,7 +41,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 
 | RF | Estado | Contrato disponible | Notas |
 |---|---|---|---|
-| RF-14 Crear pedido (descripción, categoría, fotos, ubicación, monto) | ✅ | #42 (multipart `CreateOrderDto` + `images` → `OrderWithWarnings`) | Vence a las 48 h |
+| RF-14 Crear pedido (descripción, categoría, fotos, ubicación, monto) | ✅ | #42 (multipart `CreateOrderDto` + `images` → `OrderWithWarnings`) | Vence a los 7 días de la publicación (T5.1) |
 | RF-15 Varios pedidos activos, uno por categoría | 🟡 | #43 aviso de duplicado; avisos en #42 y #47 | Hoy **no se bloquea** un segundo pedido de la misma categoría: solo se avisa (decisión provisional del equipo) |
 | RF-16 Encontrar trabajadores de su zona | ⛔ | — | Falta decidir qué datos del trabajador son públicos |
 | RF-17 Visibilidad para trabajadores aprobados de la categoría y zona | ✅ | #52–#54 (`WorkerOrderView`) | Regla completa en 05 |
@@ -54,7 +54,6 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 - OffersModule (para pasar a `EN_NEGOCIACION`).
 
 ❓ Pendientes con el docente:
-- Si vence `EN_NEGOCIACION`.
 - Si se pueden editar la categoría o la zona.
 - Cantidad definitiva de fotos y soporte de HEIC.
 - Retención de fotos de pedidos vencidos.
@@ -98,7 +97,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF | Estado | Contrato |
 |---|---|---|
 | RF-34 "Cancelar trabajo" (con acuerdo) | ⛔ ❓ | Los 409 de edición y cancelación sugieren usarlo, pero no existe |
-| RF-35 Vencimiento del pedido | 🟡 | Vencimiento automático implementado (48 h, cada 15 min; el estado efectivo se ve en #44–#45). El **aviso al cliente** no existe |
+| RF-35 Vencimiento del pedido | 🟡 | Vencimiento automático a los 7 días de la publicación, también en negociación y sin reinicios (T5.1); la tarea corre al arrancar y cada 15 min, y el estado efectivo se ve en #44–#45. El **aviso al cliente** y el borrado de las fotos del pedido vencido no existen |
 | RF-36 Inasistencia del trabajador | ⛔ | — |
 | RF-37, RF-38 Reclamos | ⛔ | — |
 | Cancelación antes del acuerdo (RF-18) | ✅ | #51 |
