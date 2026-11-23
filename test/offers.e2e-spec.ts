@@ -3,7 +3,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { SchedulerRegistry } from '@nestjs/schedule';
 import { Test } from '@nestjs/testing';
 import sharp from 'sharp';
 import request from 'supertest';
@@ -21,6 +23,8 @@ import {
   CatalogKind,
   CatalogsService,
 } from '../src/modules/catalogs/catalogs.service.js';
+import { OfferExpirationService } from '../src/modules/offers/offer-expiration.service.js';
+import { OffersService } from '../src/modules/offers/offers.service.js';
 import {
   PublicUser,
   UsersService,
@@ -1624,6 +1628,304 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
         expect(assigned).toBe(1);
         await expectConsistent(first);
         await expectConsistent(second);
+      });
+    });
+  });
+
+  describe('vencimiento automatico de ofertas (T6.5.1)', () => {
+    let week = 60;
+    const slot = () =>
+      offerBody({
+        proposedStartAt: new Date(
+          nextMondayAt(10).getTime() + week++ * 7 * DAY,
+        ).toISOString(),
+      });
+    const offerId = async (user: PublicUser, orderId: string) =>
+      (await offer(user, orderId, slot()).expect(201)).body.id as string;
+    const expireNow = (id: string) =>
+      prisma.$executeRaw`UPDATE "offers" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${id}::uuid`;
+    const run = () => app.get(OfferExpirationService).expireDue();
+    const row = (id: string) =>
+      prisma.offer.findUniqueOrThrow({
+        where: { id },
+        include: { events: { orderBy: { createdAt: 'asc' } } },
+      });
+    const orderRow = (id: string) =>
+      prisma.order.findUniqueOrThrow({
+        where: { id },
+        include: { statusHistory: { orderBy: { createdAt: 'asc' } } },
+      });
+    const post = (path: string, user: PublicUser, body: object = {}) =>
+      http().post(path).set('Authorization', auth(user)).send(body);
+    /** Cada oferta tiene a lo sumo un cierre y el estado del pedido es coherente. */
+    const expectConsistent = async (orderId: string) => {
+      const offers = await prisma.offer.findMany({
+        where: { orderId },
+        include: { events: true },
+      });
+      for (const item of offers) {
+        const closings = item.events.filter(
+          (event) => !['PROPUESTA', 'CONTRAOFERTA'].includes(event.type),
+        );
+        expect(closings).toHaveLength(item.status === 'VIGENTE' ? 0 : 1);
+      }
+      const order = await prisma.order.findUniqueOrThrow({
+        where: { id: orderId },
+      });
+      const open = offers.filter(
+        (item) => item.status === 'VIGENTE' && item.expiresAt > new Date(),
+      ).length;
+      if (order.status === OrderStatus.PUBLICADO) {
+        expect(open).toBe(0);
+      }
+      if (order.status === OrderStatus.ACORDADO) {
+        expect(
+          offers.filter((item) => item.status === 'ACEPTADA'),
+        ).toHaveLength(1);
+      }
+    };
+
+    it('vence la oferta con su evento del sistema y devuelve el pedido a PUBLICADO sin tocar su plazo', async () => {
+      const orderId = await newOrder();
+      const id = await offerId(worker, orderId);
+      const before = await orderRow(orderId);
+      await expireNow(id);
+
+      expect(await run()).toBeGreaterThanOrEqual(1);
+
+      const expired = await row(id);
+      expect(expired.status).toBe(OfferStatus.VENCIDA);
+      expect(expired.closedAt).toBeInstanceOf(Date);
+      expect(expired.events.map((event) => event.type)).toEqual([
+        'PROPUESTA',
+        'VENCIDA',
+      ]);
+      expect(expired.events[1]).toMatchObject({
+        round: 1,
+        amount: null,
+        actorType: 'SISTEMA',
+        systemProcess: 'VENCIMIENTO_OFERTA',
+        changedById: null,
+      });
+      const order = await orderRow(orderId);
+      expect(order.status).toBe(OrderStatus.PUBLICADO);
+      expect(order.publishedAt).toEqual(before.publishedAt);
+      expect(order.expiresAt).toEqual(before.expiresAt);
+      expect(order.statusHistory.at(-1)).toMatchObject({
+        fromStatus: OrderStatus.EN_NEGOCIACION,
+        toStatus: OrderStatus.PUBLICADO,
+        actorType: 'SISTEMA',
+        systemProcess: 'VENCIMIENTO_OFERTA',
+      });
+      // VENCIDA permite volver a ofertar.
+      await offer(worker, orderId, slot()).expect(201);
+    });
+
+    it('no toca ofertas vigentes; con varias, el pedido sigue EN_NEGOCIACION hasta que vence la ultima', async () => {
+      const orderId = await newOrder();
+      const a = await offerId(worker, orderId);
+      const b = await offerId(worker2, orderId);
+      await expireNow(a);
+
+      await run();
+
+      expect((await row(a)).status).toBe(OfferStatus.VENCIDA);
+      expect((await row(b)).status).toBe(OfferStatus.VIGENTE);
+      expect((await orderRow(orderId)).status).toBe(OrderStatus.EN_NEGOCIACION);
+
+      await expireNow(b);
+      await run();
+      expect((await row(b)).status).toBe(OfferStatus.VENCIDA);
+      const order = await orderRow(orderId);
+      expect(order.status).toBe(OrderStatus.PUBLICADO);
+      expect(
+        order.statusHistory.filter(
+          (entry) => entry.toStatus === OrderStatus.PUBLICADO,
+        ),
+      ).toHaveLength(2);
+    });
+
+    it('varias ofertas del mismo pedido vencen en una sola pasada y el pedido vuelve una sola vez', async () => {
+      const orderId = await newOrder();
+      const a = await offerId(worker, orderId);
+      const b = await offerId(worker2, orderId);
+      await expireNow(a);
+      await expireNow(b);
+
+      await run();
+
+      expect((await row(a)).status).toBe(OfferStatus.VENCIDA);
+      expect((await row(b)).status).toBe(OfferStatus.VENCIDA);
+      const order = await orderRow(orderId);
+      expect(order.status).toBe(OrderStatus.PUBLICADO);
+      expect(
+        order.statusHistory.filter(
+          (entry) => entry.fromStatus === OrderStatus.EN_NEGOCIACION,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('en un pedido cancelado o vencido cierra las ofertas sin cambiar el estado del pedido', async () => {
+      const cancelled = await newOrder();
+      const a = await offerId(worker, cancelled);
+      await post(`/api/orders/me/${cancelled}/cancel`, client).expect(200);
+      await expireNow(a);
+
+      const expiredOrder = await newOrder();
+      const b = await offerId(worker, expiredOrder);
+      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${expiredOrder}::uuid`;
+      await expireNow(b);
+
+      await run();
+
+      expect((await row(a)).status).toBe(OfferStatus.VENCIDA);
+      expect((await row(b)).status).toBe(OfferStatus.VENCIDA);
+      expect((await orderRow(cancelled)).status).toBe(OrderStatus.CANCELADO);
+      // Lo marca VENCIDO el vencimiento de pedidos, nunca PUBLICADO.
+      expect((await orderRow(expiredOrder)).status).toBe(
+        OrderStatus.EN_NEGOCIACION,
+      );
+    });
+
+    it('ejecutarla otra vez no duplica eventos ni transiciones', async () => {
+      const orderId = await newOrder();
+      const id = await offerId(worker, orderId);
+      await expireNow(id);
+      await run();
+      const events = await prisma.offerEvent.count({ where: { orderId } });
+      const history = await prisma.orderStatusHistory.count({
+        where: { orderId },
+      });
+
+      await run();
+      await Promise.all([run(), run()]);
+
+      expect(await prisma.offerEvent.count({ where: { orderId } })).toBe(
+        events,
+      );
+      expect(
+        await prisma.orderStatusHistory.count({ where: { orderId } }),
+      ).toBe(history);
+    });
+
+    it('el evento de vencimiento es inmutable y la oferta no se reabre', async () => {
+      const orderId = await newOrder();
+      const id = await offerId(worker, orderId);
+      await expireNow(id);
+      await run();
+
+      await expect(
+        prisma.offerEvent.updateMany({
+          where: { offerId: id, type: 'VENCIDA' },
+          data: { reason: 'cambio' },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offerEvent.deleteMany({ where: { offerId: id } }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offer.update({
+          where: { id },
+          data: { status: OfferStatus.VIGENTE, closedAt: null },
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('recupera al arrancar las ofertas que vencieron con el servidor detenido', async () => {
+      const orderId = await newOrder();
+      const id = await offerId(worker, orderId);
+      await expireNow(id);
+
+      // Instancia nueva, como tras un reinicio, con las tareas activas.
+      const restarted = new OfferExpirationService(
+        prisma,
+        app.get(OffersService),
+        new ConfigService({ SCHEDULED_JOBS_ENABLED: 'true' }),
+        new SchedulerRegistry(),
+      );
+      restarted.onApplicationBootstrap();
+      try {
+        await vi.waitFor(
+          async () => expect((await row(id)).status).toBe(OfferStatus.VENCIDA),
+          { timeout: 10_000, interval: 100 },
+        );
+      } finally {
+        restarted.onModuleDestroy();
+      }
+      expect((await orderRow(orderId)).status).toBe(OrderStatus.PUBLICADO);
+    });
+
+    describe('concurrencia', () => {
+      it.each([
+        ['aceptacion', (b: string) => post(`/api/offers/${b}/accept`, client)],
+        ['rechazo', (b: string) => post(`/api/offers/${b}/reject`, client)],
+        ['retiro', (b: string) => post(`/api/offers/${b}/withdraw`, worker2)],
+        [
+          'contraoferta',
+          (b: string) =>
+            post(`/api/offers/${b}/counter`, client, { amount: '99' }),
+        ],
+      ])(
+        'vencimiento y %s de otra oferta del pedido: cada oferta se cierra una sola vez',
+        async (_case, operation) => {
+          const orderId = await newOrder();
+          const a = await offerId(worker, orderId);
+          const b = await offerId(worker2, orderId);
+          await expireNow(a);
+
+          const [, res] = await Promise.all([run(), operation(b)]);
+
+          expect(res.status).toBe(200);
+          await expectConsistent(orderId);
+          expect((await row(a)).status).not.toBe(OfferStatus.VIGENTE);
+        },
+      );
+
+      it.each([
+        ['aceptar', (a: string) => post(`/api/offers/${a}/accept`, client)],
+        ['rechazar', (a: string) => post(`/api/offers/${a}/reject`, client)],
+        ['retirar', (a: string) => post(`/api/offers/${a}/withdraw`, worker)],
+        [
+          'contraofertar',
+          (a: string) =>
+            post(`/api/offers/${a}/counter`, client, { amount: '99' }),
+        ],
+      ])(
+        'una oferta vencida no se puede %s mientras corre el vencimiento',
+        async (_case, operation) => {
+          const orderId = await newOrder();
+          const a = await offerId(worker, orderId);
+          await expireNow(a);
+
+          const [, res] = await Promise.all([run(), operation(a)]);
+
+          expect(res.status).toBe(409);
+          const expired = await row(a);
+          expect(expired.status).toBe(OfferStatus.VENCIDA);
+          expect(
+            expired.events.filter((event) => event.type === 'VENCIDA'),
+          ).toHaveLength(1);
+          expect((await orderRow(orderId)).status).toBe(OrderStatus.PUBLICADO);
+        },
+      );
+
+      it('vencimiento mientras llega una oferta nueva: el pedido nunca queda PUBLICADO con ofertas vigentes', async () => {
+        for (let i = 0; i < 3; i++) {
+          const orderId = await newOrder();
+          const a = await offerId(worker, orderId);
+          await expireNow(a);
+
+          const [, created] = await Promise.all([
+            run(),
+            offer(worker2, orderId, slot()),
+          ]);
+
+          expect(created.status).toBe(201);
+          await expectConsistent(orderId);
+          expect((await orderRow(orderId)).status).toBe(
+            OrderStatus.EN_NEGOCIACION,
+          );
+        }
       });
     });
   });

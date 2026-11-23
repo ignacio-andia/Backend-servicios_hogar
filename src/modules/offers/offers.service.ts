@@ -413,6 +413,69 @@ export class OffersService {
   }
 
   // ---------------------------------------------------------------------
+  // T6.5.1: vencimiento de ofertas (lo usa OfferExpirationService)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Cierra como VENCIDA, con su evento del sistema, cada oferta VIGENTE del
+   * pedido cuya vigencia ya termino (reloj de la BD) y, si el pedido queda
+   * EN_NEGOCIACION sin ofertas vigentes, lo devuelve a PUBLICADO con
+   * OrdersService.transition (sin tocar publishedAt ni expiresAt). Un pedido
+   * vencido o cancelado no cambia de estado; sus ofertas igual se cierran.
+   *
+   * Bloqueos en el orden del proyecto: pedido (lockOrder) y despues sus
+   * ofertas (FOR UPDATE, por id). Toda operacion sobre ofertas bloquea antes
+   * el pedido, asi que solo una cierra cada oferta: lo que ya cerro otra
+   * operacion o instancia no se vuelve a tocar (idempotente). Devuelve
+   * cuantas ofertas vencio.
+   */
+  async expireOffersOfOrder(orderId: string): Promise<number> {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await lockOrder(tx, orderId);
+      if (!order) {
+        return 0;
+      }
+      const due = await tx.$queryRaw<{ id: string; round: number }[]>`
+        SELECT "id"::text AS "id", "round"
+        FROM "offers"
+        WHERE "order_id" = ${orderId}::uuid
+          AND "status" = 'VIGENTE'
+          AND "expires_at" <= now()
+        ORDER BY "id"
+        FOR UPDATE`;
+      if (due.length === 0) {
+        return 0;
+      }
+      const now = await dbNow(tx);
+      await tx.offer.updateMany({
+        where: {
+          id: { in: due.map((offer) => offer.id) },
+          status: OfferStatus.VIGENTE,
+        },
+        data: { status: OfferStatus.VENCIDA, closedAt: now },
+      });
+      await tx.offerEvent.createMany({
+        data: due.map((offer) => ({
+          offerId: offer.id,
+          orderId,
+          type: OfferEventType.VENCIDA,
+          round: offer.round,
+          actorType: OrderActorType.SISTEMA,
+          systemProcess: OFFER_EXPIRATION_PROCESS,
+        })),
+      });
+      // Un pedido vencido sin marcar (estado efectivo) no admite transiciones.
+      if (order.effectiveStatus === OrderStatus.EN_NEGOCIACION) {
+        await this.reopenIfNoOpenOffers(tx, orderId, order.status, now, {
+          type: 'SISTEMA',
+          process: OFFER_EXPIRATION_PROCESS,
+        });
+      }
+      return due.length;
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // T6.4.1: rechazo (cliente) y retiro (trabajador)
   // ---------------------------------------------------------------------
 
