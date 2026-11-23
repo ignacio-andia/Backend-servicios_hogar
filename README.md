@@ -232,6 +232,7 @@ Formato: `postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/BASE_DE_DATOS`
 | `WORKER_DOCUMENT_MAX_MB` | No (por defecto `5`) | Tamaño máximo de cada documento, en MB (como máximo 20). |
 | `SCHEDULED_JOBS_ENABLED` | No (por defecto `true`) | `false` apaga las tareas programadas (vencimiento de pedidos y reintentos de borrado). Las pruebas e2e las apagan. |
 | `FILE_DELETION_RETRY_INTERVAL_MINUTES` | No (por defecto `5`) | Cada cuánto se reintentan los archivos que no se pudieron borrar (también al arrancar). A los 10 intentos se avisa a los administradores y se sigue reintentando cada 6 horas. |
+| `OFFER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `5`, máximo `1440`) | Cada cuánto corre el vencimiento automático de ofertas (también al arrancar). La vigencia de una oferta no es configurable: 24 horas (T6.5.1). |
 | `ORDER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `15`) | Cada cuánto corre la tarea de vencimiento (también corre una vez al arrancar). El plazo de vencimiento no es configurable: son 7 días desde la publicación (T5.1). `ORDER_EXPIRATION_HOURS` ya no existe y se ignora. |
 | `ORDER_MIN_IMAGES` | No (por defecto `1`) | Mínimo de fotos por pedido (como mucho 4). El **máximo es 4 y no es configurable** (T5.3): si se define `ORDER_MAX_IMAGES` con otro valor, la aplicación no arranca. Multer acepta como mucho 5 archivos, para que la quinta foto reciba el mensaje del servicio. |
 | `ORDER_IMAGE_MAX_MB` | No (por defecto `10`) | Peso máximo de cada foto subida, en MB (como máximo 25). |
@@ -304,6 +305,7 @@ Este comando aplica, en orden, las migraciones versionadas de `prisma/migrations
 | `20261122400000_zone_reassignment_notification` | Notificación `ZONA_REASIGNADA` (reasignación administrativa de zona) |
 | `20261122500000_zone_change_account_suspension` | Causa `SUSPENSION_CUENTA`: suspender una cuenta cancela su solicitud de cambio de zona pendiente |
 | `20261123000000_order_retention` | `orders.anonymized_at`, `pending_file_deletions.escalated_at` y la notificación `BORRADO_ARCHIVO_ESCALADO` (T5.4) |
+| `20261124000000_create_offers` | Tablas `offers` y `offer_events` (historial de solo inserción), sus enums, índices únicos parciales y triggers que protegen las condiciones y los cierres (T6.1) |
 
 > Algunas migraciones tienen SQL escrito a mano (conversión a `citext`, `CHECK` y triggers) porque Prisma no los genera. **No las regeneres ni las edites**: Prisma propone `DROP COLUMN`/`ADD COLUMN` para el cambio a `citext`, y eso borraría los nombres existentes.
 
@@ -505,8 +507,8 @@ Todas las rutas `me` actúan sobre el perfil del usuario del JWT y exigen el rol
 - **Estados que pueden pedir un cambio de zona:** solo `APROBADO` (especificación v1.0 §4, T4.2). `BORRADOR` elige la zona directamente. Lista en `ZONE_REQUEST_ALLOWED_STATUSES`.
 - **Suspensión con una solicitud pendiente (T4.2):** al suspender el perfil, la solicitud pasa a `CANCELADA` con `cancellationCause: SUSPENSION_PERFIL`, en la misma transacción. No es un rechazo: la zona no cambia, `decidedBy` y `decidedAt` registran qué administrador la provocó y cuándo, queda en la bitácora (`CAMBIO_ESTADO`) y el trabajador recibe una notificación.
 - **Retiro voluntario (T4.3):** el trabajador retira su solicitud pendiente. Queda `CANCELADA` con `cancellationCause: RETIRO_TRABAJADOR`; `decidedBy` y `decidedAt` registran que la retiró él y cuándo. Recibe una notificación. Como acción del trabajador, igual que el envío del perfil, no va a la bitácora administrativa: la constancia es la propia solicitud.
-- **Trabajo nuevo con una solicitud pendiente (T4.3):** no puede ofertar ni recibir asignaciones nuevas (`409`): lo comprueba `WorkerProfileService.lockApprovedWorker`, que usan la asignación de pedidos y `assertOpenForOffers`. Tampoco aparece en `findApprovedWorkers`. Sus trabajos ya acordados no cambian. Al resolverse o retirarse la solicitud vuelve a participar. **Pendiente:** el módulo de ofertas debe usar `assertOpenForOffers` y registrar la fuente `OFERTAS`.
-- **Cambio de zona y trabajo activo:** el trabajador no puede pedir un cambio de zona mientras tenga pedidos u ofertas activos. Hoy cuentan los pedidos asignados en `ACORDADO` y estados posteriores, hasta `EN_RECLAMO` (`ACTIVE_ORDER_STATUSES`, pendiente con el docente). Como todavía no hay salida desde `ACORDADO` (RF-34 y cierre pendientes), un trabajador con un acuerdo queda bloqueado para cambiar de zona hasta que esos módulos existan. OrdersModule ya registra la fuente `PEDIDOS`; el módulo de ofertas todavía no existe, así que **la solicitud sigue bloqueada** (`blockers: VERIFICACION_NO_DISPONIBLE`) hasta que registre la fuente `OFERTAS` en `WorkerActiveWorkRegistry`, exportado por `WorkerProfileModule`.
+- **Trabajo nuevo con una solicitud pendiente (T4.3):** no puede ofertar ni recibir asignaciones nuevas (`409`): lo comprueba `WorkerProfileService.lockApprovedWorker`, que usan la asignación de pedidos y `assertOpenForOffers`. Tampoco aparece en `findApprovedWorkers`. Sus trabajos ya acordados no cambian. Al resolverse o retirarse la solicitud vuelve a participar. OffersModule lo aplica al ofertar, contraofertar y aceptar.
+- **Cambio de zona y trabajo activo:** el trabajador no puede pedir un cambio de zona mientras tenga pedidos u ofertas activos. Hoy cuentan los pedidos asignados en `ACORDADO` y estados posteriores, hasta `EN_RECLAMO` (`ACTIVE_ORDER_STATUSES`, pendiente con el docente). Como todavía no hay salida desde `ACORDADO` (RF-34 y cierre pendientes), un trabajador con un acuerdo queda bloqueado para cambiar de zona hasta que esos módulos existan. OrdersModule ya registra la fuente `PEDIDOS`; OffersModule **no** registra la fuente `OFERTAS` (decisión del equipo: no debe habilitar cambios de zona), así que **la solicitud sigue bloqueada** (`blockers: VERIFICACION_NO_DISPONIBLE`).
 - **Integración de ofertas:**
   1. Registrar la consulta `OFERTAS` en `onModuleInit`: `registry.register({ kind: ActiveWorkKind.OFERTAS, countActive: (workerUserId, db) => db.<modelo>.count({ ... }) })`. Debe leer con `db`, la transacción que recibe. La fuente `PEDIDOS` ya la registra OrdersModule. Al registrar la fuente real, la prueba e2e de worker-profile que hoy registra una fuente `OFERTAS` de prueba debe ajustarse.
   2. **Orden de bloqueos: primero el trabajador, después el pedido.** Al crear una oferta, usar `OrderVisibilityService.assertOpenForOffers(tx, workerUserId, orderId)`, que respeta ese orden. Para asignar, `OrdersService.transition(...)` también lo respeta. Ningún hook de pedido puede llamar a `lockWorker`.
@@ -549,6 +551,8 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
 | `GET` | `/api/orders/available?categoryId&page&limit` | Pedidos visibles para el trabajador: misma zona, categoría entre sus especialidades, `PUBLICADO` o `EN_NEGOCIACION` sin vencer, zona y categoría activas, cuenta del cliente `ACTIVO`, y nunca los suyos como cliente (RN-14). Sin dirección ni datos del cliente. |
 | `GET` | `/api/orders/available/:orderId` | Detalle con la misma regla. Un pedido no visible responde `404`. |
 | `GET` | `/api/orders/available/:orderId/images/:imageId?variant=full\|thumb` | Foto de un pedido visible. |
+| `GET` | `/api/orders/assigned/:orderId` | Trabajador **asignado**, con acuerdo vigente: descripción, fotos, **dirección exacta** y nombre del cliente. Otro trabajador: `404` (G2). |
+| `GET` | `/api/orders/assigned/:orderId/images/:imageId?variant=full\|thumb` | Foto del pedido asignado, con la misma regla. |
 
 - **Edición:** solo en `PUBLICADO` o `EN_NEGOCIACION` y antes de vencer.
   - Toda edición efectiva sube `revision` y actualiza `lastEditedAt`. Agregar, reemplazar o borrar una foto también cuenta como edición.
@@ -584,7 +588,7 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
     - `SIN_ACUERDO` y la salida desde `ACORDADO` siguen pendientes con el docente.
   - `OrderVisibilityService.assertOpenForOffers(tx, workerUserId, orderId)`: dentro de la transacción del llamador, bloquea y relee al trabajador, bloquea el pedido, lee zona y categorías con `FOR SHARE` (`CatalogsService`) y aplica la misma regla de visibilidad. Devuelve `{ worker, order }`.
   - `create()` también vuelve a validar la zona y la categoría dentro de su transacción, con `FOR SHARE`.
-  - **Decisión pendiente del equipo:** qué pasa con las ofertas ya enviadas cuando se desactiva la zona o la categoría, o se suspende al cliente. Hoy solo se impide **ofertar**; no se cambia ninguna oferta existente.
+  - Ofertas y catálogos o suspensiones (decisión del equipo, T6): con la zona o la categoría inactivas no se oferta, contraoferta ni acepta (las ofertas se conservan y continúan al reactivarlas); al suspender una cuenta o un perfil, sus ofertas vigentes quedan `SIN_EFECTO` (ver OffersModule).
   - `OrderLifecycleRegistry.register({ name, inTransaction?, afterCommit? })` recibe los eventos `EDITADO`, `CANCELADO` y `VENCIDO` (con `fromStatus`: `PUBLICADO` o `EN_NEGOCIACION`).
   - OrdersModule registra la fuente `PEDIDOS` en `WorkerActiveWorkRegistry`: pedidos asignados en estados activos.
 - **Pendiente del docente:** todo está centralizado en `src/modules/orders/orders.rules.ts` y `orders.config.ts`.
@@ -593,7 +597,27 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
   - Visibilidad de la dirección exacta.
   - Si se pueden editar categoría o zona.
   - Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos).
-  - Edición en negociación frente a ofertas existentes.
+
+### Ofertas y negociación (RF-19 a RF-24)
+
+Reglas, estados, bloqueos y ejemplos para Angular: [`src/modules/offers/README.md`](src/modules/offers/README.md). Contratos detallados: `docs/frontend-api-contracts/` (#69–#79).
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `POST` | `/api/offers/orders/:orderId` | Trabajador aprobado: oferta con `amount`, `requiresVisit`, `visitCost`, `materialsIncluded`, `proposedStartAt` y `estimatedDurationMinutes`. La primera oferta pasa el pedido a `EN_NEGOCIACION` |
+| `GET` | `/api/offers/me`, `/api/offers/me/:offerId` | Trabajador: sus ofertas (paginado) y el detalle con historial |
+| `GET` | `/api/offers/received`, `/api/offers/received/:offerId` | Cliente: ofertas de sus pedidos (`orderId?`) y el detalle con historial |
+| `POST` | `/api/offers/:offerId/counter` | Contraoferta (solo `amount`) de la parte que tiene el turno; máximo 3 rondas |
+| `POST` | `/api/offers/:offerId/reject` | Cliente, en su turno |
+| `POST` | `/api/offers/:offerId/withdraw` | Trabajador, en cualquier turno; no puede volver a ofertar |
+| `POST` | `/api/offers/:offerId/accept` | Cliente, en su turno: pedido `ACORDADO` con el trabajador asignado; las demás ofertas `SIN_EFECTO` |
+| `GET` | `/api/offers/received/:offerId/whatsapp`, `/api/offers/me/:offerId/whatsapp` | Enlace `wa.me` para escribir a la otra parte (canal externo; no cambia la oferta) |
+
+- **Vigencia:** 24 horas, reiniciadas con cada contraoferta. La tarea de vencimiento corre al arrancar y cada `OFFER_EXPIRATION_INTERVAL_MINUTES`.
+- **Cierres automáticos:** al cancelarse o vencer el pedido y al suspenderse la cuenta del cliente, la del trabajador o su perfil.
+- **Sin ofertas vigentes** el pedido vuelve a `PUBLICADO` (no existe `SIN_ACUERDO`), sin tocar su plazo de 7 días.
+- **Después de aceptar:** el trabajador asignado consulta el pedido con la dirección en `GET /api/orders/assigned/:orderId`.
+- **Pendientes:** notificaciones de ofertas, historial para el administrador.
 
 Ejemplo de registro:
 
@@ -628,6 +652,7 @@ src/
 │   ├── auth/              # Registro, login, JWT (Passport), JwtAuthGuard, RolesGuard, @Auth, @CurrentUser
 │   ├── catalogs/          # Categorías de servicio y zonas de Cochabamba
 │   ├── notifications/     # Notificaciones internas: bandeja del usuario y servicio para los demás módulos
+│   ├── offers/            # Ofertas y negociación: contraofertas, aceptación, vencimiento, cierres y WhatsApp (ver su README)
 │   ├── orders/            # Pedidos: publicación, fotos, visibilidad, edición, cancelación y vencimiento
 │   ├── users/             # Cuentas, datos personales, estado y roles
 │   └── worker-profile/    # Perfil del trabajador, documentos, estados y zona fija

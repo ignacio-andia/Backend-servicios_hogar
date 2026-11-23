@@ -32,6 +32,8 @@ import {
 import { catalogRefs, dbNow } from './order-support.js';
 import {
   ADMIN_ORDER_SELECT,
+  ASSIGNED_ORDER_SELECT,
+  AssignedOrderView,
   AdminOrderSummary,
   AdminOrderView,
   effectiveStatus,
@@ -41,6 +43,7 @@ import {
   OwnerOrderView,
   PaginatedOrders,
   toAdminSummary,
+  toAssignedView,
   toOwnerView,
 } from './order-views.js';
 import {
@@ -212,6 +215,52 @@ export class OrdersService {
       dbNow(this.prisma),
     ]);
     return toOwnerView(order, refs, now);
+  }
+
+  // ---------------------------------------------------------------------
+  // G2 (T6.7): pedido con acuerdo para el trabajador asignado
+  // ---------------------------------------------------------------------
+
+  /**
+   * El trabajador asignado consulta el pedido mientras tiene un acuerdo
+   * vigente (ACORDADO y estados posteriores con acuerdo): descripcion,
+   * fotos, direccion exacta y nombre del cliente. Otro trabajador, un pedido
+   * sin acuerdo o uno ya cerrado o cancelado responden 404 (igual que uno
+   * inexistente).
+   */
+  async getAssigned(
+    workerUserId: string,
+    orderId: string,
+  ): Promise<AssignedOrderView> {
+    const order = await this.prisma.order.findFirst({
+      where: assignedOrderWhere(workerUserId, orderId),
+      select: ASSIGNED_ORDER_SELECT,
+    });
+    if (!order) {
+      throw orderNotFound();
+    }
+    const [refs, now] = await Promise.all([
+      catalogRefs(this.catalogs, [order]),
+      dbNow(this.prisma),
+    ]);
+    return toAssignedView(order, refs, now);
+  }
+
+  /** Abre una foto de un pedido asignado (mismas reglas que getAssigned). */
+  async openAssignedImage(
+    workerUserId: string,
+    orderId: string,
+    imageId: string,
+    variant: 'full' | 'thumb',
+  ) {
+    const order = await this.prisma.order.findFirst({
+      where: assignedOrderWhere(workerUserId, orderId),
+      select: { id: true },
+    });
+    if (!order) {
+      throw orderNotFound();
+    }
+    return this.images.open(orderId, imageId, variant);
   }
 
   // ---------------------------------------------------------------------
@@ -996,6 +1045,21 @@ export function notModifiable(
   return new ConflictException(
     `No se puede ${action} un pedido en estado ${status}`,
   );
+}
+
+/**
+ * G2: pedido asignado a ese trabajador con un acuerdo vigente. Un pedido
+ * CERRADO o CANCELADO ya no da acceso a la direccion.
+ */
+function assignedOrderWhere(
+  workerUserId: string,
+  orderId: string,
+): Prisma.OrderWhereInput {
+  return {
+    id: orderId,
+    assignedWorkerId: workerUserId,
+    status: { in: [...ORDER_AGREED_STATUSES] },
+  };
 }
 
 export function isAllowedTransition(

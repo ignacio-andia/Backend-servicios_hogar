@@ -44,6 +44,18 @@ export const OWNER_ORDER_SELECT = {
 } satisfies Prisma.OrderSelect;
 
 /**
+ * G2 (T6.7): lo que ve el trabajador ASIGNADO a un pedido con acuerdo: lo
+ * necesario para atenderlo, incluida la direccion exacta (adenda §2.2) y el
+ * nombre del cliente. Nunca su correo ni su telefono (el contacto es por
+ * WhatsApp, en OffersModule).
+ */
+export const ASSIGNED_ORDER_SELECT = {
+  ...ORDER_PUBLIC_SELECT,
+  address: { select: { addressLine: true, reference: true } },
+  client: { select: { firstName: true, lastName: true } },
+} satisfies Prisma.OrderSelect;
+
+/**
  * Registro minimo para administradores (T5.4): nunca la direccion, las
  * fotos ni la descripcion. El nombre del cliente solo si el pedido no fue
  * anonimizado.
@@ -70,6 +82,10 @@ export const ADMIN_ORDER_SELECT = {
 
 export type AdminOrderRecord = Prisma.OrderGetPayload<{
   select: typeof ADMIN_ORDER_SELECT;
+}>;
+
+export type AssignedOrderRecord = Prisma.OrderGetPayload<{
+  select: typeof ASSIGNED_ORDER_SELECT;
 }>;
 
 export type PublicOrderRecord = Prisma.OrderGetPayload<{
@@ -120,6 +136,12 @@ export interface OwnerOrderView extends WorkerOrderView {
   updatedAt: Date;
   canEdit: boolean;
   canCancel: boolean;
+}
+
+/** G2: pedido con acuerdo, para el trabajador asignado. */
+export interface AssignedOrderView extends WorkerOrderView {
+  address: { addressLine: string; reference: string | null } | null;
+  client: { firstName: string; lastName: string };
 }
 
 /** Registro minimo de un pedido para administradores (T5.4). */
@@ -232,6 +254,18 @@ export function toOwnerView(
     updatedAt: order.updatedAt,
     canEdit: ORDER_EDITABLE_STATUSES.includes(base.status),
     canCancel: ORDER_CANCELLABLE_STATUSES.includes(base.status),
+  };
+}
+
+export function toAssignedView(
+  order: AssignedOrderRecord,
+  refs: { categories: Map<string, CatalogRef>; zones: Map<string, CatalogRef> },
+  now: Date,
+): AssignedOrderView {
+  return {
+    ...toWorkerView(order, refs, now),
+    address: order.address,
+    client: order.client,
   };
 }
 

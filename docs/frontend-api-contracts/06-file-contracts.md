@@ -7,7 +7,7 @@
 | Subir | `POST /api/worker-profile/me/documents` | Al crear: `POST /api/orders`. Agregar: `POST /api/orders/me/:orderId/images` |
 | Reemplazar | `POST /api/worker-profile/me/documents/:documentId/replace` | `PUT /api/orders/me/:orderId/images/:imageId` |
 | Borrar | **No existe** (el reemplazo conserva el anterior en el historial) | `DELETE /api/orders/me/:orderId/images/:imageId` |
-| Descargar | `GET /api/worker-profile/me/documents/:documentId/download` | Dueño: `GET /api/orders/me/:orderId/images/:imageId?variant=`. Trabajador aprobado: `GET /api/orders/available/:orderId/images/:imageId?variant=` |
+| Descargar | `GET /api/worker-profile/me/documents/:documentId/download` | Dueño: `GET /api/orders/me/:orderId/images/:imageId?variant=`. Trabajador aprobado: `GET /api/orders/available/:orderId/images/:imageId?variant=`. Trabajador asignado (G2): `GET /api/orders/assigned/:orderId/images/:imageId?variant=` |
 | Content-Type de la subida | `multipart/form-data` | `multipart/form-data` |
 | Campos | `type` (texto) y `file` (1 archivo). El reemplazo usa solo `file` | Crear: los campos de `CreateOrderDto` y `images` (1 a 4 archivos). Agregar o reemplazar: `image` (1 archivo) |
 | Formatos aceptados | PDF, JPG o PNG, detectados por el **contenido** (firma de bytes), no por la extensión ni por el Content-Type | JPEG, PNG o WebP, detectados por el contenido con `sharp` (GIF, HEIC u otros responden 400) |

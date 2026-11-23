@@ -27,6 +27,7 @@ import type {
   PaginatedOffers,
   ReceivedOfferView,
 } from './offer-views.js';
+import type { WhatsAppContact } from './offer-contact.js';
 import { OffersService } from './offers.service.js';
 
 /**
@@ -99,6 +100,28 @@ export class OffersController {
     @Param('offerId', ParseUUIDPipe) offerId: string,
   ): Promise<OfferDetail<OfferView>> {
     return this.offers.withdraw(user.id, offerId);
+  }
+
+  // T6.6: enlace de WhatsApp al cliente del pedido (canal externo; no cambia
+  // la oferta). Solo para el trabajador dueno de la oferta.
+  @Auth(RoleName.TRABAJADOR)
+  @Get('me/:offerId/whatsapp')
+  workerContact(
+    @CurrentUser() user: PublicUser,
+    @Param('offerId', ParseUUIDPipe) offerId: string,
+  ): Promise<WhatsAppContact> {
+    return this.offers.workerContact(user.id, offerId);
+  }
+
+  // T6.6: enlace de WhatsApp al trabajador de la oferta. Solo para el cliente
+  // dueno del pedido.
+  @Auth(RoleName.CLIENTE)
+  @Get('received/:offerId/whatsapp')
+  clientContact(
+    @CurrentUser() user: PublicUser,
+    @Param('offerId', ParseUUIDPipe) offerId: string,
+  ): Promise<WhatsAppContact> {
+    return this.offers.clientContact(user.id, offerId);
   }
 
   // Sus ofertas se consultan aunque el perfil ya no este aprobado.

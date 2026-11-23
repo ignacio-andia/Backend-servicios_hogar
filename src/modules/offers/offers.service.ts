@@ -21,9 +21,11 @@ import { OrderVisibilityService } from '../orders/order-visibility.service.js';
 import { ORDER_OPEN_FOR_OFFERS_STATUSES } from '../orders/orders.rules.js';
 import { lockOrder, OrdersService } from '../orders/orders.service.js';
 import { UsersService } from '../users/users.service.js';
+import { WorkerActiveWorkRegistry } from '../worker-profile/active-work.registry.js';
 import { WorkerProfileService } from '../worker-profile/worker-profile.service.js';
 import type { CounterOfferDto } from './dto/counter-offer.dto.js';
 import type { CreateOfferDto } from './dto/create-offer.dto.js';
+import { buildWhatsAppContact, type WhatsAppContact } from './offer-contact.js';
 import {
   assertCanClose,
   assertCanCounter,
@@ -53,10 +55,12 @@ import {
 import {
   OFFER_ACCEPTANCE_PROCESS,
   OFFER_CLOSING_EVENT,
+  OFFER_CLOSURE_PROCESS,
   OFFER_EXPIRATION_PROCESS,
   OFFER_REOFFER_BLOCKING_STATUSES,
   OFFER_SUPERSEDED_REASON,
   OFFER_VALIDITY_HOURS,
+  OfferClosureReason,
 } from './offers.rules.js';
 
 type Db = Prisma.TransactionClient | PrismaService;
@@ -98,6 +102,7 @@ export class OffersService {
     private readonly users: UsersService,
     private readonly workerProfiles: WorkerProfileService,
     private readonly catalogs: CatalogsService,
+    private readonly activeWork: WorkerActiveWorkRegistry,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -473,6 +478,170 @@ export class OffersService {
       }
       return due.length;
     });
+  }
+
+  // ---------------------------------------------------------------------
+  // T6.5.2: cierres por cambios externos (los usa OffersClosureHooks)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Cierra, con su evento del sistema y el motivo, las ofertas VIGENTE del
+   * pedido (o solo las de `workerId`). El llamador ya bloqueo el pedido;
+   * aqui se bloquean sus ofertas (FOR UPDATE, por id). No cambia el estado
+   * del pedido. Lo ya cerrado no se toca (idempotente). Devuelve cuantas
+   * cerro.
+   */
+  async closeOpenOffersOfOrder(
+    tx: Prisma.TransactionClient,
+    orderId: string,
+    status: typeof OfferStatus.SIN_EFECTO | typeof OfferStatus.VENCIDA,
+    reason: OfferClosureReason,
+    workerId?: string,
+  ): Promise<number> {
+    const open = await tx.$queryRaw<{ id: string; round: number }[]>`
+      SELECT "id"::text AS "id", "round"
+      FROM "offers"
+      WHERE "order_id" = ${orderId}::uuid
+        AND "status" = 'VIGENTE'
+        AND (${workerId ?? null}::uuid IS NULL OR "worker_id" = ${workerId ?? null}::uuid)
+      ORDER BY "id"
+      FOR UPDATE`;
+    if (open.length === 0) {
+      return 0;
+    }
+    const now = await dbNow(tx);
+    await tx.offer.updateMany({
+      where: {
+        id: { in: open.map((offer) => offer.id) },
+        status: OfferStatus.VIGENTE,
+      },
+      data: { status, closedAt: now },
+    });
+    await tx.offerEvent.createMany({
+      data: open.map((offer) => ({
+        offerId: offer.id,
+        orderId,
+        type: OFFER_CLOSING_EVENT[status],
+        round: offer.round,
+        actorType: OrderActorType.SISTEMA,
+        systemProcess: OFFER_CLOSURE_PROCESS,
+        reason,
+      })),
+    });
+    return open.length;
+  }
+
+  /**
+   * Suspension de una cuenta (AccountStatusRegistry, la cuenta ya esta
+   * bloqueada): quedan SIN_EFECTO sus ofertas como trabajador y las ofertas
+   * VIGENTE que recibio como cliente.
+   */
+  async closeOffersOfSuspendedAccount(
+    tx: Prisma.TransactionClient,
+    userId: string,
+  ): Promise<number> {
+    // Trabajador despues de la cuenta y antes que los pedidos (orden del
+    // proyecto). Con el trabajador bloqueado ninguna oferta suya nueva se
+    // confirma en paralelo: la creacion tambien lo bloquea y, al seguir,
+    // relee la cuenta ya suspendida.
+    await this.activeWork.lockWorker(tx, userId);
+    const asWorker = await tx.offer.findMany({
+      where: { workerId: userId, status: OfferStatus.VIGENTE },
+      select: { orderId: true },
+      distinct: ['orderId'],
+    });
+    // Como cliente: todos sus pedidos abiertos, no solo los que hoy tienen
+    // ofertas. Una oferta que se crea en paralelo bloquea el pedido: o se
+    // confirma antes (y aqui se cierra) o espera y, al seguir, ve la cuenta
+    // del cliente suspendida (OrderVisibilityService). Lectura de solo
+    // lectura sobre los pedidos del cliente, como clientOffersWhere.
+    const asClient = await tx.order.findMany({
+      where: {
+        clientId: userId,
+        status: { in: [...ORDER_OPEN_FOR_OFFERS_STATUSES] },
+      },
+      select: { id: true },
+    });
+    const targets = new Map<
+      string,
+      { workerId?: string; reason: OfferClosureReason }
+    >();
+    for (const { orderId } of asWorker) {
+      targets.set(orderId, {
+        workerId: userId,
+        reason: OfferClosureReason.TRABAJADOR_SUSPENDIDO,
+      });
+    }
+    for (const { id } of asClient) {
+      targets.set(id, { reason: OfferClosureReason.CLIENTE_SUSPENDIDO });
+    }
+    return this.closeInOrders(tx, targets);
+  }
+
+  /**
+   * Suspension del perfil (WorkerProfileStatusRegistry, el perfil ya esta
+   * bloqueado): sus ofertas VIGENTE quedan SIN_EFECTO.
+   */
+  async closeOffersOfSuspendedProfile(
+    tx: Prisma.TransactionClient,
+    workerUserId: string,
+  ): Promise<number> {
+    const asWorker = await tx.offer.findMany({
+      where: { workerId: workerUserId, status: OfferStatus.VIGENTE },
+      select: { orderId: true },
+      distinct: ['orderId'],
+    });
+    return this.closeInOrders(
+      tx,
+      new Map(
+        asWorker.map(({ orderId }) => [
+          orderId,
+          {
+            workerId: workerUserId,
+            reason: OfferClosureReason.PERFIL_SUSPENDIDO,
+          },
+        ]),
+      ),
+    );
+  }
+
+  /**
+   * Por cada pedido, en orden de id (evita esperas cruzadas entre dos
+   * suspensiones): bloquea el pedido, cierra sus ofertas y, si queda
+   * EN_NEGOCIACION sin ofertas vigentes, lo devuelve a PUBLICADO por
+   * OrdersService.transition (decision 10). Un pedido vencido o cerrado no
+   * cambia de estado.
+   */
+  private async closeInOrders(
+    tx: Prisma.TransactionClient,
+    targets: Map<string, { workerId?: string; reason: OfferClosureReason }>,
+  ): Promise<number> {
+    let total = 0;
+    for (const orderId of [...targets.keys()].sort()) {
+      const { workerId, reason } = targets.get(orderId)!;
+      const order = await lockOrder(tx, orderId);
+      if (!order) {
+        continue;
+      }
+      const closed = await this.closeOpenOffersOfOrder(
+        tx,
+        orderId,
+        OfferStatus.SIN_EFECTO,
+        reason,
+        workerId,
+      );
+      total += closed;
+      if (closed > 0 && order.effectiveStatus === OrderStatus.EN_NEGOCIACION) {
+        await this.reopenIfNoOpenOffers(
+          tx,
+          orderId,
+          order.status,
+          await dbNow(tx),
+          { type: 'SISTEMA', process: OFFER_CLOSURE_PROCESS },
+        );
+      }
+    }
+    return total;
   }
 
   // ---------------------------------------------------------------------
@@ -880,6 +1049,49 @@ export class OffersService {
       limit,
       total,
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // T6.6: contacto por WhatsApp (canal externo, no cambia la oferta)
+  // ---------------------------------------------------------------------
+
+  /**
+   * El trabajador dueno de la oferta obtiene el enlace para escribir al
+   * cliente del pedido. Mismo criterio de acceso que getOwn: una oferta
+   * ajena responde 404. El telefono se lee por UsersService.
+   */
+  async workerContact(
+    workerUserId: string,
+    offerId: string,
+  ): Promise<WhatsAppContact> {
+    const offer = await this.prisma.offer.findFirst({
+      where: { id: offerId, workerId: workerUserId },
+      select: { orderId: true, order: { select: { clientId: true } } },
+    });
+    if (!offer) {
+      throw offerNotFound();
+    }
+    const client = await this.users.findById(offer.order.clientId);
+    return buildWhatsAppContact(client.phone, 'CLIENTE', offer.orderId);
+  }
+
+  /**
+   * El cliente dueno del pedido obtiene el enlace para escribir al
+   * trabajador de la oferta. Mismo criterio de acceso que getReceived.
+   */
+  async clientContact(
+    clientId: string,
+    offerId: string,
+  ): Promise<WhatsAppContact> {
+    const offer = await this.prisma.offer.findFirst({
+      where: { AND: [{ id: offerId }, clientOffersWhere(clientId)] },
+      select: { orderId: true, workerId: true },
+    });
+    if (!offer) {
+      throw offerNotFound();
+    }
+    const worker = await this.users.findById(offer.workerId);
+    return buildWhatsAppContact(worker.phone, 'TRABAJADOR', offer.orderId);
   }
 
   async getReceived(

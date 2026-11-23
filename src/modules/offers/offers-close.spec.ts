@@ -137,6 +137,7 @@ describe('OffersService: rechazo y retiro (T6.4.1)', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
   });
 

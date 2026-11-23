@@ -23,6 +23,7 @@ import {
   CatalogKind,
   CatalogsService,
 } from '../src/modules/catalogs/catalogs.service.js';
+import { OrderExpirationService } from '../src/modules/orders/order-expiration.service.js';
 import { OfferExpirationService } from '../src/modules/offers/offer-expiration.service.js';
 import { OffersService } from '../src/modules/offers/offers.service.js';
 import {
@@ -263,7 +264,6 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
           round: 1,
           amount: '120.50',
           actorType: 'USUARIO',
-          changedById: worker.id,
           actorRole: RoleName.TRABAJADOR,
         }),
       ]);
@@ -995,7 +995,6 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
         type: 'RECHAZADA',
         round: 1,
         amount: null,
-        changedById: client.id,
         actorRole: RoleName.CLIENTE,
       });
       const after = await orderRow(orderId);
@@ -1027,7 +1026,6 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       expect(res.body.history.at(-1)).toMatchObject({
         type: 'RETIRADA',
         round: 2,
-        changedById: worker.id,
         actorRole: RoleName.TRABAJADOR,
       });
       expect((await orderRow(orderId)).statusHistory.at(-1)).toMatchObject({
@@ -1307,7 +1305,6 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       expect(res.body.history.at(-1)).toMatchObject({
         type: 'ACEPTADA',
         round: 1,
-        changedById: client.id,
         actorRole: RoleName.CLIENTE,
       });
       const order = await orderRow(orderId);
@@ -1768,8 +1765,8 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
     it('en un pedido cancelado o vencido cierra las ofertas sin cambiar el estado del pedido', async () => {
       const cancelled = await newOrder();
       const a = await offerId(worker, cancelled);
-      await post(`/api/orders/me/${cancelled}/cancel`, client).expect(200);
       await expireNow(a);
+      await post(`/api/orders/me/${cancelled}/cancel`, client).expect(200);
 
       const expiredOrder = await newOrder();
       const b = await offerId(worker, expiredOrder);
@@ -1778,7 +1775,13 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
 
       await run();
 
-      expect((await row(a)).status).toBe(OfferStatus.VENCIDA);
+      // T6.5.2: la cancelacion ya la cerro como SIN_EFECTO; el vencimiento no
+      // la vuelve a tocar.
+      expect((await row(a)).status).toBe(OfferStatus.SIN_EFECTO);
+      expect((await row(a)).events.at(-1)).toMatchObject({
+        type: 'SIN_EFECTO',
+        reason: 'PEDIDO_CANCELADO',
+      });
       expect((await row(b)).status).toBe(OfferStatus.VENCIDA);
       expect((await orderRow(cancelled)).status).toBe(OrderStatus.CANCELADO);
       // Lo marca VENCIDO el vencimiento de pedidos, nunca PUBLICADO.
@@ -1926,6 +1929,724 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
             OrderStatus.EN_NEGOCIACION,
           );
         }
+      });
+    });
+  });
+
+  describe('cierres por cambios externos (T6.5.2)', () => {
+    let week = 120;
+    const slot = () =>
+      offerBody({
+        proposedStartAt: new Date(
+          nextMondayAt(10).getTime() + week++ * 7 * DAY,
+        ).toISOString(),
+      });
+    const offerId = async (user: PublicUser, orderId: string) =>
+      (await offer(user, orderId, slot()).expect(201)).body.id as string;
+    const post = (path: string, user: PublicUser, body: object = {}) =>
+      http().post(path).set('Authorization', auth(user)).send(body);
+    const setAccount = (user: PublicUser, status: 'SUSPENDIDO' | 'ACTIVO') =>
+      http()
+        .patch(`/api/users/${user.id}/status`)
+        .set('Authorization', auth(admin))
+        .send({ status });
+    const setProfile = async (
+      user: PublicUser,
+      status: 'SUSPENDIDO' | 'APROBADO',
+    ) => {
+      const profile = await prisma.workerProfile.findUniqueOrThrow({
+        where: { userId: user.id },
+      });
+      await app.get(WorkerProfileService).changeStatusByAdmin(
+        admin.id,
+        profile.id,
+        status === 'SUSPENDIDO'
+          ? {
+              status: WorkerProfileStatus.SUSPENDIDO,
+              reason: 'Prueba T6.5.2',
+            }
+          : { status: WorkerProfileStatus.APROBADO },
+      );
+    };
+    const row = (id: string) =>
+      prisma.offer.findUniqueOrThrow({
+        where: { id },
+        include: { events: { orderBy: { createdAt: 'asc' } } },
+      });
+    const orderRow = (id: string) =>
+      prisma.order.findUniqueOrThrow({
+        where: { id },
+        include: { statusHistory: { orderBy: { createdAt: 'asc' } } },
+      });
+    const expectClosed = async (
+      id: string,
+      status: OfferStatus,
+      reason: string,
+    ) => {
+      const closed = await row(id);
+      expect(closed.status).toBe(status);
+      expect(closed.closedAt).toBeInstanceOf(Date);
+      const closings = closed.events.filter(
+        (event) => !['PROPUESTA', 'CONTRAOFERTA'].includes(event.type),
+      );
+      expect(closings).toHaveLength(1);
+      expect(closings[0]).toMatchObject({
+        type: status,
+        actorType: 'SISTEMA',
+        systemProcess: 'CIERRE_OFERTAS',
+        reason,
+        changedById: null,
+      });
+    };
+    /** Ninguna operacion de usuario vale sobre una oferta cerrada. */
+    const expectFrozen = async (
+      id: string,
+      owner: PublicUser,
+      from: PublicUser,
+    ) => {
+      await post(`/api/offers/${id}/accept`, owner).expect((res) =>
+        expect([403, 404, 409]).toContain(res.status),
+      );
+      await post(`/api/offers/${id}/counter`, owner, { amount: '99' }).expect(
+        (res) => expect([403, 404, 409]).toContain(res.status),
+      );
+      await post(`/api/offers/${id}/reject`, owner).expect((res) =>
+        expect([403, 404, 409]).toContain(res.status),
+      );
+      await post(`/api/offers/${id}/withdraw`, from).expect((res) =>
+        expect([403, 404, 409]).toContain(res.status),
+      );
+    };
+
+    it('cancelar el pedido deja SIN_EFECTO todas sus ofertas vigentes, sin tocar las ya cerradas', async () => {
+      const single = await newOrder();
+      const only = await offerId(worker, single);
+      await post(`/api/orders/me/${single}/cancel`, client).expect(200);
+      await expectClosed(only, OfferStatus.SIN_EFECTO, 'PEDIDO_CANCELADO');
+
+      const multi = await newOrder();
+      const a = await offerId(worker, multi);
+      const b = await offerId(worker2, multi);
+      const withdrawn = await offerId(workerOtherCategory, multi).catch(
+        () => null,
+      );
+      expect(withdrawn).toBeNull(); // otra especialidad: no ve el pedido
+      await post(`/api/offers/${b}/withdraw`, worker2).expect(200);
+      const withdrawnBefore = await row(b);
+      const before = await orderRow(multi);
+
+      await post(`/api/orders/me/${multi}/cancel`, client).expect(200);
+
+      await expectClosed(a, OfferStatus.SIN_EFECTO, 'PEDIDO_CANCELADO');
+      const untouched = await row(b);
+      expect(untouched.status).toBe(OfferStatus.RETIRADA);
+      expect(untouched.events).toHaveLength(withdrawnBefore.events.length);
+      expect(untouched.closedAt).toEqual(withdrawnBefore.closedAt);
+      const order = await orderRow(multi);
+      expect(order.status).toBe(OrderStatus.CANCELADO);
+      expect(order.publishedAt).toEqual(before.publishedAt);
+      expect(order.expiresAt).toEqual(before.expiresAt);
+      // Solo la transicion de la cancelacion.
+      expect(order.statusHistory.length).toBe(before.statusHistory.length + 1);
+      await expectFrozen(a, client, worker);
+    });
+
+    it('al vencer el pedido sus ofertas vigentes quedan VENCIDA con motivo PEDIDO_VENCIDO', async () => {
+      const single = await newOrder();
+      const only = await offerId(worker, single);
+      const multi = await newOrder();
+      const a = await offerId(worker, multi);
+      const b = await offerId(worker2, multi);
+      await post(`/api/offers/${b}/withdraw`, worker2).expect(200);
+      const bBefore = await row(b);
+      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '1 minute' WHERE "id" IN (${single}::uuid, ${multi}::uuid)`;
+      const before = await orderRow(multi);
+
+      await app.get(OrderExpirationService).expireDue();
+
+      await expectClosed(only, OfferStatus.VENCIDA, 'PEDIDO_VENCIDO');
+      await expectClosed(a, OfferStatus.VENCIDA, 'PEDIDO_VENCIDO');
+      expect((await row(b)).events).toHaveLength(bBefore.events.length);
+      const order = await orderRow(multi);
+      expect(order.status).toBe(OrderStatus.VENCIDO);
+      expect(order.expiresAt).toEqual(before.expiresAt);
+      expect(order.statusHistory.at(-1)).toMatchObject({
+        fromStatus: OrderStatus.EN_NEGOCIACION,
+        toStatus: OrderStatus.VENCIDO,
+      });
+      expect(
+        order.statusHistory.filter(
+          (entry) => entry.toStatus === OrderStatus.PUBLICADO,
+        ),
+      ).toHaveLength(1); // solo la creacion
+      await expectFrozen(a, client, worker);
+    });
+
+    it('suspender al cliente deja SIN_EFECTO las ofertas de todos sus pedidos y no toca las de otros clientes', async () => {
+      const first = await newOrder(client2);
+      const second = await newOrder(client2);
+      const a = await offerId(worker, first);
+      const b = await offerId(worker2, first);
+      const c = await offerId(worker, second);
+      const otherClientOrder = await newOrder(client);
+      const other = await offerId(worker, otherClientOrder);
+
+      await setAccount(client2, 'SUSPENDIDO').expect(200);
+      try {
+        for (const id of [a, b, c]) {
+          await expectClosed(id, OfferStatus.SIN_EFECTO, 'CLIENTE_SUSPENDIDO');
+        }
+        expect((await row(other)).status).toBe(OfferStatus.VIGENTE);
+        expect((await orderRow(first)).status).toBe(OrderStatus.PUBLICADO);
+        expect((await orderRow(second)).status).toBe(OrderStatus.PUBLICADO);
+        expect((await orderRow(first)).statusHistory.at(-1)).toMatchObject({
+          toStatus: OrderStatus.PUBLICADO,
+          actorType: 'SISTEMA',
+          systemProcess: 'CIERRE_OFERTAS',
+        });
+
+        // Repetir la suspension no duplica cierres ni historial.
+        const events = await prisma.offerEvent.count({
+          where: { orderId: { in: [first, second] } },
+        });
+        await setAccount(client2, 'SUSPENDIDO').expect(200);
+        await prisma.$transaction((tx) =>
+          app.get(OffersService).closeOffersOfSuspendedAccount(tx, client2.id),
+        );
+        expect(
+          await prisma.offerEvent.count({
+            where: { orderId: { in: [first, second] } },
+          }),
+        ).toBe(events);
+      } finally {
+        await setAccount(client2, 'ACTIVO').expect(200);
+      }
+      // Reactivar no reabre las ofertas.
+      expect((await row(a)).status).toBe(OfferStatus.SIN_EFECTO);
+    });
+
+    it('suspender la cuenta del trabajador cierra solo sus ofertas, en distintos pedidos', async () => {
+      const shared = await newOrder(client);
+      const alone = await newOrder(client2);
+      const mine = await offerId(worker2, shared);
+      const theirs = await offerId(worker, shared);
+      const mineAlone = await offerId(worker2, alone);
+
+      await setAccount(worker2, 'SUSPENDIDO').expect(200);
+      try {
+        await expectClosed(
+          mine,
+          OfferStatus.SIN_EFECTO,
+          'TRABAJADOR_SUSPENDIDO',
+        );
+        await expectClosed(
+          mineAlone,
+          OfferStatus.SIN_EFECTO,
+          'TRABAJADOR_SUSPENDIDO',
+        );
+        expect((await row(theirs)).status).toBe(OfferStatus.VIGENTE);
+        expect((await orderRow(shared)).status).toBe(
+          OrderStatus.EN_NEGOCIACION,
+        );
+        expect((await orderRow(alone)).status).toBe(OrderStatus.PUBLICADO);
+      } finally {
+        await setAccount(worker2, 'ACTIVO').expect(200);
+      }
+      await expectFrozen(mine, client, worker2);
+    });
+
+    it('suspender el perfil del trabajador deja SIN_EFECTO sus ofertas con motivo PERFIL_SUSPENDIDO', async () => {
+      const first = await newOrder(client);
+      const second = await newOrder(client2);
+      const a = await offerId(worker2, first);
+      const b = await offerId(worker2, second);
+      const theirs = await offerId(worker, first);
+
+      await setProfile(worker2, 'SUSPENDIDO');
+      try {
+        await expectClosed(a, OfferStatus.SIN_EFECTO, 'PERFIL_SUSPENDIDO');
+        await expectClosed(b, OfferStatus.SIN_EFECTO, 'PERFIL_SUSPENDIDO');
+        expect((await row(theirs)).status).toBe(OfferStatus.VIGENTE);
+        expect((await orderRow(first)).status).toBe(OrderStatus.EN_NEGOCIACION);
+        expect((await orderRow(second)).status).toBe(OrderStatus.PUBLICADO);
+      } finally {
+        await setProfile(worker2, 'APROBADO');
+      }
+      expect((await row(a)).status).toBe(OfferStatus.SIN_EFECTO);
+    });
+
+    it('el historial de los cierres sigue protegido', async () => {
+      const orderId = await newOrder();
+      const id = await offerId(worker, orderId);
+      await post(`/api/orders/me/${orderId}/cancel`, client).expect(200);
+
+      await expect(
+        prisma.offerEvent.updateMany({
+          where: { offerId: id, type: 'SIN_EFECTO' },
+          data: { reason: 'otro' },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offerEvent.deleteMany({ where: { offerId: id } }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.offer.update({
+          where: { id },
+          data: { status: OfferStatus.VIGENTE, closedAt: null },
+        }),
+      ).rejects.toThrow();
+    });
+
+    describe('concurrencia con la suspension del trabajador', () => {
+      it.each([
+        [
+          'aceptacion',
+          (id: string) => post(`/api/offers/${id}/accept`, client),
+        ],
+        [
+          'contraoferta',
+          (id: string) =>
+            post(`/api/offers/${id}/counter`, client, { amount: '99' }),
+        ],
+        ['rechazo', (id: string) => post(`/api/offers/${id}/reject`, client)],
+        ['retiro', (id: string) => post(`/api/offers/${id}/withdraw`, worker2)],
+      ])(
+        'suspension y %s simultaneos: un solo cierre y estado coherente',
+        async (_case, operation) => {
+          const orderId = await newOrder();
+          const id = await offerId(worker2, orderId);
+          try {
+            const [suspended, res] = await Promise.all([
+              setAccount(worker2, 'SUSPENDIDO'),
+              operation(id),
+            ]);
+            expect(suspended.status).toBe(200);
+            expect([200, 401, 403, 409]).toContain(res.status);
+
+            const offerRow = await row(id);
+            const closings = offerRow.events.filter(
+              (event) => !['PROPUESTA', 'CONTRAOFERTA'].includes(event.type),
+            );
+            expect(closings.length).toBeLessThanOrEqual(1);
+            const order = await orderRow(orderId);
+            if (offerRow.status === OfferStatus.ACEPTADA) {
+              // La aceptacion se confirmo antes de la suspension.
+              expect(order.status).toBe(OrderStatus.ACORDADO);
+              expect(order.assignedWorkerId).toBe(worker2.id);
+            } else {
+              expect(offerRow.status).not.toBe(OfferStatus.VIGENTE);
+              expect(order.assignedWorkerId).toBeNull();
+              expect(order.status).toBe(OrderStatus.PUBLICADO);
+            }
+          } finally {
+            await setAccount(worker2, 'ACTIVO').expect(200);
+          }
+        },
+      );
+    });
+  });
+
+  describe('contacto por WhatsApp (T6.6)', () => {
+    let week = 180;
+    const slot = () =>
+      offerBody({
+        proposedStartAt: new Date(
+          nextMondayAt(10).getTime() + week++ * 7 * DAY,
+        ).toISOString(),
+      });
+    const ref = (orderId: string) =>
+      orderId.replace(/-/g, '').slice(0, 8).toUpperCase();
+    const asClient = (user: PublicUser, offerId: string) =>
+      http()
+        .get(`/api/offers/received/${offerId}/whatsapp`)
+        .set('Authorization', auth(user));
+    const asWorker = (user: PublicUser, offerId: string) =>
+      http()
+        .get(`/api/offers/me/${offerId}/whatsapp`)
+        .set('Authorization', auth(user));
+    const setPhone = (user: PublicUser, phone: string | null) =>
+      prisma.user.update({ where: { id: user.id }, data: { phone } });
+    let orderId: string;
+    let offerId: string;
+
+    beforeAll(async () => {
+      orderId = await newOrder();
+      offerId = (await offer(worker, orderId, slot()).expect(201)).body.id;
+    });
+
+    it('el cliente del pedido obtiene el enlace para escribir al trabajador', async () => {
+      const res = await asClient(client, offerId).expect(200);
+
+      expect(res.body).toEqual({
+        available: true,
+        channel: 'WHATSAPP',
+        contactRole: 'TRABAJADOR',
+        url: `https://wa.me/59171000001?text=${encodeURIComponent(
+          `Hola, te escribo por tu oferta para mi pedido ${ref(orderId)} en ArreglaloYA.`,
+        )}`,
+      });
+      const url = new URL(res.body.url);
+      expect(url.pathname).toMatch(/^\/\d+$/);
+    });
+
+    it('el trabajador de la oferta obtiene el enlace del cliente, con el numero normalizado', async () => {
+      // Numero local guardado sin codigo de pais: se agrega 591.
+      await setPhone(client, '71234567');
+      try {
+        const res = await asWorker(worker, offerId).expect(200);
+        expect(res.body).toMatchObject({
+          available: true,
+          contactRole: 'CLIENTE',
+        });
+        expect(res.body.url).toBe(
+          `https://wa.me/59171234567?text=${encodeURIComponent(
+            `Hola, te escribo por mi oferta para tu pedido ${ref(orderId)} en ArreglaloYA.`,
+          )}`,
+        );
+      } finally {
+        await setPhone(client, null);
+      }
+    });
+
+    it('sin telefono o con uno invalido no hay enlace: resultado controlado', async () => {
+      const missing = await asWorker(worker, offerId).expect(200);
+      expect(missing.body).toEqual({
+        available: false,
+        channel: 'WHATSAPP',
+        contactRole: 'CLIENTE',
+        url: null,
+        reason: 'TELEFONO_NO_REGISTRADO',
+      });
+
+      // Fijo de 7 digitos: valido para el registro, no para WhatsApp.
+      await setPhone(client, '4123456');
+      try {
+        const invalid = await asWorker(worker, offerId).expect(200);
+        expect(invalid.body).toMatchObject({
+          available: false,
+          url: null,
+          reason: 'TELEFONO_INVALIDO',
+        });
+      } finally {
+        await setPhone(client, null);
+      }
+    });
+
+    it('usuarios ajenos no obtienen contactos (404) y los roles se respetan (403)', async () => {
+      await asClient(client2, offerId).expect(404);
+      await asWorker(worker2, offerId).expect(404);
+      // El cliente no tiene el rol de trabajador.
+      await asWorker(client, offerId).expect(403);
+      // El trabajador tiene rol CLIENTE pero no es el dueno del pedido.
+      await asClient(worker, offerId).expect(404);
+    });
+
+    it('un visitante no puede obtener contactos (401)', async () => {
+      await http().get(`/api/offers/received/${offerId}/whatsapp`).expect(401);
+      await http().get(`/api/offers/me/${offerId}/whatsapp`).expect(401);
+    });
+
+    it('una oferta de otro pedido no da acceso al contacto', async () => {
+      const foreignOrder = await newOrder(client2);
+      const foreign = (await offer(worker2, foreignOrder, slot()).expect(201))
+        .body.id;
+      await asClient(client, foreign).expect(404);
+      await asWorker(worker, foreign).expect(404);
+      await asClient(client2, foreign).expect(200);
+    });
+
+    it('los listados y detalles de ofertas no exponen telefonos', async () => {
+      await setPhone(client, '+59176543210');
+      try {
+        const responses = await Promise.all([
+          http()
+            .get('/api/offers/received')
+            .query({ orderId })
+            .set('Authorization', auth(client)),
+          http()
+            .get(`/api/offers/received/${offerId}`)
+            .set('Authorization', auth(client)),
+          http()
+            .get('/api/offers/me')
+            .query({ limit: 50 })
+            .set('Authorization', auth(worker)),
+          http()
+            .get(`/api/offers/me/${offerId}`)
+            .set('Authorization', auth(worker)),
+          http()
+            .get(`/api/orders/available/${orderId}`)
+            .set('Authorization', auth(worker2)),
+        ]);
+        for (const res of responses) {
+          expect(res.status).toBe(200);
+          const json = JSON.stringify(res.body);
+          expect(json).not.toMatch(/phone|wa\.me|71000001|76543210/i);
+        }
+      } finally {
+        await setPhone(client, null);
+      }
+    });
+
+    it('consultar el contacto no cambia la oferta; una oferta cerrada conserva el acceso pero no admite negociacion', async () => {
+      const closedOrder = await newOrder();
+      const closed = (await offer(worker, closedOrder, slot()).expect(201)).body
+        .id;
+      const before = await prisma.offer.findUniqueOrThrow({
+        where: { id: closed },
+        include: { events: true },
+      });
+
+      await asClient(client, closed).expect(200);
+      const after = await prisma.offer.findUniqueOrThrow({
+        where: { id: closed },
+        include: { events: true },
+      });
+      expect(after.status).toBe(before.status);
+      expect(after.events).toHaveLength(before.events.length);
+      expect(after.updatedAt).toEqual(before.updatedAt);
+
+      await http()
+        .post(`/api/offers/${closed}/withdraw`)
+        .set('Authorization', auth(worker))
+        .send({})
+        .expect(200);
+      // Mismo acceso que el detalle de la oferta (que sigue disponible).
+      await http()
+        .get(`/api/offers/received/${closed}`)
+        .set('Authorization', auth(client))
+        .expect(200);
+      await asClient(client, closed).expect(200);
+      await http()
+        .post(`/api/offers/${closed}/accept`)
+        .set('Authorization', auth(client))
+        .send({})
+        .expect(409);
+      await http()
+        .post(`/api/offers/${closed}/counter`)
+        .set('Authorization', auth(client))
+        .send({ amount: '90' })
+        .expect(409);
+    });
+  });
+
+  describe('ajustes previos a Angular: G1, G2 y G4 (T6.7)', () => {
+    let week = 240;
+    const startAt = () =>
+      new Date(nextMondayAt(10).getTime() + week++ * 7 * DAY);
+    /** Misma hora en La Paz (UTC-4) con offset explicito. */
+    const laPaz = (date: Date) =>
+      new Date(date.getTime() - 4 * 60 * 60_000).toISOString().slice(0, 19) +
+      '-04:00';
+    const get = (path: string, user?: PublicUser) => {
+      const req = http().get(path);
+      return user ? req.set('Authorization', auth(user)) : req;
+    };
+
+    describe('G1: proposedStartAt exige zona horaria', () => {
+      it.each([
+        ['sin zona', (d: Date) => d.toISOString().slice(0, 19)],
+        ['solo la fecha', (d: Date) => d.toISOString().slice(0, 10)],
+        ['separador con espacio', (d: Date) => laPaz(d).replace('T', ' ')],
+      ])('rechaza una fecha %s (400)', async (_case, format) => {
+        const orderId = await newOrder();
+        const res = await offer(
+          worker,
+          orderId,
+          offerBody({ proposedStartAt: format(startAt()) }),
+        ).expect(400);
+        expect(JSON.stringify(res.body.message)).toContain(
+          'proposedStartAt debe incluir fecha, hora y zona horaria',
+        );
+        expect(await prisma.offer.count({ where: { orderId } })).toBe(0);
+      });
+
+      it('acepta -04:00 y Z, y ambas representan el mismo instante', async () => {
+        const at = startAt();
+        const first = await newOrder();
+        const withOffset = await offer(
+          worker,
+          first,
+          offerBody({ proposedStartAt: laPaz(at) }),
+        ).expect(201);
+        const second = await newOrder();
+        const withZ = await offer(
+          worker,
+          second,
+          offerBody({ proposedStartAt: at.toISOString() }),
+        ).expect(201);
+        expect(withOffset.body.proposedStartAt).toBe(at.toISOString());
+        expect(withZ.body.proposedStartAt).toBe(at.toISOString());
+      });
+    });
+
+    describe('G2: pedido acordado para el trabajador asignado', () => {
+      let orderId: string;
+      let otherOfferId: string;
+
+      beforeAll(async () => {
+        orderId = await newOrder();
+        const chosen = (
+          await offer(
+            worker,
+            orderId,
+            offerBody({ proposedStartAt: startAt().toISOString() }),
+          ).expect(201)
+        ).body.id;
+        otherOfferId = (
+          await offer(
+            worker2,
+            orderId,
+            offerBody({ proposedStartAt: startAt().toISOString() }),
+          ).expect(201)
+        ).body.id;
+        // Antes de aceptar, el pedido no es "asignado" para nadie.
+        await get(`/api/orders/assigned/${orderId}`, worker).expect(404);
+        await http()
+          .post(`/api/offers/${chosen}/accept`)
+          .set('Authorization', auth(client))
+          .send({})
+          .expect(200);
+      });
+
+      it('el trabajador asignado ve descripcion, fotos, direccion y nombre del cliente', async () => {
+        const res = await get(`/api/orders/assigned/${orderId}`, worker).expect(
+          200,
+        );
+
+        expect(res.body).toMatchObject({
+          id: orderId,
+          status: OrderStatus.ACORDADO,
+          category: { id: catA.id },
+          zone: { id: zoneA.id },
+          description: 'Fuga de agua debajo del lavaplatos de la cocina',
+          budgetAmount: '150.00',
+          address: { addressLine: 'Av. Siempre Viva 742', reference: null },
+          client: { firstName: 'client', lastName: 'E2E' },
+        });
+        expect(res.body.images).toHaveLength(1);
+        // Sin datos de contacto ni campos internos.
+        expect(JSON.stringify(res.body)).not.toMatch(
+          /email|phone|clientId|assignedWorkerId|passwordHash/,
+        );
+
+        const image = await get(
+          `/api/orders/assigned/${orderId}/images/${res.body.images[0].id}?variant=thumb`,
+          worker,
+        ).expect(200);
+        expect(image.headers['content-type']).toBe('image/webp');
+        expect(image.headers['cache-control']).toBe('private, no-store');
+      });
+
+      it('el cliente dueno conserva su acceso con la direccion', async () => {
+        const res = await get(`/api/orders/me/${orderId}`, client).expect(200);
+        expect(res.body).toMatchObject({
+          status: OrderStatus.ACORDADO,
+          address: { addressLine: 'Av. Siempre Viva 742' },
+        });
+      });
+
+      it('otros trabajadores reciben 404, tambien en las fotos', async () => {
+        const res = await get(`/api/orders/assigned/${orderId}`, worker).expect(
+          200,
+        );
+        const imageId = res.body.images[0].id;
+        for (const other of [worker2, workerOtherCategory, workerPending]) {
+          await get(`/api/orders/assigned/${orderId}`, other).expect(404);
+          await get(
+            `/api/orders/assigned/${orderId}/images/${imageId}`,
+            other,
+          ).expect(404);
+        }
+        // La oferta del otro trabajador quedo SIN_EFECTO y no da acceso.
+        expect(
+          (
+            await prisma.offer.findUniqueOrThrow({
+              where: { id: otherOfferId },
+            })
+          ).status,
+        ).toBe(OfferStatus.SIN_EFECTO);
+      });
+
+      it('visitantes (401) y cuentas sin rol de trabajador (403) no acceden', async () => {
+        await get(`/api/orders/assigned/${orderId}`).expect(401);
+        await get(
+          `/api/orders/assigned/${orderId}/images/${randomUUID()}`,
+        ).expect(401);
+        await get(`/api/orders/assigned/${orderId}`, client).expect(403);
+      });
+
+      it('una foto de otro pedido no se abre aunque el pedido sea del asignado', async () => {
+        const foreign = await newOrder(client2);
+        const foreignImage = (
+          await get(`/api/orders/me/${foreign}`, client2).expect(200)
+        ).body.images[0].id;
+        await get(
+          `/api/orders/assigned/${orderId}/images/${foreignImage}`,
+          worker,
+        ).expect(404);
+      });
+
+      it('las reglas de pedidos disponibles no cambian y los listados no exponen la direccion', async () => {
+        // Con acuerdo, el pedido ya no esta disponible para nadie.
+        await get(`/api/orders/available/${orderId}`, worker).expect(404);
+        const list = await get('/api/orders/available?limit=50', worker).expect(
+          200,
+        );
+        expect(JSON.stringify(list.body)).not.toMatch(/address|Siempre Viva/i);
+        const offers = await get('/api/offers/me?limit=50', worker).expect(200);
+        expect(JSON.stringify(offers.body)).not.toMatch(
+          /address|Siempre Viva/i,
+        );
+      });
+    });
+
+    describe('G4: historial sin changedById', () => {
+      it('el historial publico no expone changedById; la BD lo conserva', async () => {
+        const orderId = await newOrder();
+        const created = await offer(
+          worker,
+          orderId,
+          offerBody({ proposedStartAt: startAt().toISOString() }),
+        ).expect(201);
+        await http()
+          .post(`/api/offers/${created.body.id}/counter`)
+          .set('Authorization', auth(client))
+          .send({ amount: '100' })
+          .expect(200);
+
+        const responses = await Promise.all([
+          get(`/api/offers/me/${created.body.id}`, worker),
+          get(`/api/offers/received/${created.body.id}`, client),
+        ]);
+        for (const res of responses) {
+          expect(res.status).toBe(200);
+          expect(res.body.history).toHaveLength(2);
+          for (const event of res.body.history) {
+            expect(Object.keys(event).sort()).toEqual([
+              'actorRole',
+              'actorType',
+              'amount',
+              'createdAt',
+              'reason',
+              'round',
+              'systemProcess',
+              'type',
+            ]);
+          }
+          expect(
+            res.body.history.map(
+              (event: { actorRole: string }) => event.actorRole,
+            ),
+          ).toEqual([RoleName.TRABAJADOR, RoleName.CLIENTE]);
+        }
+        const stored = await prisma.offerEvent.findMany({
+          where: { offerId: created.body.id },
+          orderBy: { round: 'asc' },
+        });
+        expect(stored.map((event) => event.changedById)).toEqual([
+          worker.id,
+          client.id,
+        ]);
       });
     });
   });

@@ -60,14 +60,15 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 
 | RF | Estado | Contrato |
 |---|---|---|
-| RF-19 a RF-24 | 📐 / ⛔ | **No existe OffersModule ni ningún endpoint, DTO o modelo de ofertas.** |
+| RF-19 Enviar una oferta | ✅ | #69 `CreateOfferDto` → `OfferDetail<OfferView>` |
+| RF-20 Aceptar, rechazar o contraofertar | ✅ | #74 `CounterOfferDto`, #75 rechazar, #76 retirar, #77 aceptar (asigna al trabajador). Sin `SIN_ACUERDO`: sin ofertas vigentes el pedido vuelve a `PUBLICADO` |
+| RF-21 Historial de la negociación | ✅ | `history` en #71 y #73 (solo inserción). El administrador **no** tiene endpoint todavía |
+| RF-22 Condiciones claras antes de aceptar | ✅ | `OfferView`: monto, visita y su costo, materiales, horario y duración |
+| RF-23 Vigencia y máximo de rondas | ✅ | 24 h (se reinicia en cada contraoferta) y 3 rondas, **fijos en el código** (`offers.rules.ts`); el administrador no los configura. Vencimiento automático |
+| RF-24 Cotización por fotos o visita | ✅ | `requiresVisit` / `visitCost` |
+| Contacto entre las partes | ✅ | #78, #79: enlace de WhatsApp (canal externo, T6.6). No hay chat interno |
 
-Solo hay puntos de integración internos en OrdersModule:
-- `OrdersService.transition()` con las transiciones `PUBLICADO → EN_NEGOCIACION`, `EN_NEGOCIACION → ACORDADO` (asigna al trabajador) y `EN_NEGOCIACION → PUBLICADO`.
-- `OrderVisibilityService.assertOpenForOffers()`.
-- Eventos `EDITADO`, `CANCELADO` y `VENCIDO`.
-
-No son contratos HTTP. ❓ Decisión pendiente del equipo: qué pasa con las ofertas enviadas si se desactiva un catálogo o se suspende al cliente.
+Reglas y ejemplos: [`src/modules/offers/README.md`](../../src/modules/offers/README.md). Las ofertas se cierran solas al cancelarse o vencer el pedido y al suspenderse la cuenta del cliente, la del trabajador o su perfil.
 
 ## 5. Visitas, presupuestos y ejecución (RF-25 a RF-28)
 
@@ -78,8 +79,8 @@ No son contratos HTTP. ❓ Decisión pendiente del equipo: qué pasa con las ofe
 | RF | Estado | Contrato |
 |---|---|---|
 | RF-29 Días y horarios de atención | ✅ | #27 `UpdateSchedulesDto` → `WorkerProfileView.schedules` |
-| RF-30 Impedir cruces de trabajos | ⛔ | — |
-| RF-31 Duración estimada en la oferta | ⛔ | Depende de ofertas |
+| RF-30 Impedir cruces de trabajos | 🟡 | Al aceptar (#77): 409 si el horario se cruza con otro trabajo activo del trabajador. No hay agenda de reservas ni consulta de disponibilidad |
+| RF-31 Duración estimada en la oferta | ✅ | `proposedStartAt` y `estimatedDurationMinutes` en #69 |
 
 Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 
@@ -126,7 +127,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 | RF | Estado | Contrato |
 |---|---|---|
 | RF-54 Visitante solo ve información pública | 🟡 | Hoy lo único público son los catálogos (#8–#11). Todo lo demás exige sesión |
-| RF-55 Dirección exacta a quien la necesita | 🟡 ❓ | Solo la ve el cliente dueño. Para el trabajador, pendiente con el docente (no hay acuerdos todavía) |
+| RF-55 Dirección exacta a quien la necesita | ✅ | El cliente dueño (#45) y el trabajador **asignado** mientras el acuerdo sigue vigente (#80, adenda §2.2). Nadie más |
 | RF-56 Documentación solo para administradores | ✅ | Administradores: #58–#60, con bitácora y nunca sobre su propio perfil. El trabajador ve los suyos (v1.0 §5; ❓ contradicción X2 con el texto de RF-56). Ningún otro rol accede |
 | Protección de datos en pedidos | ✅ | `WorkerOrderView` excluye la dirección, el cliente y `clientId`; aviso `POSIBLE_DATO_PERSONAL` |
 | Privacidad de fotos | ✅ | Sin metadatos; rutas autorizadas; borrado físico al cancelar |

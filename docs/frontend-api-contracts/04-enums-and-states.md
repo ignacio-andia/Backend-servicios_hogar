@@ -87,8 +87,8 @@ Transiciones: `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un a
 | Valor | Qué lo produce hoy | Visible para trabajadores | Editable o cancelable por el cliente |
 |---|---|---|---|
 | `PUBLICADO` | Crear el pedido | ✔ (si no venció) | ✔ (si no venció) |
-| `EN_NEGOCIACION` | Solo la API interna (sin endpoint; la usará OffersModule) | ✔ | ✔ |
-| `ACORDADO` | Solo la API interna, con asignación de trabajador | ✘ | ✘ (409 sugiere "Cancelar trabajo", RF-34) |
+| `EN_NEGOCIACION` | La primera oferta (#69) | ✔ | ✔ |
+| `ACORDADO` | Aceptar una oferta (#77), con asignación de trabajador | ✘ | ✘ (409 sugiere "Cancelar trabajo", RF-34) |
 | `ANTICIPO_REGISTRADO`, `VISITA_REALIZADA`, `PRESUPUESTO_ADICIONAL_PENDIENTE`, `EN_EJECUCION`, `TERMINADO`, `EN_RECLAMO` | Nada (módulos futuros) | ✘ | ✘ (409, RF-34) |
 | `CERRADO`, `SIN_ACUERDO` | Nada (módulos futuros) | ✘ | ✘ |
 | `VENCIDO` | Tarea automática (cada 15 min) o estado efectivo (ver abajo) | ✘ | ✘ |
@@ -106,15 +106,44 @@ Transiciones implementadas (`ORDER_TRANSITIONS`):
 |---|---|---|---|
 | (nuevo) | `PUBLICADO` | Crear | ✅ |
 | `PUBLICADO` | `CANCELADO` | Cancelar (cliente) | ✅ |
-| `EN_NEGOCIACION` | `CANCELADO` | Cancelar (cliente) | ✅ (pero ningún pedido llega hoy a `EN_NEGOCIACION`) |
+| `EN_NEGOCIACION` | `CANCELADO` | Cancelar (cliente); sus ofertas vigentes quedan `SIN_EFECTO` | ✅ |
 | `PUBLICADO` o `EN_NEGOCIACION` | `VENCIDO` | Tarea automática (`SISTEMA`, proceso `VENCIMIENTO`), a los 7 días de la publicación | — |
-| `PUBLICADO` | `EN_NEGOCIACION` | `OrdersService.transition()` (interna) | 📐 No |
-| `EN_NEGOCIACION` | `ACORDADO` (asigna al trabajador) | `transition()` (interna) | 📐 No |
-| `EN_NEGOCIACION` | `PUBLICADO` (conserva el vencimiento original) | `transition()` (interna) | 📐 No |
+| `PUBLICADO` | `EN_NEGOCIACION` | Primera oferta (`transition()` desde OffersModule) | ✅ #69 |
+| `EN_NEGOCIACION` | `ACORDADO` (asigna al trabajador) | Aceptar una oferta | ✅ #77 |
+| `EN_NEGOCIACION` | `PUBLICADO` (conserva el vencimiento original) | Ya no quedan ofertas vigentes: rechazo (#75), retiro (#76), vencimiento de ofertas o cierre por suspensión (`SISTEMA`) | ✅ / tarea |
 
 Todo lo demás está **sin implementar**: el resto del flujo hasta `CERRADO`, `SIN_ACUERDO` y la salida desde `ACORDADO` (❓ pendientes con el docente).
 
 Todo cambio de estado queda en `order_status_history`, pero **no hay endpoint para consultarlo**.
+
+### `OfferStatus` (ofertas, T6.1)
+
+| Valor | Qué lo produce | Final |
+|---|---|---|
+| `VIGENTE` | Crear la oferta (#69); se mantiene con las contraofertas (#74) | No |
+| `ACEPTADA` | Aceptar (#77) | Sí |
+| `RECHAZADA` | Rechazar (#75) | Sí |
+| `RETIRADA` | Retirar (#76) | Sí |
+| `VENCIDA` | 24 h sin respuesta (tarea cada 5 min y al arrancar) o vencimiento del pedido | Sí |
+| `SIN_EFECTO` | Se aceptó otra oferta, se canceló el pedido o se suspendió la cuenta del cliente, la cuenta del trabajador o su perfil | Sí |
+
+Una `VIGENTE` con `expiresAt` cumplido se devuelve `VENCIDA` (estado efectivo) y no admite operaciones. Una oferta cerrada no se reabre. Tras `RECHAZADA`, `RETIRADA`, `ACEPTADA` o `SIN_EFECTO` el trabajador no puede volver a ofertar en ese pedido; tras `VENCIDA`, sí.
+
+### `OfferParty`
+
+`CLIENTE` o `TRABAJADOR` (`OfferView.turn`): quién debe responder. La propuesta deja el turno al cliente y cada contraoferta lo pasa a la otra parte. Máximo 3 rondas.
+
+### `OfferEventType` (historial de negociación, RF-21)
+
+`PROPUESTA` (ronda 1, con monto), `CONTRAOFERTA` (rondas 2 y 3, con monto), `ACEPTADA`, `RECHAZADA`, `RETIRADA`, `VENCIDA`, `SIN_EFECTO` (cierres, sin monto). Solo inserción: no se modifica ni se borra.
+
+Motivos de los cierres del sistema (`OfferEventView.systemProcess` / `reason`):
+
+| `systemProcess` | `reason` | Cuándo |
+|---|---|---|
+| `VENCIMIENTO_OFERTA` | `null` | Pasaron 24 h sin respuesta |
+| `ACEPTACION_OFERTA` | `"El cliente aceptó otra oferta para este pedido."` | Se aceptó otra oferta del pedido |
+| `CIERRE_OFERTAS` | `PEDIDO_CANCELADO`, `PEDIDO_VENCIDO`, `CLIENTE_SUSPENDIDO`, `TRABAJADOR_SUSPENDIDO`, `PERFIL_SUSPENDIDO` | Cambios externos (T6.5.2) |
 
 ### `OrderActorType`
 
@@ -161,11 +190,13 @@ Cada notificación se crea **en la misma transacción** que el evento: si falla,
 | `decision` (entrada) | `APROBADA`, `RECHAZADA` | `DecideZoneChangeRequestDto` |
 | `OrderWarning.code` | `POSIBLE_DUPLICADO`, `POSIBLE_DATO_PERSONAL` | Respuestas de pedidos |
 | `variant` (query) | `full`, `thumb` | Descarga de fotos |
+| `WhatsAppContact.channel` | `WHATSAPP` | #78, #79 |
+| `WhatsAppContact.contactRole` | `CLIENTE`, `TRABAJADOR` | #78, #79 |
+| `WhatsAppContact.reason` | `TELEFONO_NO_REGISTRADO`, `TELEFONO_INVALIDO` | #78, #79 (solo con `available: false`) |
 
 ## Estados que **no existen** en el backend
 
 No hay ningún enum, tabla ni endpoint para:
-- Estados de **ofertas** o de negociación (OffersModule no está implementado).
 - Estados de **agenda** (visitas y ejecuciones).
 - Estados de **reclamos**.
 - Estados de **pagos**, anticipos o constancias.

@@ -44,8 +44,16 @@ Cada modelo se obtuvo de lo que **construye el service** (selects explícitos, f
 | #46, #54 fotos | Binario `image/webp` |
 | #52 pedidos disponibles | `Paginated<WorkerOrderView>` |
 | #53 pedido disponible | `WorkerOrderView` |
+| #80 pedido asignado | `AssignedOrderView` |
+| #81 foto del pedido asignado | Binario `image/webp` |
 | #67 pedidos (admin) | `Paginated<AdminOrderSummary>` |
 | #68 detalle de un pedido (admin) | `AdminOrderView` |
+| #69 crear oferta, #71 detalle propio, #76 retirar | `OfferDetail<OfferView>` |
+| #70 ofertas propias | `Paginated<OfferView>` |
+| #72 ofertas recibidas | `Paginated<ReceivedOfferView>` |
+| #73 detalle recibido, #75 rechazar, #77 aceptar | `OfferDetail<ReceivedOfferView>` |
+| #74 contraofertar | `OfferDetail<ReceivedOfferView>` si responde el cliente; `OfferDetail<OfferView>` si responde el trabajador |
+| #78, #79 contacto | `WhatsAppContact` |
 | #61 notificaciones | `Paginated<NotificationView>` |
 | #62 no leídas | `{ unread: number }` |
 | #63 marcar como leída | `NotificationView` |
@@ -465,6 +473,17 @@ Excluidos para el trabajador:
 
 Tampoco expone `clientId` ni `assignedWorkerId`. Un pedido vencido o cancelado sin acuerdo se devuelve con `images: []`, `address: null` y la descripción fija (T5.4).
 
+### `AssignedOrderView` (#80; extiende `WorkerOrderView`)
+
+Para el trabajador **asignado** mientras el acuerdo sigue vigente (G2, T6.7).
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `address` | `{ addressLine: string, reference: string \| null }` | **sí** | Dirección exacta (adenda §2.2) |
+| `client` | `{ firstName: string, lastName: string }` | no | Sin correo ni teléfono (el contacto es por WhatsApp, #79) |
+
+No incluye `clientId`, `assignedWorkerId` ni datos de la oferta (están en #71).
+
 ### `AdminOrderSummary` (#67) y `AdminOrderView` (#68)
 
 Registro mínimo para administradores (T5.4). **Nunca** incluye la dirección, las fotos ni la descripción.
@@ -529,6 +548,67 @@ Al editar (#47) los avisos solo se calculan si cambió la descripción; si no, `
 ```json
 { "warnings": [{ "code": "POSIBLE_DUPLICADO", "message": "Ya tiene un pedido activo muy parecido…", "orderIds": ["e5f6a7b8-c9d0-4e1f-8a2b-3c4d5e6f7a8b"] }] }
 ```
+
+---
+
+## Ofertas
+
+### `OfferView` (#70, y base de los demás)
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `id`, `orderId` | string | no | |
+| `status` | `OfferStatus` | no | **Estado efectivo**: una `VIGENTE` con `expiresAt` cumplido se devuelve `VENCIDA` |
+| `round` | number | no | 1 (propuesta), 2 o 3 (contraofertas) |
+| `amount` | string | no | Monto vigente, 2 decimales |
+| `turn` | `OfferParty` | no | Quién debe responder |
+| `requiresVisit` | boolean | no | |
+| `visitCost` | string | **sí** | `null` sin visita; `"0.00"` visita gratis |
+| `materialsIncluded` | boolean | no | |
+| `proposedStartAt` | string | no | Inicio propuesto (UTC) |
+| `estimatedDurationMinutes` | number | no | |
+| `expiresAt` | string | no | Vigencia: 24 h desde la última propuesta o contraoferta |
+| `closedAt` | string | **sí** | `null` mientras está `VIGENTE` |
+| `createdAt`, `updatedAt` | string | no | |
+
+No incluye el id del trabajador, datos del cliente, la dirección, fotos ni teléfonos.
+
+### `ReceivedOfferView` (#72; extiende `OfferView`)
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `worker` | `{ id: string, firstName: string, lastName: string }` | no | Sin correo ni teléfono |
+
+### `OfferDetail<T>` (`T` más `history`)
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `history` | `OfferEventView[]` | no | RF-21: del más antiguo al más reciente; nunca se modifica |
+
+### `OfferEventView`
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `type` | `OfferEventType` | no | |
+| `round` | number | no | |
+| `amount` | string | **sí** | Solo en `PROPUESTA` y `CONTRAOFERTA` |
+| `actorType` | `OrderActorType` | no | `USUARIO` o `SISTEMA`. El id del usuario **no** se expone (G4): el autor se identifica por `actorRole`; la BD lo conserva para auditoría |
+| `actorRole` | `RoleName` | **sí** | `CLIENTE` o `TRABAJADOR`; `null` si fue el sistema |
+| `systemProcess` | string | **sí** | `VENCIMIENTO_OFERTA`, `ACEPTACION_OFERTA` o `CIERRE_OFERTAS` |
+| `reason` | string | **sí** | Motivo de los cierres del sistema (ver 04) |
+| `createdAt` | string | no | |
+
+### `WhatsAppContact` (#78, #79)
+
+| Propiedad | Tipo | Nullable | Notas |
+|---|---|---|---|
+| `available` | boolean | no | `false`: ocultar o deshabilitar el botón |
+| `channel` | `"WHATSAPP"` | no | |
+| `contactRole` | `"CLIENTE"` o `"TRABAJADOR"` | no | A quién se contacta |
+| `url` | string | **sí** | `https://wa.me/<dígitos>?text=<mensaje codificado>`; `null` si `available: false` |
+| `reason` | `"TELEFONO_NO_REGISTRADO"` o `"TELEFONO_INVALIDO"` | — | **Solo** cuando `available: false` |
+
+El teléfono nunca viene por separado. Abrir el enlace no envía ni registra nada (ver [`src/modules/offers/README.md`](../../src/modules/offers/README.md)).
 
 ---
 

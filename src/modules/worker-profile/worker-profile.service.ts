@@ -31,6 +31,7 @@ import { UpdateSchedulesDto } from './dto/update-schedules.dto.js';
 import { UpdateSpecialtiesDto } from './dto/update-specialties.dto.js';
 import { UpdateWorkerProfileDto } from './dto/update-worker-profile.dto.js';
 import { WorkerActiveWorkRegistry } from './active-work.registry.js';
+import { WorkerProfileStatusRegistry } from './profile-status.registry.js';
 import {
   isWithinSchedules,
   normalizeSchedules,
@@ -274,6 +275,7 @@ export class WorkerProfileService {
     private readonly activeWork: WorkerActiveWorkRegistry,
     private readonly notifications: NotificationsService,
     private readonly zoneRequests: ZoneChangeRequestsService,
+    private readonly profileStatus: WorkerProfileStatusRegistry,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -842,6 +844,12 @@ export class WorkerProfileService {
         await this.zoneRequests.cancelPendingOnSuspension(tx, adminId, {
           id: profileId,
           userId: profile.userId,
+        });
+        // T6.5.2: efectos de otros modulos (ofertas), en esta transaccion.
+        await this.profileStatus.runSuspended(tx, {
+          profileId,
+          userId: profile.userId,
+          actorId: adminId,
         });
       }
     });

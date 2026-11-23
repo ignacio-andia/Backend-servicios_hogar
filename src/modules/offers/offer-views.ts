@@ -41,7 +41,8 @@ export const OFFER_EVENT_SELECT = {
   round: true,
   amount: true,
   actorType: true,
-  changedById: true,
+  // G4 (T6.7): changedById no se expone (Angular identifica al autor por
+  // actorRole); la BD lo conserva para auditoria.
   actorRole: true,
   systemProcess: true,
   reason: true,
@@ -85,7 +86,6 @@ export interface OfferEventView {
   round: number;
   amount: string | null;
   actorType: OrderActorType;
-  changedById: string | null;
   actorRole: RoleName | null;
   systemProcess: string | null;
   reason: string | null;

@@ -66,6 +66,16 @@ export const OFFER_VISIT_COST_MESSAGE =
  */
 export const OFFER_MAX_DURATION_MINUTES = 2_147_483_647;
 
+/**
+ * G1 (T6.7): fecha y hora con zona horaria explicita ("Z" o +-hh:mm). Sin
+ * zona, JavaScript interpreta la hora con el reloj del servidor (o una fecha
+ * sola como medianoche UTC): se rechaza con 400.
+ */
+export const OFFER_DATETIME_WITH_ZONE_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/;
+export const OFFER_DATETIME_WITH_ZONE_MESSAGE =
+  'proposedStartAt debe incluir fecha, hora y zona horaria, por ejemplo 2026-11-30T10:00:00-04:00 o 2026-11-30T14:00:00Z';
+
 /** Proceso del sistema que registra el vencimiento de una oferta. */
 export const OFFER_EXPIRATION_PROCESS = 'VENCIMIENTO_OFERTA';
 
@@ -87,3 +97,19 @@ export const OFFER_REOFFER_BLOCKING_STATUSES: readonly OfferStatus[] = [
 export const OFFER_ACCEPTANCE_PROCESS = 'ACEPTACION_OFERTA';
 export const OFFER_SUPERSEDED_REASON =
   'El cliente aceptó otra oferta para este pedido.';
+
+/**
+ * T6.5.2: cierres por cambios externos (pedido cancelado o vencido, cuenta o
+ * perfil suspendidos). Proceso del sistema y motivos identificables que se
+ * guardan en el evento (OfferEvent.reason).
+ */
+export const OFFER_CLOSURE_PROCESS = 'CIERRE_OFERTAS';
+export const OfferClosureReason = {
+  PEDIDO_CANCELADO: 'PEDIDO_CANCELADO',
+  PEDIDO_VENCIDO: 'PEDIDO_VENCIDO',
+  CLIENTE_SUSPENDIDO: 'CLIENTE_SUSPENDIDO',
+  TRABAJADOR_SUSPENDIDO: 'TRABAJADOR_SUSPENDIDO',
+  PERFIL_SUSPENDIDO: 'PERFIL_SUSPENDIDO',
+} as const;
+export type OfferClosureReason =
+  (typeof OfferClosureReason)[keyof typeof OfferClosureReason];

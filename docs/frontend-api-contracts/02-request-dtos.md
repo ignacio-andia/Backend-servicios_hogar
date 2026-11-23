@@ -372,6 +372,43 @@ Ejemplos inválidos de `budgetAmount`: `"0"`, `"0.00"`, `"-5"`, `"150,50"`, `"1.
 
 ---
 
+## OffersModule
+
+### `CreateOfferDto`: `POST /api/offers/orders/:orderId` (JSON)
+
+| Propiedad | Tipo | Omitir / null | Restricciones |
+|---|---|---|---|
+| `amount` | string (o number) | Obligatorio | Mayor que 0, hasta 8 dígitos enteros y 2 decimales |
+| `requiresVisit` | boolean | Obligatorio | RF-24: `true` = "Requiere visita"; `false` = "Cotización por fotos" |
+| `visitCost` | string (o number) | **Obligatorio** si `requiresVisit`; **prohibido** si no (400) | 0 o mayor (`"0"` = visita gratis), hasta 8 dígitos enteros y 2 decimales |
+| `materialsIncluded` | boolean | Obligatorio | |
+| `proposedStartAt` | string | Obligatorio | ISO 8601 con fecha, hora y **zona horaria explícita** (`Z` o `±hh:mm`), y **futuro** (reloj de la BD). Válidos: `2026-11-30T10:00:00-04:00`, `2026-11-30T14:00:00Z`, `2026-11-30T14:00:00.000Z`. Inválidos (400): `2026-11-30T10:00:00`, `2026-11-30`. El horario de atención **no** lo limita |
+| `estimatedDurationMinutes` | number | Obligatorio | Entero de 1 a 2147483647 (límite de la columna, no una regla de negocio) |
+
+### `CounterOfferDto`: `POST /api/offers/:offerId/counter` (JSON)
+
+| Propiedad | Tipo | Omitir / null | Restricciones |
+|---|---|---|---|
+| `amount` | string (o number) | Obligatorio | Mismo formato que en `CreateOfferDto`. **Ningún otro campo** (400): las demás condiciones no se negocian |
+
+### `ListOffersQueryDto`: `GET /api/offers/me` (query)
+
+| Propiedad | Tipo | Omitir | Restricciones |
+|---|---|---|---|
+| `status` | `OfferStatus` | Omitible | Se filtra por **estado efectivo** (una `VIGENTE` vencida cuenta como `VENCIDA`) |
+| `page` | number | Omitible (1) | ≥ 1 |
+| `limit` | number | Omitible (20) | 1 a 50 |
+
+### `ListReceivedOffersQueryDto`: `GET /api/offers/received` (query)
+
+Igual que `ListOffersQueryDto`, más:
+
+| Propiedad | Tipo | Omitir | Restricciones |
+|---|---|---|---|
+| `orderId` | string | Omitible | UUID de un pedido **propio** (si no, 404) |
+
+`POST /api/offers/:offerId/reject`, `/withdraw` y `/accept` no tienen cuerpo: lo que se envíe se ignora.
+
 ## NotificationsModule
 
 ### `ListNotificationsQueryDto`: `GET /api/notifications` (query)

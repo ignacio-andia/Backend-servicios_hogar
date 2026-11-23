@@ -12,6 +12,8 @@ import {
 import {
   OFFER_AMOUNT_MESSAGE,
   OFFER_AMOUNT_PATTERN,
+  OFFER_DATETIME_WITH_ZONE_MESSAGE,
+  OFFER_DATETIME_WITH_ZONE_PATTERN,
   OFFER_MAX_DURATION_MINUTES,
   OFFER_VISIT_COST_MESSAGE,
   OFFER_VISIT_COST_PATTERN,
@@ -47,8 +49,14 @@ export class CreateOfferDto {
   @IsBoolean()
   materialsIncluded: boolean;
 
-  /** RF-31: fecha y hora de inicio propuestas (ISO 8601, con zona horaria). */
+  /**
+   * RF-31: fecha y hora de inicio propuestas, ISO 8601 con zona horaria
+   * explicita (G1): "2026-11-30T10:00:00-04:00" o "2026-11-30T14:00:00Z".
+   */
   @IsISO8601({ strict: true, strictSeparator: true })
+  @Matches(OFFER_DATETIME_WITH_ZONE_PATTERN, {
+    message: OFFER_DATETIME_WITH_ZONE_MESSAGE,
+  })
   proposedStartAt: string;
 
   @IsInt()

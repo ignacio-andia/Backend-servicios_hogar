@@ -104,6 +104,7 @@ describe('OffersService (T6.2)', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
   });
 

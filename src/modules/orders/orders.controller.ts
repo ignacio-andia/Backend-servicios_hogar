@@ -41,6 +41,7 @@ import type { ImageDownload } from './images/order-images.service.js';
 import { OrderImageTooLargeFilter } from './order-image-too-large.filter.js';
 import type {
   AdminOrderSummary,
+  AssignedOrderView,
   AdminOrderView,
   OrderWarning,
   OrderWithWarnings,
@@ -199,6 +200,33 @@ export class OrdersController {
     @Param('orderId', ParseUUIDPipe) orderId: string,
   ): Promise<AdminOrderView> {
     return this.orders.getForAdmin(orderId);
+  }
+
+  // G2 (T6.7): el trabajador asignado consulta el pedido con acuerdo, con la
+  // direccion exacta. Sin ApprovedWorkerGuard: la regla es ser el asignado y
+  // que el acuerdo siga vigente. Otro trabajador recibe 404.
+  @Auth(RoleName.TRABAJADOR)
+  @Get('assigned/:orderId')
+  getAssigned(
+    @CurrentUser() user: PublicUser,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ): Promise<AssignedOrderView> {
+    return this.orders.getAssigned(user.id, orderId);
+  }
+
+  @Auth(RoleName.TRABAJADOR)
+  @Get('assigned/:orderId/images/:imageId')
+  @Header('Cache-Control', 'private, no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async downloadAssignedImage(
+    @CurrentUser() user: PublicUser,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Param('imageId', ParseUUIDPipe) imageId: string,
+    @Query() { variant }: ImageVariantQueryDto,
+  ): Promise<StreamableFile> {
+    return toStreamable(
+      await this.orders.openAssignedImage(user.id, orderId, imageId, variant),
+    );
   }
 
   // RF-17: pedidos visibles para un trabajador aprobado (sin direccion ni

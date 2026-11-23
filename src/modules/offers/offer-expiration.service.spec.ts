@@ -151,6 +151,7 @@ describe('OffersService.expireOffersOfOrder (T6.5.1)', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
   });
 

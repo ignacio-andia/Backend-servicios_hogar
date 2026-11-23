@@ -173,6 +173,7 @@ describe('OffersService.counter (T6.3)', () => {
       users as unknown as UsersService,
       workerProfiles as unknown as WorkerProfileService,
       catalogs as unknown as CatalogsService,
+      {} as never,
     );
   });
 

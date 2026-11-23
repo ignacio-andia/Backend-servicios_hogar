@@ -3,7 +3,7 @@
 Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí no existe: ver [09](09-gaps-and-pending-contracts.md).
 
 - Base: `http://localhost:3000/api`. Todas las rutas siguientes incluyen el prefijo `/api`.
-- Total: **68 endpoints**.
+- Total: **81 endpoints**.
 
 | Módulo | Endpoints |
 |---|---|
@@ -12,7 +12,8 @@ Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí 
 | CatalogsModule | 14 |
 | AuditModule | 1 |
 | WorkerProfileModule | 27 |
-| OrdersModule | 15 |
+| OrdersModule | 17 |
+| OffersModule | 11 |
 | NotificationsModule | 4 |
 
 ## Códigos comunes (no se repiten en cada fila)
@@ -144,6 +145,8 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 | 52 | GET | `/api/orders/available` | ✅ | Trab. aprobado | Query: `categoryId?`, `page?`, `limit?` (≤ 50) | `ListAvailableOrdersQueryDto` | `Paginated<WorkerOrderView>` | 200, 400, 401, 403 | 403 con el motivo de no elegibilidad (por ejemplo `"Su perfil de trabajador está pendiente de revisión."`) |
 | 53 | GET | `/api/orders/available/:orderId` | ✅ | Trab. aprobado; pedido visible (ver 05) | `orderId` | — | `WorkerOrderView` | 200, 400, 401, 403, 404 | 404 si no le corresponde verlo |
 | 54 | GET | `/api/orders/available/:orderId/images/:imageId` | ✅ | Igual que #53 | `orderId`, `imageId`; Query: `variant?` | `ImageVariantQueryDto` | Binario `image/webp` | 200, 400, 401, 403, 404 | 404 |
+| 80 | GET | `/api/orders/assigned/:orderId` | ✅ | `TRABAJADOR` **asignado** al pedido, con acuerdo vigente (`ACORDADO` a `EN_RECLAMO`) | `orderId` (UUID) | — | `AssignedOrderView` (con la **dirección exacta** y el nombre del cliente) | 200, 400, 401, 403, 404 | 404 `"El pedido no existe"` si no es el asignado, todavía no hay acuerdo o el pedido ya se cerró o canceló. No exige `ApprovedWorkerGuard` (G2, T6.7) |
+| 81 | GET | `/api/orders/assigned/:orderId/images/:imageId` | ✅ | Igual que #80 | `orderId`, `imageId`; Query: `variant?` | `ImageVariantQueryDto` | Binario `image/webp` | 200, 400, 401, 403, 404 | 404 si no es el asignado o la foto no es de ese pedido |
 
 > **Nota (#42–#51, T5.1): vencimiento.** Todo pedido vence a los **7 días calendario** desde su publicación original (`expiresAt = publishedAt + 7 días`, reloj de la BD). Ese plazo no se reinicia nunca: ni al editar, ni al cambiar de estado, ni al volver a `PUBLICADO` después de una negociación fallida, y no depende de las ofertas. También vence en `EN_NEGOCIACION`. Pasado `expiresAt`, todas las respuestas lo muestran `VENCIDO` y ya no se edita, cancela, oferta ni cambia de estado (409), aunque la tarea automática todavía no lo haya registrado.
 >
@@ -154,7 +157,25 @@ No existe reactivación ni borrado de catálogos. Crear, editar y desactivar que
 
 > **Nota (#44–#45, #51, #67–#68, T5.4): pedidos cerrados.** al vencer o al cancelarlo el cliente, el pedido se **limpia** (T5.4): se borran sus fotos (de la BD y del disco, por la cola de borrado con reintentos) y su dirección exacta, y la descripción se reemplaza por `"Descripción no disponible por cierre del pedido."`; `anonymizedAt` indica cuándo. Se conservan categoría, zona, presupuesto, fechas, estado e historial (nunca se borra). **Nunca** se limpia un pedido que alguna vez tuvo un acuerdo (trabajador asignado o `ACORDADO` o posterior en su historial). Los pedidos cerrados antes de T5.4 se limpian con la misma rutina en cada pasada de la tarea automática. El dueño sigue viendo el registro (#44–#45) con `address: null`, `images: []` y la descripción fija; sus fotos responden 404.
 >
-> **No existen** endpoints de ofertas, asignación de trabajador ni "Cancelar trabajo".
+> Las ofertas, la negociación y la asignación del trabajador están en OffersModule (#69–#79). **No existe** "Cancelar trabajo" (RF-34).
+
+## OffersModule (`/api/offers`)
+
+Reglas completas, estados y ejemplos: [`src/modules/offers/README.md`](../../src/modules/offers/README.md). "Oferta abierta" = `VIGENTE` y con `expiresAt` sin cumplir (reloj de la BD). Un pedido "negociable" está `PUBLICADO` o `EN_NEGOCIACION` y sin vencer.
+
+| # | Método | Ruta | Estado | Acceso | Params / Query | Entrada | Respuesta | Códigos | Errores de negocio |
+|---|---|---|---|---|---|---|---|---|---|
+| 69 | POST | `/api/offers/orders/:orderId` | ✅ | Trab. aprobado (`ApprovedWorkerGuard`); pedido **visible** para él (zona, especialidad de la categoría **actual**, catálogos activos, cliente activo, negociable, no propio) | `orderId` (UUID) | `CreateOfferDto` (JSON) | `OfferDetail<OfferView>` | **201**, 400, 401, 403, 404, 409 | 400 datos inválidos, `"proposedStartAt debe incluir fecha, hora y zona horaria, por ejemplo 2026-11-30T10:00:00-04:00 o 2026-11-30T14:00:00Z"` (fecha sin zona horaria, G1), `"visitCost es obligatorio cuando la oferta requiere visita (use \"0\" si es gratis)"`, `"visitCost solo se indica cuando la oferta requiere visita"`, `"proposedStartAt debe ser una fecha y hora futura"`; 403 perfil no aprobado (mensaje de elegibilidad); 404 `"El pedido no existe"` (no visible, propio, cancelado, vencido o acordado); 409 `"Ya tiene una oferta vigente para este pedido."`, `"Retiró su oferta para este pedido: no puede volver a ofertar."`, `"Su oferta para este pedido fue rechazada: no puede volver a ofertar."`, `"Su oferta para este pedido ya fue aceptada."`, `"Su oferta para este pedido quedó sin efecto: no puede volver a ofertar."`, o cambio de zona pendiente. La primera oferta pasa el pedido a `EN_NEGOCIACION` |
+| 70 | GET | `/api/offers/me` | ✅ | `TRABAJADOR` (cualquier estado del perfil); solo las propias | Query: `status?` (estado efectivo), `page?`, `limit?` (≤ 50) | `ListOffersQueryDto` | `Paginated<OfferView>` | 200, 400, 401, 403 | Orden: más reciente primero |
+| 71 | GET | `/api/offers/me/:offerId` | ✅ | `TRABAJADOR`; oferta **propia** | `offerId` (UUID) | — | `OfferDetail<OfferView>` | 200, 400, 401, 403, 404 | 404 `"Oferta no encontrada"` si es ajena |
+| 72 | GET | `/api/offers/received` | ✅ | `CLIENTE`; ofertas de **sus** pedidos | Query: `orderId?` (UUID), `status?`, `page?`, `limit?` (≤ 50) | `ListReceivedOffersQueryDto` | `Paginated<ReceivedOfferView>` | 200, 400, 401, 403, 404 | 404 `"El pedido no existe"` si `orderId` es de otro cliente |
+| 73 | GET | `/api/offers/received/:offerId` | ✅ | `CLIENTE`; oferta de un pedido **propio** | `offerId` | — | `OfferDetail<ReceivedOfferView>` | 200, 400, 401, 403, 404 | 404 `"Oferta no encontrada"` |
+| 74 | POST | `/api/offers/:offerId/counter` | ✅ | `CLIENTE` dueño del pedido o `TRABAJADOR` de la oferta, **en su turno** | `offerId` | `CounterOfferDto` (JSON, solo `amount`) | `OfferDetail<OfferView>` (el cliente recibe `ReceivedOfferView`) | **200**, 400, 401, 403, 404, 409 | 403 trabajador ya no aprobado; 404 si no participa; 409 `"Ahora le toca responder al cliente."` / `"…al trabajador."`, `"Se alcanzó el máximo de 3 rondas: la oferta ya no admite contraofertas."`, `"La oferta venció y no admite contraofertas."`, `"La oferta está cerrada (X) y no admite contraofertas."`, `"El pedido ya no admite negociación (estado X)."`, `"La zona del pedido no está activa: por ahora no se puede negociar."` (o la categoría), `"La cuenta del cliente no está activa: la oferta ya no es válida."`, cambio de zona pendiente, `"La oferta cambió mientras se procesaba la contraoferta. Vuelva a consultarla."` |
+| 75 | POST | `/api/offers/:offerId/reject` | ✅ | `CLIENTE` dueño del pedido, **en su turno** | `offerId` | — (sin cuerpo) | `OfferDetail<ReceivedOfferView>` (`RECHAZADA`) | **200**, 401, 403, 404, 409 | 403 `"Solo el cliente del pedido puede rechazar la oferta."` (el trabajador de la oferta); 404; 409 `"Ahora le toca responder al trabajador: no puede rechazar la oferta todavía."`, `"La oferta venció: no se puede rechazar."`, `"La oferta ya está cerrada (X): no se puede rechazar."`, pedido no negociable, `"La oferta ya fue cerrada."`. Sin ofertas vigentes, el pedido vuelve a `PUBLICADO` |
+| 76 | POST | `/api/offers/:offerId/withdraw` | ✅ | `TRABAJADOR` de la oferta, en **cualquier** turno | `offerId` | — (sin cuerpo) | `OfferDetail<OfferView>` (`RETIRADA`) | **200**, 401, 403, 404, 409 | 403 `"Solo el trabajador que la envió puede retirar la oferta."` (si quien llama es el cliente del pedido); 404; 409 vencida, cerrada, pedido no negociable o `"La oferta ya fue cerrada."`. No puede volver a ofertar. Sin ofertas vigentes, el pedido vuelve a `PUBLICADO` |
+| 77 | POST | `/api/offers/:offerId/accept` | ✅ | `CLIENTE` dueño del pedido, **en su turno** | `offerId` | — (sin cuerpo) | `OfferDetail<ReceivedOfferView>` (`ACEPTADA`) | **200**, 401, 403, 404, 409 | 403 `"Solo el cliente del pedido puede aceptar la oferta."` o trabajador no aprobado (suspendido); 404; 409 turno, vencida, cerrada, `"El pedido ya no admite aceptar ofertas (estado X)."`, `"El pedido ya tiene un trabajador asignado."`, catálogo inactivo, cliente no activo, cambio de zona pendiente, `"El trabajador ya tiene un trabajo acordado en ese horario (pedido …)."` (RF-30), `"El pedido o la oferta cambiaron mientras se aceptaba. Vuelva a consultarlos."`. El pedido pasa a `ACORDADO` con el trabajador asignado; las demás ofertas vigentes, a `SIN_EFECTO`. **No** exige la especialidad de la categoría actual |
+| 78 | GET | `/api/offers/received/:offerId/whatsapp` | ✅ | `CLIENTE`; oferta de un pedido **propio** (cualquier estado) | `offerId` | — | `WhatsAppContact` (del trabajador) | 200, 400, 401, 403, 404 | 404 `"Oferta no encontrada"`. Sin teléfono válido: **200** con `available: false`. No cambia la oferta (T6.6) |
+| 79 | GET | `/api/offers/me/:offerId/whatsapp` | ✅ | `TRABAJADOR`; oferta **propia** (cualquier estado) | `offerId` | — | `WhatsAppContact` (del cliente) | 200, 400, 401, 403, 404 | Igual que #78 |
 
 ## NotificationsModule (`/api/notifications`)
 

@@ -11,7 +11,7 @@
   - `prop?: T`: se puede omitir, pero no enviar `null`.
   - `prop?: T | null`: se puede omitir o enviar `null`.
 - **`null` en la respuesta:** `prop: T | null`. Las propiedades de respuesta **siempre** están presentes; ninguna es opcional, salvo `OrderWarning.orderIds`.
-- Los tipos que **no existen** en el backend (ofertas, pagos, agenda, reclamos, calificaciones) **no** se incluyen.
+- Los tipos que **no existen** en el backend (pagos, agenda, reclamos, calificaciones) **no** se incluyen.
 
 ```ts
 // =====================================================================
@@ -507,6 +507,81 @@ export interface OrderWithWarnings {
 export interface DuplicateCheckResponse {
   warnings: OrderWarning[];
 }
+
+// Pedido acordado para el trabajador asignado (#80, G2).
+export interface AssignedOrder extends WorkerOrder {
+  address: { addressLine: string; reference: string | null } | null;
+  client: { firstName: string; lastName: string };
+}
+
+// ---------------------------------------------------------------- Ofertas
+export const OFFER_STATUSES = ['VIGENTE', 'ACEPTADA', 'RECHAZADA', 'RETIRADA', 'VENCIDA', 'SIN_EFECTO'] as const;
+export type OfferStatus = (typeof OFFER_STATUSES)[number];
+export type OfferParty = 'CLIENTE' | 'TRABAJADOR';
+export type OfferEventType =
+  | 'PROPUESTA' | 'CONTRAOFERTA' | 'ACEPTADA' | 'RECHAZADA' | 'RETIRADA' | 'VENCIDA' | 'SIN_EFECTO';
+
+export interface CreateOfferRequest {
+  amount: string;
+  requiresVisit: boolean;
+  visitCost?: string; // obligatorio si requiresVisit; prohibido si no
+  materialsIncluded: boolean;
+  proposedStartAt: string; // ISO 8601 con zona horaria (ej. '2026-11-30T10:00:00-04:00')
+  estimatedDurationMinutes: number;
+}
+export interface CounterOfferRequest {
+  amount: string;
+}
+export interface ListOffersQuery {
+  status?: OfferStatus;
+  page?: number;
+  limit?: number;
+}
+export interface ListReceivedOffersQuery extends ListOffersQuery {
+  orderId?: string;
+}
+
+export interface Offer {
+  id: string;
+  orderId: string;
+  status: OfferStatus; // estado efectivo
+  round: number;
+  amount: string;
+  turn: OfferParty;
+  requiresVisit: boolean;
+  visitCost: string | null;
+  materialsIncluded: boolean;
+  proposedStartAt: string;
+  estimatedDurationMinutes: number;
+  expiresAt: string;
+  closedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface ReceivedOffer extends Offer {
+  worker: { id: string; firstName: string; lastName: string };
+}
+export interface OfferEvent {
+  type: OfferEventType;
+  round: number;
+  amount: string | null;
+  actorType: 'USUARIO' | 'SISTEMA';
+  actorRole: RoleName | null; // sin id de usuario (G4)
+  systemProcess: string | null;
+  reason: string | null;
+  createdAt: string;
+}
+export type OfferDetail<T extends Offer = Offer> = T & { history: OfferEvent[] };
+
+export type WhatsAppContact =
+  | { available: true; channel: 'WHATSAPP'; contactRole: OfferParty; url: string }
+  | {
+      available: false;
+      channel: 'WHATSAPP';
+      contactRole: OfferParty;
+      url: null;
+      reason: 'TELEFONO_NO_REGISTRADO' | 'TELEFONO_INVALIDO';
+    };
 ```
 
 ## Tabla de correspondencia (backend → Angular)
@@ -524,9 +599,14 @@ export interface DuplicateCheckResponse {
 | `WorkerDocumentView` | `WorkerDocument` |
 | `ZoneStatusView`, `ZoneChangeRequestView`, `AdminZoneChangeRequestView` | `ZoneStatus`, `ZoneChangeRequest`, `AdminZoneChangeRequest` |
 | `WorkerOrderView`, `OwnerOrderView`, `OrderImageView` | `WorkerOrder`, `OwnerOrder`, `OrderImage` |
+| `AssignedOrderView` | `AssignedOrder` |
 | `NotificationView` | `AppNotification` (evita el `Notification` global del navegador) |
-| `PaginatedOrders<T>`, `PaginatedUsers`, `PaginatedAuditLogs`, `PaginatedZoneChangeRequests`, `PaginatedNotifications` | `PaginatedResponse<T>` (misma forma) |
+| `CreateOfferDto`, `CounterOfferDto` | `CreateOfferRequest`, `CounterOfferRequest` |
+| `ListOffersQueryDto`, `ListReceivedOffersQueryDto` | `ListOffersQuery`, `ListReceivedOffersQuery` |
+| `OfferView`, `ReceivedOfferView`, `OfferEventView`, `OfferDetail<T>` | `Offer`, `ReceivedOffer`, `OfferEvent`, `OfferDetail<T>` |
+| `WhatsAppContact` | Mismo nombre |
+| `PaginatedOrders<T>`, `PaginatedOffers<T>`, `PaginatedUsers`, `PaginatedAuditLogs`, `PaginatedZoneChangeRequests`, `PaginatedNotifications` | `PaginatedResponse<T>` (misma forma) |
 
 ## Tipos que no deben crearse todavía
 
-`Offer`, `Negotiation`, `Visit`, `AdditionalBudget`, `Schedule` de agenda (no confundir con el horario de atención), `Claim`, `Payment`, `Receipt`, `Rating`, `PublicWorkerProfile`, `OrderTimeline`/historial de pedido, `AdminOrder`. **No tienen contrato** (ver 09).
+`Negotiation` (la negociación vive en `Offer` y su `history`), `Visit`, `AdditionalBudget`, `Schedule` de agenda (no confundir con el horario de atención), `Claim`, `Payment`, `Receipt`, `Rating`, `PublicWorkerProfile`, `OrderTimeline`/historial de pedido, `AdminOrder`. **No tienen contrato** (ver 09).

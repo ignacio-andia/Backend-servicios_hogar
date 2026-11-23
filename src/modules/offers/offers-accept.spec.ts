@@ -176,6 +176,7 @@ describe('OffersService.accept (T6.4.2)', () => {
       users as unknown as UsersService,
       workerProfiles as unknown as WorkerProfileService,
       catalogs as unknown as CatalogsService,
+      {} as never,
     );
   });
 
