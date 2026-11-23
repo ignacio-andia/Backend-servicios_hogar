@@ -45,7 +45,7 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 | RF-15 Varios pedidos activos, uno por categoría | 🟡 | #43 aviso de duplicado; avisos en #42 y #47 | Hoy **no se bloquea** un segundo pedido de la misma categoría: solo se avisa (decisión provisional del equipo) |
 | RF-16 Encontrar trabajadores de su zona | ⛔ | — | Falta decidir qué datos del trabajador son públicos |
 | RF-17 Visibilidad para trabajadores aprobados de la categoría y zona | ✅ | #52–#54 (`WorkerOrderView`) | Regla completa en 05 |
-| RF-18 Editar o cancelar sin acuerdo | ✅ | #47–#51 (`UpdateOrderDto`, `CancelOrderDto` → `OwnerOrderView`) | Categoría y zona no editables (❓) |
+| RF-18 Editar o cancelar sin acuerdo | ✅ | #47–#51 (`UpdateOrderDto`, `CancelOrderDto` → `OwnerOrderView`) | Categoría editable (T5.2); la zona no (cancelar y crear otro). Las ofertas existentes siguen vigentes |
 | Consulta propia | ✅ | #44–#46 | — |
 
 **Dependencias:**
@@ -54,7 +54,6 @@ Leyenda: ✅ implementado · 🟡 parcial · 📐 diseñado, sin endpoint · ⛔
 - OffersModule (para pasar a `EN_NEGOCIACION`).
 
 ❓ Pendientes con el docente:
-- Si se pueden editar la categoría o la zona.
 - Cantidad definitiva de fotos y soporte de HEIC.
 - Retención de fotos de pedidos vencidos.
 

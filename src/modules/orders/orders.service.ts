@@ -229,7 +229,8 @@ export class OrdersService {
 
   // ---------------------------------------------------------------------
   // RF-18: edicion (datos y fotos). Toda edicion efectiva sube la revision y
-  // avisa a los modulos registrados (EDITADO). No cambia el vencimiento (T5.1).
+  // avisa a los modulos registrados (EDITADO). No cambia el vencimiento (T5.1)
+  // ni toca ofertas, estado, asignacion, dueno ni zona (T5.2).
   // ---------------------------------------------------------------------
 
   async update(
@@ -238,6 +239,7 @@ export class OrdersService {
     dto: UpdateOrderDto,
   ): Promise<OrderWithWarnings> {
     if (
+      dto.categoryId === undefined &&
       dto.description === undefined &&
       dto.budgetAmount === undefined &&
       dto.addressLine === undefined &&
@@ -265,7 +267,22 @@ export class OrdersService {
           address: { select: { addressLine: true, reference: true } },
         },
       });
-      const orderData: Prisma.OrderUpdateInput = {};
+      const orderData: Prisma.OrderUncheckedUpdateInput = {};
+      // T5.2: la categoria se edita; la zona no. La nueva se valida con un
+      // bloqueo compartido (orden del proyecto: pedido y luego catalogos): no
+      // puede desactivarse hasta que la edicion se confirme. La visibilidad
+      // para trabajadores sigue al categoryId guardado (OrderVisibilityService).
+      if (
+        dto.categoryId !== undefined &&
+        dto.categoryId !== current.categoryId
+      ) {
+        await this.catalogs.assertActiveForShare(
+          tx,
+          CatalogKind.CATEGORY,
+          dto.categoryId,
+        );
+        orderData.categoryId = dto.categoryId;
+      }
       if (
         dto.description !== undefined &&
         dto.description !== current.description
@@ -306,11 +323,16 @@ export class OrdersService {
       if (Object.keys(addressData).length > 0) {
         await tx.orderAddress.update({ where: { orderId }, data: addressData });
       }
-      if (orderData.description !== undefined) {
+      // Los avisos se recalculan con los datos ya guardados si cambio la
+      // descripcion o la categoria (los duplicados dependen de ambas).
+      if (
+        orderData.description !== undefined ||
+        orderData.categoryId !== undefined
+      ) {
         warningInput = {
-          categoryId: current.categoryId,
+          categoryId: dto.categoryId ?? current.categoryId,
           zoneId: current.zoneId,
-          description: dto.description!,
+          description: dto.description ?? current.description,
         };
       }
       return [];

@@ -326,13 +326,16 @@ Ejemplos inválidos de `budgetAmount`: `"0"`, `"0.00"`, `"-5"`, `"150,50"`, `"1.
 
 | Propiedad | Tipo | Omitir / null | Restricciones | Reglas |
 |---|---|---|---|---|
+| `categoryId` | string | Omitible, **no admite null** | UUID | T5.2: debe existir (404) y estar activa (400). Se valida con un bloqueo compartido dentro de la edición. El pedido pasa a ser visible para los trabajadores de la nueva categoría y deja de serlo para los de la anterior |
 | `description` | string | Omitible, **no admite null** | 10 a 2000 | — |
 | `budgetAmount` | string (o número JSON) | Omitible, **no admite null** | mismo patrón que al crear | `"150.5"` y `"150.50"` son el mismo valor: no cuenta como cambio |
 | `addressLine` | string | Omitible, **no admite null** | 1 a 255 | — |
 | `addressReference` | string \| null | Omitible, admite null | ≤ 255 | `null` o `""` borra la referencia |
 
 - Hay que enviar al menos una propiedad (400).
-- `categoryId` y `zoneId` **no** se pueden editar (400; ❓ pendiente con el docente).
+- `zoneId` **no** se puede editar (400): para otra zona se cancela el pedido (#51) y se crea uno nuevo.
+- Tampoco se aceptan `status`, `clientId`, `id`, `publishedAt`, `expiresAt`, `revision`, `assignedWorkerId` ni otros campos internos: cualquier propiedad no declarada responde 400 y no se modifica nada.
+- Editar no cambia el estado, la asignación ni las ofertas existentes, que siguen vigentes (T5.2); solo avisa a los módulos registrados con el evento `EDITADO` y la nueva `revision`.
 - Si no hay cambios reales, responde 200 sin subir la revisión.
 - Todo cambio real sube `revision` y actualiza `lastEditedAt`. **No cambia** `publishedAt` ni `expiresAt` (T5.1): el pedido vence igual a los 7 días de su publicación.
 

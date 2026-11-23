@@ -414,6 +414,7 @@ export interface CreateOrderFields {
   addressReference?: string;
 }
 export interface UpdateOrderRequest {
+  categoryId?: string; // T5.2: la zona no se edita
   description?: string;
   budgetAmount?: string;
   addressLine?: string;

@@ -83,7 +83,6 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 - Cómo se sale de `ACORDADO` (RF-34).
 - Qué estados cuentan como activos.
 - Si el trabajador ve la dirección exacta (RF-55).
-- Si se pueden editar la categoría o la zona del pedido.
 - Cantidad definitiva de fotos y soporte de HEIC.
 - Retención de fotos de pedidos vencidos.
 - Si aprobar un cambio de zona devuelve el perfil a revisión.

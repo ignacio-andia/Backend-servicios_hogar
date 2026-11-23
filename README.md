@@ -539,7 +539,7 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
 | `POST` | `/api/orders/duplicate-check` | Aviso orientativo antes de publicar: `{ categoryId, zoneId, description }` → `{ warnings }`. Nunca bloquea. |
 | `GET` | `/api/orders/me?status&page&limit` | Pedidos propios, del más reciente al más antiguo (`limit` máximo 50). |
 | `GET` | `/api/orders/me/:orderId` | Detalle propio con dirección, fotos, `canEdit` y `canCancel`. |
-| `PATCH` | `/api/orders/me/:orderId` | Edita `description`, `budgetAmount`, `addressLine` y/o `addressReference` (`null` la borra). Categoría y zona no se editan. |
+| `PATCH` | `/api/orders/me/:orderId` | Edita `categoryId`, `description`, `budgetAmount`, `addressLine` y/o `addressReference` (`null` la borra). La categoría nueva debe existir y estar activa; el pedido pasa a verse en esa categoría. La zona no se edita (cancelar y crear otro pedido). No cambia el estado, las fechas ni las ofertas existentes. |
 | `POST` | `/api/orders/me/:orderId/images` | Agrega una foto (campo `image`). `201` con el pedido actualizado; `409` si ya tiene el máximo. |
 | `PUT` | `/api/orders/me/:orderId/images/:imageId` | Reemplaza una foto (campo `image`); la anterior se borra del disco. `200` con el pedido actualizado. |
 | `DELETE` | `/api/orders/me/:orderId/images/:imageId` | Borra una foto del disco. `200` con el pedido actualizado (nueva `revision` y vencimiento); `409` si quedaría por debajo del mínimo (hay que reemplazarla). |

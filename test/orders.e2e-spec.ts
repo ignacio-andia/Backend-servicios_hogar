@@ -722,7 +722,7 @@ describe('OrdersModule (e2e)', () => {
       await patch(client, orderId, { description: 'corta' }).expect(400);
       await patch(client, orderId, { budgetAmount: '0' }).expect(400);
       await patch(client, orderId, { addressLine: '   ' }).expect(400);
-      // Categoria y zona no son editables (pendiente con el docente).
+      // La zona no es editable (T5.2).
       await patch(client, orderId, { zoneId: zoneB.id }).expect(400);
     });
 
@@ -906,6 +906,309 @@ describe('OrdersModule (e2e)', () => {
       expect(stored.revision).toBe(3);
       expect(stored.budgetAmount.toFixed(2)).toBe('170.00');
       expect(stored.address?.addressLine).toBe('Calle Ancha 9');
+    });
+
+    describe('T5.2: categoría editable y datos protegidos', () => {
+      const orders = () => app.get(OrdersService);
+      const catalogsService = () => app.get(CatalogsService);
+      const row = (id: string) =>
+        prisma.order.findUniqueOrThrow({ where: { id } });
+      const seenBy = (user: PublicUser, id: string) =>
+        http().get(`${BASE}/available/${id}`).set('Authorization', auth(user));
+      const toNegotiation = (id: string) =>
+        prisma.$transaction((tx) =>
+          orders().transition(tx, {
+            orderId: id,
+            from: OrderStatus.PUBLICADO,
+            to: OrderStatus.EN_NEGOCIACION,
+            actor: {
+              type: 'USUARIO',
+              userId: workerOtherCategory.id,
+              role: RoleName.TRABAJADOR,
+            },
+          }),
+        );
+      const edited: OrderLifecycleEvent[] = [];
+      beforeAll(() => {
+        app.get(OrderLifecycleRegistry).register({
+          name: 'orders-e2e-edicion-t52',
+          inTransaction: async (event) => {
+            if (event.type === 'EDITADO') edited.push(event);
+          },
+        });
+      });
+
+      it('el dueño cambia la categoría: cambia la visibilidad y no la zona ni las fechas', async () => {
+        const order = await newOrder('Revisar el cableado del dormitorio');
+        const before = await row(order.id);
+        await seenBy(worker, order.id).expect(200);
+        await seenBy(workerOtherCategory, order.id).expect(404);
+
+        const res = await patch(client2, order.id, {
+          categoryId: catB.id,
+        }).expect(200);
+
+        expect(res.body.order).toMatchObject({
+          category: { id: catB.id },
+          zone: { id: zoneA.id },
+          revision: 2,
+          status: OrderStatus.PUBLICADO,
+          publishedAt: before.publishedAt.toISOString(),
+          expiresAt: before.expiresAt.toISOString(),
+        });
+        expect(await row(order.id)).toMatchObject({
+          categoryId: catB.id,
+          zoneId: before.zoneId,
+          clientId: before.clientId,
+          publishedAt: before.publishedAt,
+          expiresAt: before.expiresAt,
+          status: OrderStatus.PUBLICADO,
+        });
+        // Lo ven los trabajadores de la nueva categoria, no los de la anterior.
+        await seenBy(worker, order.id).expect(404);
+        await seenBy(workerOtherCategory, order.id).expect(200);
+        const list = await http()
+          .get(`${BASE}/available`)
+          .set('Authorization', auth(worker))
+          .expect(200);
+        expect(list.body.data.map((o: { id: string }) => o.id)).not.toContain(
+          order.id,
+        );
+        // Editar no es un cambio de estado.
+        expect(
+          await prisma.orderStatusHistory.count({
+            where: { orderId: order.id },
+          }),
+        ).toBe(1);
+      });
+
+      it('rechaza una categoría inexistente (404), inactiva (400) o inválida (400) sin cambiar nada', async () => {
+        const order = await newOrder('Cambiar el enchufe de la sala de estar');
+        const off = await catalogsService().create(
+          CatalogKind.CATEGORY,
+          admin.id,
+          { name: label(`Categoria inactiva T52`) },
+        );
+        await catalogsService().deactivate(
+          CatalogKind.CATEGORY,
+          admin.id,
+          off.id,
+        );
+        const before = await row(order.id);
+
+        await patch(client2, order.id, { categoryId: randomUUID() }).expect(
+          404,
+        );
+        const inactive = await patch(client2, order.id, {
+          categoryId: off.id,
+        }).expect(400);
+        expect(inactive.body.message).toBe(
+          'La categoría seleccionada no está activa',
+        );
+        await patch(client2, order.id, { categoryId: 'no-es-uuid' }).expect(
+          400,
+        );
+
+        expect(await row(order.id)).toEqual(before);
+      });
+
+      it('no admite cambiar la zona, el estado, el dueño, las fechas ni campos internos (400)', async () => {
+        const order = await newOrder('Revisar la presión del agua caliente');
+        const before = await row(order.id);
+
+        for (const body of [
+          { zoneId: zoneB.id },
+          { status: OrderStatus.CANCELADO },
+          { clientId: client.id },
+          { id: randomUUID() },
+          { publishedAt: new Date().toISOString() },
+          { expiresAt: new Date(Date.now() + 1e9).toISOString() },
+          { revision: 9 },
+          { assignedWorkerId: worker.id },
+          { lastEditedAt: new Date().toISOString() },
+          // Aunque venga con un cambio valido, la peticion entera se rechaza.
+          { categoryId: catB.id, zoneId: zoneB.id },
+        ]) {
+          await patch(client2, order.id, body).expect(400);
+        }
+
+        expect(await row(order.id)).toEqual(before);
+      });
+
+      it('solo el dueño edita: otro cliente o un trabajador reciben 404 y un administrador 403', async () => {
+        const order = await newOrder('Arreglar la puerta del balcón');
+        const before = await row(order.id);
+
+        await patch(client, order.id, { categoryId: catB.id }).expect(404);
+        await patch(worker, order.id, { categoryId: catB.id }).expect(404);
+        await patch(admin, order.id, { categoryId: catB.id }).expect(403);
+        await http()
+          .patch(`${BASE}/me/${order.id}`)
+          .send({ categoryId: catB.id })
+          .expect(401);
+
+        expect(await row(order.id)).toEqual(before);
+      });
+
+      it('un pedido vencido o con acuerdo no cambia de categoría (409)', async () => {
+        const expired = await newOrder('Reparar la canaleta del patio');
+        await setExpiresIn(expired.id, -1);
+        const agreed = await newOrder('Instalar la ducha del baño de servicio');
+        await toNegotiation(agreed.id);
+        await prisma.order.update({
+          where: { id: agreed.id },
+          data: {
+            status: OrderStatus.ACORDADO,
+            assignedWorkerId: workerOtherCategory.id,
+          },
+        });
+
+        const late = await patch(client2, expired.id, {
+          categoryId: catB.id,
+        }).expect(409);
+        expect(late.body.message).toBe(
+          'El pedido venció y ya no se puede modificar.',
+        );
+        await patch(client2, agreed.id, { categoryId: catB.id }).expect(409);
+
+        expect((await row(expired.id)).categoryId).toBe(catA.id);
+        expect((await row(agreed.id)).categoryId).toBe(catA.id);
+        await prisma.order.update({
+          where: { id: agreed.id },
+          data: { status: OrderStatus.CERRADO },
+        });
+      });
+
+      it('en negociación, editar no toca estado, asignación ni plazo: las ofertas siguen vigentes', async () => {
+        const order = await newOrder('Revisar las luces del jardín delantero');
+        await toNegotiation(order.id);
+        const before = await row(order.id);
+        edited.length = 0;
+
+        await patch(client2, order.id, {
+          categoryId: catB.id,
+          budgetAmount: '480',
+        }).expect(200);
+
+        expect(await row(order.id)).toMatchObject({
+          status: OrderStatus.EN_NEGOCIACION,
+          assignedWorkerId: before.assignedWorkerId,
+          publishedAt: before.publishedAt,
+          expiresAt: before.expiresAt,
+          categoryId: catB.id,
+          revision: before.revision + 1,
+        });
+        // Solo se avisa la edicion (con la revision nueva): el pedido no
+        // cancela ni modifica nada por su cuenta. Las ofertas son de OffersModule.
+        expect(edited).toEqual([
+          expect.objectContaining({
+            type: 'EDITADO',
+            orderId: order.id,
+            revision: before.revision + 1,
+          }),
+        ]);
+        expect(
+          await prisma.orderStatusHistory.count({
+            where: { orderId: order.id },
+          }),
+        ).toBe(2);
+      });
+
+      it('ediciones simultáneas se aplican de a una sin perder cambios', async () => {
+        const order = await newOrder('Cambiar los focos del pasillo largo');
+
+        const [first, second] = await Promise.all([
+          patch(client2, order.id, { categoryId: catB.id }),
+          patch(client2, order.id, { budgetAmount: '275.25' }),
+        ]);
+
+        expect([first.status, second.status]).toEqual([200, 200]);
+        expect(await row(order.id)).toMatchObject({
+          categoryId: catB.id,
+          revision: 3,
+        });
+        expect((await row(order.id)).budgetAmount.toFixed(2)).toBe('275.25');
+      });
+
+      it('edición y vencimiento a la vez: un pedido vencido no cambia de categoría', async () => {
+        const order = await newOrder('Reparar la llave de paso del lavadero');
+        await setExpiresIn(order.id, -1);
+
+        const [res] = await Promise.all([
+          patch(client2, order.id, { categoryId: catB.id }),
+          app.get(OrderExpirationService).expireDue(),
+        ]);
+
+        expect(res.status).toBe(409);
+        await app.get(OrderExpirationService).expireDue();
+        expect(await row(order.id)).toMatchObject({
+          categoryId: catA.id,
+          status: OrderStatus.VENCIDO,
+          revision: 1,
+        });
+      });
+
+      it('edición y cambio de estado a la vez: el resultado es uno u otro, nunca una mezcla', async () => {
+        const order = await newOrder('Reparar el tomacorriente del garaje');
+        await toNegotiation(order.id);
+
+        const [edit, agreement] = await Promise.allSettled([
+          patch(client2, order.id, { categoryId: catB.id }),
+          prisma.$transaction((tx) =>
+            orders().transition(tx, {
+              orderId: order.id,
+              from: OrderStatus.EN_NEGOCIACION,
+              to: OrderStatus.ACORDADO,
+              actor: clientActor(client2.id),
+              assignWorkerId: workerOtherCategory.id,
+            }),
+          ),
+        ]);
+
+        // El acuerdo no depende de la edicion: siempre se aplica.
+        expect(agreement.status).toBe('fulfilled');
+        const stored = await row(order.id);
+        expect(stored.status).toBe(OrderStatus.ACORDADO);
+        if (edit.status === 'fulfilled' && edit.value.status === 200) {
+          // La edicion entro antes del acuerdo.
+          expect(stored).toMatchObject({ categoryId: catB.id, revision: 2 });
+        } else {
+          // El acuerdo entro antes: con acuerdo ya no se edita (409).
+          expect(edit.status === 'fulfilled' && edit.value.status).toBe(409);
+          expect(stored).toMatchObject({ categoryId: catA.id, revision: 1 });
+        }
+        await prisma.order.update({
+          where: { id: order.id },
+          data: { status: OrderStatus.CERRADO },
+        });
+      });
+
+      it('cambiar a una categoría que se desactiva a la vez: o se aplica antes o se rechaza', async () => {
+        const order = await newOrder('Instalar el extractor de la cocina');
+        const target = await catalogsService().create(
+          CatalogKind.CATEGORY,
+          admin.id,
+          { name: label(`Categoria carrera T52`) },
+        );
+
+        const [res] = await Promise.all([
+          patch(client2, order.id, { categoryId: target.id }),
+          catalogsService().deactivate(
+            CatalogKind.CATEGORY,
+            admin.id,
+            target.id,
+          ),
+        ]);
+
+        const stored = await row(order.id);
+        if (res.status === 200) {
+          // La edicion termino antes: la desactivacion espero su FOR SHARE.
+          expect(stored.categoryId).toBe(target.id);
+        } else {
+          expect(res.status).toBe(400);
+          expect(stored).toMatchObject({ categoryId: catA.id, revision: 1 });
+        }
+      });
     });
   });
 
