@@ -177,11 +177,17 @@ export function zoneRequestDecisionNotification(
 export function zoneRequestCancelledBySuspensionNotification(
   requestId: string,
   { fromZone, toZone }: ZoneRequestNames,
+  cause: 'SUSPENSION_PERFIL' | 'SUSPENSION_CUENTA' = 'SUSPENSION_PERFIL',
 ): NewNotification {
+  // T4-F3: la suspension de la cuenta es distinta de la del perfil.
+  const why =
+    cause === 'SUSPENSION_CUENTA'
+      ? 'su cuenta fue suspendida'
+      : 'su perfil de trabajador fue suspendido';
   return {
     type: NotificationType.SOLICITUD_ZONA_CANCELADA,
     title: 'Solicitud de cambio de zona cancelada',
-    message: `Su solicitud de cambio a la zona "${toZone}" se canceló porque su perfil de trabajador fue suspendido. Conserva su zona "${fromZone}".`,
+    message: `Su solicitud de cambio a la zona "${toZone}" se canceló porque ${why}. Conserva su zona "${fromZone}".`,
     resource: zoneRequestResource(requestId),
   };
 }
@@ -194,11 +200,21 @@ export function zoneRequestCancelledBySuspensionNotification(
 export function zoneReassignedNotification(
   profileId: string,
   { fromZone, toZone }: ZoneRequestNames,
+  status: WorkerProfileStatus = WorkerProfileStatus.RECHAZADO,
 ): NewNotification {
+  // T4-F2: un perfil PENDIENTE sigue en revision; los demas pueden reenviarlo.
+  // T4-F7: un perfil SUSPENDIDO sigue suspendido; solo un administrador lo
+  // reactiva cuando cumpla los requisitos.
+  const next =
+    status === WorkerProfileStatus.PENDIENTE
+      ? 'Su perfil sigue en revisión.'
+      : status === WorkerProfileStatus.SUSPENDIDO
+        ? 'Su perfil sigue suspendido: un administrador podrá reactivarlo cuando cumpla todos los requisitos.'
+        : 'Puede corregir su perfil y volver a enviarlo a revisión.';
   return {
     type: NotificationType.ZONA_REASIGNADA,
     title: 'Zona de atención reasignada',
-    message: `Su zona "${fromZone}" fue desactivada y un administrador le asignó la zona "${toZone}". Puede corregir su perfil y volver a enviarlo a revisión.`,
+    message: `Su zona "${fromZone}" fue desactivada y un administrador le asignó la zona "${toZone}". ${next}`,
     resource: profileResource(profileId),
   };
 }

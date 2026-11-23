@@ -117,6 +117,7 @@ describe('WorkerProfileService', () => {
     zoneChangeRequest: Record<
       | 'create'
       | 'count'
+      | 'findFirst'
       | 'findMany'
       | 'findUnique'
       | 'findUniqueOrThrow'
@@ -126,7 +127,10 @@ describe('WorkerProfileService', () => {
     $transaction: ReturnType<typeof vi.fn>;
     $queryRaw: ReturnType<typeof vi.fn>;
   };
-  let users: Record<'findById' | 'grantWorkerRole', ReturnType<typeof vi.fn>>;
+  let users: Record<
+    'findById' | 'findByIdForShare' | 'grantWorkerRole',
+    ReturnType<typeof vi.fn>
+  >;
   let catalogs: Record<
     'assertActive' | 'findById' | 'findByIds' | 'findAll' | 'findByIdsForShare',
     ReturnType<typeof vi.fn>
@@ -155,6 +159,7 @@ describe('WorkerProfileService', () => {
       zoneChangeRequest: mockFns(
         'create',
         'count',
+        'findFirst',
         'findMany',
         'findUnique',
         'findUniqueOrThrow',
@@ -167,9 +172,12 @@ describe('WorkerProfileService', () => {
       $queryRaw: vi.fn().mockResolvedValue([]),
     };
     prisma.zoneChangeRequest.count.mockResolvedValue(0);
+    prisma.zoneChangeRequest.findFirst.mockResolvedValue(null);
     prisma.workerProfile.updateMany.mockResolvedValue({ count: 1 });
     users = {
       findById: vi.fn().mockResolvedValue(user()),
+      // Cuenta del trabajador leida con FOR SHARE dentro de la transaccion.
+      findByIdForShare: vi.fn().mockResolvedValue(user()),
       grantWorkerRole: vi.fn().mockResolvedValue(undefined),
     };
     catalogs = mockFns(
@@ -178,6 +186,9 @@ describe('WorkerProfileService', () => {
       'findByIds',
       'findAll',
       'findByIdsForShare',
+    );
+    catalogs.findByIdsForShare.mockImplementation((_tx, _kind, ids: string[]) =>
+      Promise.resolve(ids.map((id) => catalogItem(id))),
     );
     catalogs.assertActive.mockImplementation((_kind, id: string) =>
       Promise.resolve(catalogItem(id)),
@@ -623,6 +634,73 @@ describe('WorkerProfileService', () => {
     });
   });
 
+  describe('regularizacion de un perfil SUSPENDIDO (T4-F7)', () => {
+    beforeEach(() => {
+      prisma.workerProfile.findUnique.mockResolvedValue(
+        profile({ status: WorkerProfileStatus.SUSPENDIDO }),
+      );
+    });
+
+    it('permite editar los datos y las especialidades sin cambiar el estado', async () => {
+      await service.updateOwn(USER_ID, { yearsOfExperience: 8 });
+      await service.replaceSpecialties(USER_ID, { categoryIds: [CATEGORY] });
+
+      expect(prisma.workerProfile.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: PROFILE_ID, status: WorkerProfileStatus.SUSPENDIDO },
+        }),
+      );
+      for (const [args] of prisma.workerProfile.updateMany.mock.calls as [
+        { data: Record<string, unknown> },
+      ][]) {
+        expect(args.data).not.toHaveProperty('status');
+      }
+      expect(prisma.workerSpecialty.createMany).toHaveBeenCalled();
+      expect(prisma.workerProfileStatusHistory.create).not.toHaveBeenCalled();
+    });
+
+    it('no puede cambiar su zona por cuenta propia (403, RF-13)', async () => {
+      await expect(
+        service.updateOwn(USER_ID, { zoneId: ZONE_B }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('no puede enviarse a revision: editar no levanta la suspension', async () => {
+      await expect(service.submit(USER_ID)).rejects.toThrow(
+        new ConflictException(
+          'No se puede enviar a revisión un perfil en estado SUSPENDIDO',
+        ),
+      );
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('la vista indica que puede editar pero no enviar', async () => {
+      await expect(service.getOwn(USER_ID)).resolves.toMatchObject({
+        status: WorkerProfileStatus.SUSPENDIDO,
+        canEdit: true,
+        canSubmit: false,
+      });
+    });
+
+    it('sigue sin poder tomar trabajos ni ofertar (403)', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue({
+        ...profile({ status: WorkerProfileStatus.SUSPENDIDO }),
+        user: {
+          status: UserStatus.ACTIVO,
+          roles: [{ role: RoleName.TRABAJADOR }],
+        },
+      });
+      prisma.workerProfileStatusHistory.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.lockApprovedWorker(prisma as never, USER_ID),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.assertWorkerApproved(USER_ID),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+
   describe('elegibilidad (RF-09)', () => {
     it('solo un perfil APROBADO con cuenta activa es elegible', async () => {
       prisma.workerProfile.findUnique.mockResolvedValue({
@@ -665,6 +743,68 @@ describe('WorkerProfileService', () => {
       await expect(service.assertWorkerApproved(USER_ID)).rejects.toThrow(
         'Su perfil de trabajador está suspendido. Motivo: Reclamos reiterados',
       );
+    });
+
+    describe('cambio de zona pendiente en la elegibilidad (T4-F4)', () => {
+      it('aprobado sin solicitud pendiente puede tomar trabajos nuevos', async () => {
+        prisma.workerProfile.findUnique.mockResolvedValue({
+          id: PROFILE_ID,
+          status: WorkerProfileStatus.APROBADO,
+        });
+
+        await expect(service.getEligibility(USER_ID)).resolves.toEqual({
+          eligible: true,
+          status: WorkerProfileStatus.APROBADO,
+          message: 'Su perfil de trabajador está aprobado.',
+          reason: null,
+          pendingZoneChangeRequest: null,
+          canTakeNewWork: true,
+        });
+      });
+
+      it('aprobado con solicitud pendiente sigue elegible pero no puede tomar trabajos nuevos', async () => {
+        const createdAt = new Date('2026-11-20T10:00:00.000Z');
+        prisma.workerProfile.findUnique.mockResolvedValue({
+          id: PROFILE_ID,
+          status: WorkerProfileStatus.APROBADO,
+        });
+        prisma.zoneChangeRequest.findFirst.mockResolvedValue({
+          id: 'solicitud-1',
+          toZoneId: ZONE_B,
+          createdAt,
+        });
+
+        await expect(service.getEligibility(USER_ID)).resolves.toMatchObject({
+          eligible: true,
+          canTakeNewWork: false,
+          pendingZoneChangeRequest: {
+            id: 'solicitud-1',
+            toZone: { id: ZONE_B, isActive: true },
+            createdAt,
+          },
+        });
+        expect(prisma.zoneChangeRequest.findFirst).toHaveBeenCalledWith({
+          where: {
+            profileId: PROFILE_ID,
+            status: ZoneChangeRequestStatus.PENDIENTE,
+          },
+          select: { id: true, toZoneId: true, createdAt: true },
+        });
+      });
+
+      it('sin perfil aprobado nunca puede tomar trabajos nuevos', async () => {
+        prisma.workerProfile.findUnique.mockResolvedValue({
+          id: PROFILE_ID,
+          status: WorkerProfileStatus.SUSPENDIDO,
+        });
+        prisma.workerProfileStatusHistory.findFirst.mockResolvedValue(null);
+
+        await expect(service.getEligibility(USER_ID)).resolves.toMatchObject({
+          eligible: false,
+          canTakeNewWork: false,
+          pendingZoneChangeRequest: null,
+        });
+      });
     });
 
     it('una cuenta inactiva o sin rol de trabajador no es elegible', async () => {
@@ -862,26 +1002,55 @@ describe('WorkerProfileService', () => {
       expect(zones).toBeLessThan(update);
     });
 
-    it.each([
-      WorkerProfileStatus.BORRADOR,
-      WorkerProfileStatus.PENDIENTE,
-      WorkerProfileStatus.OBSERVADO,
-      WorkerProfileStatus.APROBADO,
-      WorkerProfileStatus.SUSPENDIDO,
-    ])('un perfil %s no usa esta operacion (409)', async (status) => {
-      prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(
-        profile({ status }),
-      );
+    it.each([WorkerProfileStatus.BORRADOR, WorkerProfileStatus.APROBADO])(
+      'un perfil %s no usa esta operacion (409)',
+      async (status) => {
+        prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(
+          profile({ status }),
+        );
 
-      await expect(
-        service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
-      ).rejects.toThrow(
-        new ConflictException(
-          `Solo se puede reasignar la zona de un perfil RECHAZADO (estado actual: ${status})`,
-        ),
-      );
-      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
-    });
+        await expect(
+          service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto),
+        ).rejects.toThrow(
+          new ConflictException(
+            `Solo se puede reasignar la zona de un perfil RECHAZADO, OBSERVADO, PENDIENTE o SUSPENDIDO (estado actual: ${status})`,
+          ),
+        );
+        expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      [
+        WorkerProfileStatus.OBSERVADO,
+        'Puede corregir su perfil y volver a enviarlo a revisión.',
+      ],
+      [WorkerProfileStatus.PENDIENTE, 'Su perfil sigue en revisión.'],
+      [
+        WorkerProfileStatus.SUSPENDIDO,
+        'Su perfil sigue suspendido: un administrador podrá reactivarlo cuando cumpla todos los requisitos.',
+      ],
+    ])(
+      'un perfil %s tambien se reasigna y conserva su estado (T4-F2)',
+      async (status, next) => {
+        prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(
+          profile({ status }),
+        );
+
+        await service.reassignZoneForRejected(ADMIN_ID, PROFILE_ID, dto);
+
+        expect(prisma.workerProfile.updateMany).toHaveBeenCalledWith({
+          where: { id: PROFILE_ID, status, zoneId: ZONE_A },
+          data: { zoneId: ZONE_B },
+        });
+        expect(audit.record.mock.calls[0][0].details).toMatchObject({
+          profileStatus: status,
+        });
+        expect(notifications.create.mock.calls[0][1].message).toBe(
+          `Su zona "Zona A" fue desactivada y un administrador le asignó la zona "Zona B". ${next}`,
+        );
+      },
+    );
 
     it('si la zona actual sigue activa, no es un cambio de zona general (409)', async () => {
       zonesFor(true, true);
@@ -989,7 +1158,11 @@ describe('WorkerProfileService', () => {
       users.findById.mockResolvedValue(
         user({ id: ADMIN_ID, roles: [RoleName.ADMINISTRADOR] }),
       );
-      prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(profile());
+      // La relectura dentro de la transaccion ve el mismo perfil.
+      prisma.workerProfile.findUniqueOrThrow.mockImplementation(
+        (args: unknown) =>
+          (prisma.workerProfile.findUnique as (a: unknown) => unknown)(args),
+      );
     });
 
     it('registra historial y bitacora en la misma transaccion', async () => {
@@ -1229,8 +1402,16 @@ describe('WorkerProfileService', () => {
         prisma.workerProfile.findUnique.mockResolvedValue(
           profile({ status: WorkerProfileStatus.PENDIENTE }),
         );
-        catalogs.findById.mockResolvedValue(
-          catalogItem(ZONE_A, { name: 'Norte', isActive: false }),
+        catalogs.findByIdsForShare.mockImplementation(
+          (_tx, kind: CatalogKind, ids: string[]) =>
+            Promise.resolve(
+              ids.map((id) =>
+                catalogItem(id, {
+                  name: 'Norte',
+                  isActive: kind !== CatalogKind.ZONE,
+                }),
+              ),
+            ),
         );
 
         await expect(
@@ -1258,6 +1439,7 @@ describe('WorkerProfileService', () => {
               : user({ phone: null }),
           ),
         );
+        users.findByIdForShare.mockResolvedValue(user({ phone: null }));
         prisma.workerProfile.findUnique.mockResolvedValue(
           profile({
             status: WorkerProfileStatus.PENDIENTE,
@@ -1296,19 +1478,177 @@ describe('WorkerProfileService', () => {
         });
       });
 
-      it('la reactivacion SUSPENDIDO -> APROBADO no exige requisitos (RF-49)', async () => {
-        prisma.workerProfile.findUnique.mockResolvedValue(
-          profile({ status: WorkerProfileStatus.SUSPENDIDO }),
+      describe('reactivacion SUSPENDIDO -> APROBADO (T4-F1)', () => {
+        const reactivate = () =>
+          service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
+            status: WorkerProfileStatus.APROBADO,
+          });
+        beforeEach(() => {
+          prisma.workerProfile.findUnique.mockResolvedValue(
+            profile({ status: WorkerProfileStatus.SUSPENDIDO }),
+          );
+        });
+
+        it('reactiva un perfil que sigue cumpliendo los requisitos', async () => {
+          await reactivate();
+
+          expect(
+            prisma.workerProfile.updateMany.mock.calls[0][0],
+          ).toMatchObject({
+            where: { id: PROFILE_ID, status: WorkerProfileStatus.SUSPENDIDO },
+            data: { status: WorkerProfileStatus.APROBADO },
+          });
+        });
+
+        it.each([
+          [
+            'la zona fue desactivada',
+            () =>
+              catalogs.findByIdsForShare.mockImplementation(
+                (_tx, kind: CatalogKind, ids: string[]) =>
+                  Promise.resolve(
+                    ids.map((id) =>
+                      catalogItem(id, {
+                        name: 'Norte',
+                        isActive: kind !== CatalogKind.ZONE,
+                      }),
+                    ),
+                  ),
+              ),
+            'La zona "Norte" fue desactivada: solicite un cambio de zona',
+          ],
+          [
+            'una especialidad fue desactivada',
+            () =>
+              catalogs.findByIdsForShare.mockImplementation(
+                (_tx, kind: CatalogKind, ids: string[]) =>
+                  Promise.resolve(
+                    ids.map((id) =>
+                      catalogItem(id, {
+                        name: 'Gasfiteria',
+                        isActive: kind !== CatalogKind.CATEGORY,
+                      }),
+                    ),
+                  ),
+              ),
+            'Quite las especialidades inactivas: Gasfiteria',
+          ],
+          [
+            'la cuenta ya no tiene telefono',
+            () =>
+              users.findByIdForShare.mockResolvedValue(user({ phone: null })),
+            'Registre un teléfono de contacto en su cuenta',
+          ],
+        ])(
+          'no reactiva si %s (409 con la lista)',
+          async (_case, arrange, missing) => {
+            arrange();
+
+            await expect(reactivate()).rejects.toMatchObject({
+              status: 409,
+              response: {
+                message: [
+                  'El perfil no cumple los requisitos para ser reactivado. Deben corregirse antes de reactivarlo.',
+                  missing,
+                ],
+              },
+            });
+            expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+            expect(
+              prisma.workerProfileStatusHistory.create,
+            ).not.toHaveBeenCalled();
+            expect(audit.record).not.toHaveBeenCalled();
+            expect(notifications.create).not.toHaveBeenCalled();
+          },
         );
-        catalogs.findById.mockResolvedValue(
-          catalogItem(ZONE_A, { isActive: false }),
+
+        it('no reactiva un perfil incompleto (sin especialidades ni horarios)', async () => {
+          prisma.workerProfile.findUnique.mockResolvedValue(
+            profile({
+              status: WorkerProfileStatus.SUSPENDIDO,
+              specialties: [],
+              schedules: [],
+            }),
+          );
+
+          await expect(reactivate()).rejects.toMatchObject({
+            response: {
+              message: expect.arrayContaining([
+                'Seleccione al menos una especialidad',
+                'Defina al menos un horario de atención activo',
+              ]),
+            },
+          });
+        });
+
+        it('valida dentro de la transaccion: cuenta, perfil y catalogos bloqueados en orden', async () => {
+          await reactivate();
+
+          expect(users.findByIdForShare).toHaveBeenCalledWith(prisma, USER_ID);
+          const account = users.findByIdForShare.mock.invocationCallOrder[0];
+          const worker = prisma.$queryRaw.mock.invocationCallOrder[0];
+          const reread =
+            prisma.workerProfile.findUniqueOrThrow.mock.invocationCallOrder[0];
+          const zones = catalogs.findByIdsForShare.mock.invocationCallOrder[0];
+          const update =
+            prisma.workerProfile.updateMany.mock.invocationCallOrder[0];
+          expect(account).toBeLessThan(worker);
+          expect(worker).toBeLessThan(reread);
+          expect(reread).toBeLessThan(zones);
+          expect(zones).toBeLessThan(update);
+          expect(catalogs.findByIdsForShare).toHaveBeenCalledWith(
+            prisma,
+            CatalogKind.ZONE,
+            [ZONE_A],
+          );
+          expect(catalogs.findByIdsForShare).toHaveBeenCalledWith(
+            prisma,
+            CatalogKind.CATEGORY,
+            [CATEGORY],
+          );
+        });
+
+        it('si el estado cambio antes del bloqueo, responde 409 sin escribir', async () => {
+          prisma.workerProfile.findUniqueOrThrow.mockResolvedValue(
+            profile({ status: WorkerProfileStatus.APROBADO }),
+          );
+
+          await expect(reactivate()).rejects.toThrow(
+            'El perfil cambió de estado mientras se procesaba la solicitud. Vuelva a intentarlo.',
+          );
+          expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+        });
+      });
+
+      it('aprobar desde PENDIENTE tambien valida dentro de la transaccion (T4-F5)', async () => {
+        prisma.workerProfile.findUnique.mockResolvedValue(
+          profile({ status: WorkerProfileStatus.PENDIENTE }),
         );
 
         await service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
           status: WorkerProfileStatus.APROBADO,
         });
 
-        expect(prisma.workerProfile.updateMany).toHaveBeenCalled();
+        expect(users.findByIdForShare).toHaveBeenCalledTimes(1);
+        expect(
+          catalogs.findByIdsForShare.mock.invocationCallOrder[0],
+        ).toBeLessThan(
+          prisma.workerProfile.updateMany.mock.invocationCallOrder[0],
+        );
+      });
+
+      it('las demas decisiones no bloquean la cuenta ni validan requisitos', async () => {
+        prisma.workerProfile.findUnique.mockResolvedValue(
+          profile({ status: WorkerProfileStatus.PENDIENTE }),
+        );
+
+        await service.changeStatusByAdmin(ADMIN_ID, PROFILE_ID, {
+          status: WorkerProfileStatus.OBSERVADO,
+          reason: 'Falta la foto',
+        });
+
+        expect(users.findByIdForShare).not.toHaveBeenCalled();
+        expect(catalogs.findByIdsForShare).not.toHaveBeenCalled();
       });
     });
   });

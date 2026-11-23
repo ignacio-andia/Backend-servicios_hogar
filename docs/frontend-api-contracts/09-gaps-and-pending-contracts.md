@@ -7,7 +7,7 @@ Solo se documentan los hallazgos y su impacto: no se modificó el backend. Prior
 | # | Hallazgo | Impacto en Angular | Prioridad |
 |---|---|---|---|
 | A1 | **Resuelto (T2.2, T2.3 y T3.2).** Listado (#56), detalle (#57), documentos con bitácora (#58–#60), decisión (#55) y notificaciones internas (#61–#64) | La verificación funciona de punta a punta, con avisos al trabajador y a los administradores | — |
-| A2 | El commit `207f2cb` (OrdersModule, cambio de zona, cola de archivos y 2 migraciones) **no está publicado** en `origin/main` | Quien clone el repositorio remoto no tiene esos endpoints | **Alta** (se resuelve con un push) |
+| A2 | Los commits locales de T2 a T4 (OrdersModule, verificación, documentos, notificaciones, cambio de zona y sus migraciones) **no están publicados** en `origin/main` al momento de esta revisión: la rama `main` local está por delante | Quien clone el repositorio remoto no tiene esos endpoints ni migraciones | **Alta** (se resuelve con un push) |
 | A3 | **Resuelto (T2.1).** El primer `ADMINISTRADOR` se crea con el comando interno `npm run admin:create-first` (README, sección H, paso 5). Sigue sin existir un mecanismo para administradores adicionales | Para probar las pantallas de administración basta con ejecutar el comando una vez | Baja |
 | A4 | Descargas (fotos y documentos) solo con Bearer | `<img src>` no funciona: hay que descargar como Blob (ver 06) | Media |
 | A5 | Sin OpenAPI o Swagger | Los contratos se mantienen a mano (esta carpeta) | Media |

@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { ConflictException, INestApplication } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  INestApplication,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -1003,25 +1007,61 @@ describe('Cambio de zona: validaciones y decisiones (T4.2, e2e)', () => {
       expect(resubmitted.body.status).toBe(WorkerProfileStatus.PENDIENTE);
     });
 
-    it.each([
-      WorkerProfileStatus.APROBADO,
-      WorkerProfileStatus.PENDIENTE,
-      WorkerProfileStatus.OBSERVADO,
-      WorkerProfileStatus.SUSPENDIDO,
-    ])('un perfil %s no puede usar esta operación (409)', async (status) => {
-      const { worker, zone } = await inDeactivatedZone(
-        `reasignar-${status.toLowerCase()}`,
-        status,
-      );
+    it.each([WorkerProfileStatus.APROBADO, WorkerProfileStatus.BORRADOR])(
+      'un perfil %s no puede usar esta operación (409)',
+      async (status) => {
+        const { worker, zone } = await inDeactivatedZone(
+          `reasignar-${status.toLowerCase()}`,
+          status,
+        );
 
-      const res = await reassign(worker.profileId, body()).expect(409);
+        const res = await reassign(worker.profileId, body()).expect(409);
 
-      expect(res.body.message).toBe(
-        `Solo se puede reasignar la zona de un perfil RECHAZADO (estado actual: ${status})`,
-      );
-      expect((await profileRow(worker)).zoneId).toBe(zone.id);
-      expect(await reassignmentLogs(worker)).toHaveLength(0);
-    });
+        expect(res.body.message).toBe(
+          `Solo se puede reasignar la zona de un perfil RECHAZADO, OBSERVADO, PENDIENTE o SUSPENDIDO (estado actual: ${status})`,
+        );
+        expect((await profileRow(worker)).zoneId).toBe(zone.id);
+        expect(await reassignmentLogs(worker)).toHaveLength(0);
+      },
+    );
+
+    it.each([WorkerProfileStatus.OBSERVADO, WorkerProfileStatus.PENDIENTE])(
+      'un perfil %s también se reasigna y conserva su estado (T4-F2)',
+      async (status) => {
+        const { worker } = await inDeactivatedZone(
+          `reasignar-f2-${status.toLowerCase()}`,
+          status,
+        );
+
+        const res = await reassign(worker.profileId, body()).expect(200);
+
+        expect(res.body.profile).toMatchObject({
+          status,
+          zone: { id: zoneB.id, isActive: true },
+        });
+        expect(await profileRow(worker)).toMatchObject({
+          status,
+          zoneId: zoneB.id,
+        });
+        const [log] = await reassignmentLogs(worker);
+        expect(log.details).toMatchObject({ profileStatus: status });
+        expect(await reassignedNotices(worker)).toHaveLength(1);
+
+        // Con una zona activa el flujo sigue: aprobar o reenviar.
+        if (status === WorkerProfileStatus.PENDIENTE) {
+          await http()
+            .patch(`${BASE}/admin/profiles/${worker.profileId}/status`)
+            .set('Authorization', auth(admin))
+            .send({ status: WorkerProfileStatus.APROBADO })
+            .expect(200);
+        } else {
+          await http()
+            .post(`${BASE}/me/submit`)
+            .set('Authorization', auth(worker.user))
+            .expect(200);
+        }
+      },
+    );
 
     it('no sirve para cambiar una zona que sigue activa (409)', async () => {
       const worker = await newWorker(
@@ -1153,6 +1193,430 @@ describe('Cambio de zona: validaciones y decisiones (T4.2, e2e)', () => {
         expect((await profileRow(worker)).zoneId).toBe(zone.id);
         expect(await reassignmentLogs(worker)).toHaveLength(0);
       }
+    });
+  });
+  describe('correcciones de cierre de T4', () => {
+    const newZone = (name: string) =>
+      app
+        .get(CatalogsService)
+        .create(CatalogKind.ZONE, admin.id, { name: `${name} ${RUN_ID}` });
+    const deactivateZone = (zoneId: string) =>
+      app.get(CatalogsService).deactivate(CatalogKind.ZONE, admin.id, zoneId);
+    const statusOf = async (worker: Worker) =>
+      (
+        await prisma.workerProfile.findUniqueOrThrow({
+          where: { id: worker.profileId },
+        })
+      ).status;
+    const reactivate = (worker: Worker) =>
+      http()
+        .patch(`${BASE}/admin/profiles/${worker.profileId}/status`)
+        .set('Authorization', auth(admin))
+        .send({ status: WorkerProfileStatus.APROBADO });
+    const setAccountStatus = (
+      user: PublicUser,
+      status: UserStatus,
+      as = admin,
+    ) =>
+      http()
+        .patch(`/api/users/${user.id}/status`)
+        .set('Authorization', auth(as))
+        .send({ status });
+    const reactivationNotices = (worker: Worker) =>
+      prisma.notification.count({
+        where: {
+          userId: worker.user.id,
+          type: NotificationType.PERFIL_REACTIVADO,
+        },
+      });
+
+    describe('T4-F1: reactivación SUSPENDIDO -> APROBADO', () => {
+      it('no reactiva si la zona fue desactivada (409) y no deja cambios', async () => {
+        const zone = await newZone('Zona reactivacion');
+        const worker = await newWorker(
+          'reactivar-zona',
+          WorkerProfileStatus.SUSPENDIDO,
+          zone.id,
+        );
+        await deactivateZone(zone.id);
+        const historyBefore = await prisma.workerProfileStatusHistory.count({
+          where: { profileId: worker.profileId },
+        });
+
+        const res = await reactivate(worker).expect(409);
+
+        expect(res.body.message).toEqual([
+          'El perfil no cumple los requisitos para ser reactivado. Deben corregirse antes de reactivarlo.',
+          `La zona "${zone.name}" fue desactivada: solicite un cambio de zona`,
+        ]);
+        expect(await statusOf(worker)).toBe(WorkerProfileStatus.SUSPENDIDO);
+        expect(
+          await prisma.workerProfileStatusHistory.count({
+            where: { profileId: worker.profileId },
+          }),
+        ).toBe(historyBefore);
+        expect(await reactivationNotices(worker)).toBe(0);
+      });
+
+      it('no reactiva sin teléfono; con los requisitos al día reactiva y lo registra', async () => {
+        const worker = await newWorker(
+          'reactivar-telefono',
+          WorkerProfileStatus.SUSPENDIDO,
+        );
+        await http()
+          .patch(`/api/users/${worker.user.id}`)
+          .set('Authorization', auth(worker.user))
+          .send({ phone: '' })
+          .expect(200);
+
+        const res = await reactivate(worker).expect(409);
+        expect(res.body.message).toContain(
+          'Registre un teléfono de contacto en su cuenta',
+        );
+        expect(await statusOf(worker)).toBe(WorkerProfileStatus.SUSPENDIDO);
+
+        await http()
+          .patch(`/api/users/${worker.user.id}`)
+          .set('Authorization', auth(worker.user))
+          .send({ phone: '70000031' })
+          .expect(200);
+        await reactivate(worker).expect(200);
+
+        expect(await statusOf(worker)).toBe(WorkerProfileStatus.APROBADO);
+        expect(
+          await prisma.workerProfileStatusHistory.findFirst({
+            where: {
+              profileId: worker.profileId,
+              fromStatus: WorkerProfileStatus.SUSPENDIDO,
+              toStatus: WorkerProfileStatus.APROBADO,
+            },
+          }),
+        ).not.toBeNull();
+        expect(
+          await prisma.adminAuditLog.count({
+            where: {
+              entityId: worker.profileId,
+              action: AuditAction.CAMBIO_ESTADO,
+            },
+          }),
+        ).toBeGreaterThan(0);
+        expect(await reactivationNotices(worker)).toBe(1);
+      });
+
+      it('reactivar mientras se desactiva la zona deja un resultado consistente', async () => {
+        const zone = await newZone('Zona reactivacion carrera');
+        const worker = await newWorker(
+          'reactivar-carrera',
+          WorkerProfileStatus.SUSPENDIDO,
+          zone.id,
+        );
+
+        const [res] = await Promise.all([
+          reactivate(worker),
+          deactivateZone(zone.id),
+        ]);
+
+        // 200: la reactivacion termino antes (la desactivacion espero su
+        // bloqueo compartido). 409: la zona ya estaba desactivada al validar.
+        expect([200, 409]).toContain(res.status);
+        expect(await statusOf(worker)).toBe(
+          res.status === 200
+            ? WorkerProfileStatus.APROBADO
+            : WorkerProfileStatus.SUSPENDIDO,
+        );
+      });
+    });
+
+    describe('T4-F3: suspensión de la cuenta de usuario', () => {
+      it('cancela la solicitud pendiente con su propia causa, sin tocar el perfil', async () => {
+        const { worker, requestId } = await pendingRequest('cuenta-suspendida');
+
+        await setAccountStatus(worker.user, UserStatus.SUSPENDIDO).expect(200);
+
+        const row = await requestRow(requestId);
+        expect(row).toMatchObject({
+          status: ZoneChangeRequestStatus.CANCELADA,
+          cancellationCause: ZoneChangeCancellationCause.SUSPENSION_CUENTA,
+          decidedById: admin.id,
+          decisionComment: null,
+        });
+        expect(row.decidedAt).toBeInstanceOf(Date);
+        // Es la cuenta, no el perfil: el perfil sigue APROBADO y en su zona.
+        expect(await statusOf(worker)).toBe(WorkerProfileStatus.APROBADO);
+        expect(await zoneOf(worker)).toBe(zoneA.id);
+
+        const logs = await requestAudit(requestId);
+        expect(logs).toHaveLength(1);
+        expect(logs[0]).toMatchObject({
+          actorId: admin.id,
+          action: AuditAction.CAMBIO_ESTADO,
+          details: {
+            toStatus: ZoneChangeRequestStatus.CANCELADA,
+            cause: ZoneChangeCancellationCause.SUSPENSION_CUENTA,
+          },
+        });
+        const notices = await requestNotifications(worker, requestId);
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toMatchObject({
+          type: NotificationType.SOLICITUD_ZONA_CANCELADA,
+          message: `Su solicitud de cambio a la zona "${zoneB.name}" se canceló porque su cuenta fue suspendida. Conserva su zona "${zoneA.name}".`,
+        });
+        const late = await decide(requestId, { decision: 'APROBADA' }).expect(
+          409,
+        );
+        expect(late.body.message).toBe('La solicitud ya fue resuelta');
+      });
+
+      it('desactivar la propia cuenta (INACTIVO) no es una suspensión: no cancela', async () => {
+        const { worker, requestId } = await pendingRequest('cuenta-inactiva');
+
+        await setAccountStatus(
+          worker.user,
+          UserStatus.INACTIVO,
+          worker.user,
+        ).expect(200);
+
+        expect((await requestRow(requestId)).status).toBe(
+          ZoneChangeRequestStatus.PENDIENTE,
+        );
+      });
+
+      it('no se aprueba una solicitud de una cuenta suspendida (dato anterior a T4-F3)', async () => {
+        const worker = await newWorker('cuenta-suspendida-heredada');
+        const legacy = await prisma.zoneChangeRequest.create({
+          data: {
+            profileId: worker.profileId,
+            fromZoneId: zoneA.id,
+            toZoneId: zoneB.id,
+            reason: 'Solicitud anterior a T4-F3',
+          },
+        });
+        // Suspension directa, sin el efecto de T4-F3 (como antes de existir).
+        await prisma.user.update({
+          where: { id: worker.user.id },
+          data: { status: UserStatus.SUSPENDIDO },
+        });
+
+        const res = await decide(legacy.id, { decision: 'APROBADA' }).expect(
+          409,
+        );
+
+        expect(res.body.message).toBe(
+          'No se puede aprobar: la cuenta del trabajador está suspendida',
+        );
+        expect(await zoneOf(worker)).toBe(zoneA.id);
+        await decide(legacy.id, {
+          decision: 'RECHAZADA',
+          comment: 'La cuenta está suspendida',
+        }).expect(200);
+      });
+
+      it('si falla la cancelación, la cuenta no queda suspendida', async () => {
+        const { worker, requestId } = await pendingRequest('cuenta-falla');
+        vi.spyOn(notifications, 'create').mockRejectedValueOnce(
+          new Error('falla simulada de notificaciones'),
+        );
+
+        await setAccountStatus(worker.user, UserStatus.SUSPENDIDO).expect(500);
+
+        const account = await prisma.user.findUniqueOrThrow({
+          where: { id: worker.user.id },
+        });
+        expect(account.status).toBe(UserStatus.ACTIVO);
+        expect((await requestRow(requestId)).status).toBe(
+          ZoneChangeRequestStatus.PENDIENTE,
+        );
+      });
+
+      it('suspender la cuenta y aprobar a la vez: un solo resultado consistente', async () => {
+        const { worker, requestId } = await pendingRequest('cuenta-simultanea');
+
+        const [suspension, approval] = await Promise.all([
+          setAccountStatus(worker.user, UserStatus.SUSPENDIDO),
+          decide(requestId, { decision: 'APROBADA' }),
+        ]);
+
+        expect(suspension.status).toBe(200);
+        const row = await requestRow(requestId);
+        if (approval.status === 200) {
+          expect(row.status).toBe(ZoneChangeRequestStatus.APROBADA);
+          expect(await zoneOf(worker)).toBe(zoneB.id);
+        } else {
+          expect(approval.status).toBe(409);
+          expect(row).toMatchObject({
+            status: ZoneChangeRequestStatus.CANCELADA,
+            cancellationCause: ZoneChangeCancellationCause.SUSPENSION_CUENTA,
+          });
+          expect(await zoneOf(worker)).toBe(zoneA.id);
+        }
+        expect(await requestAudit(requestId)).toHaveLength(1);
+        expect(await requestNotifications(worker, requestId)).toHaveLength(1);
+      });
+    });
+
+    describe('T4-F7: regularización de un perfil SUSPENDIDO', () => {
+      it('regulariza datos, especialidades y zona; sigue SUSPENDIDO hasta que un administrador lo reactiva', async () => {
+        const catalogsService = app.get(CatalogsService);
+        const zone = await newZone('Zona regularizacion');
+        const oldCategory = await catalogsService.create(
+          CatalogKind.CATEGORY,
+          admin.id,
+          { name: `Categoria regularizacion ${RUN_ID}` },
+        );
+        const worker = await newWorker(
+          'regularizar',
+          WorkerProfileStatus.SUSPENDIDO,
+          zone.id,
+        );
+        const asWorker = (
+          method: 'get' | 'patch' | 'put' | 'post',
+          url: string,
+        ) => http()[method](url).set('Authorization', auth(worker.user));
+
+        // Suspendido, puede editar sus especialidades.
+        await asWorker('put', `${BASE}/me/specialties`)
+          .send({ categoryIds: [oldCategory.id] })
+          .expect(200);
+        // Despues se desactivan su zona y esa especialidad.
+        await deactivateZone(zone.id);
+        await catalogsService.deactivate(
+          CatalogKind.CATEGORY,
+          admin.id,
+          oldCategory.id,
+        );
+
+        // Reactivar con requisitos incompletos: 409 con todo lo que falta.
+        const incomplete = await reactivate(worker).expect(409);
+        expect(incomplete.body.message).toEqual(
+          expect.arrayContaining([
+            'El perfil no cumple los requisitos para ser reactivado. Deben corregirse antes de reactivarlo.',
+            `Quite las especialidades inactivas: ${oldCategory.name}`,
+            `La zona "${zone.name}" fue desactivada: solicite un cambio de zona`,
+          ]),
+        );
+
+        // Regulariza lo que le corresponde: especialidades y datos editables.
+        await asWorker('put', `${BASE}/me/specialties`)
+          .send({ categoryIds: [category.id] })
+          .expect(200);
+        const edited = await asWorker('patch', `${BASE}/me`)
+          .send({ yearsOfExperience: 9, description: 'Perfil regularizado' })
+          .expect(200);
+        expect(edited.body).toMatchObject({
+          status: WorkerProfileStatus.SUSPENDIDO,
+          yearsOfExperience: 9,
+          canEdit: true,
+          canSubmit: false,
+        });
+        // No puede cambiar la zona ni salir de la suspension por su cuenta.
+        await asWorker('patch', `${BASE}/me`)
+          .send({ zoneId: zoneB.id })
+          .expect(403);
+        const submit = await asWorker('post', `${BASE}/me/submit`).expect(409);
+        expect(submit.body.message).toBe(
+          'No se puede enviar a revisión un perfil en estado SUSPENDIDO',
+        );
+
+        // La zona la reasigna un administrador; el perfil sigue SUSPENDIDO.
+        const reassigned = await http()
+          .patch(`${BASE}/admin/profiles/${worker.profileId}/zone`)
+          .set('Authorization', auth(admin))
+          .send({
+            zoneId: zoneA.id,
+            justification: 'La zona del trabajador fue desactivada',
+          })
+          .expect(200);
+        expect(reassigned.body.profile).toMatchObject({
+          status: WorkerProfileStatus.SUSPENDIDO,
+          zone: { id: zoneA.id },
+        });
+        const [notice] = await prisma.notification.findMany({
+          where: {
+            userId: worker.user.id,
+            type: NotificationType.ZONA_REASIGNADA,
+          },
+        });
+        expect(notice.message).toBe(
+          `Su zona "${zone.name}" fue desactivada y un administrador le asignó la zona "${zoneA.name}". Su perfil sigue suspendido: un administrador podrá reactivarlo cuando cumpla todos los requisitos.`,
+        );
+        expect(
+          await prisma.adminAuditLog.count({
+            where: {
+              entityId: worker.profileId,
+              action: AuditAction.EDICION,
+            },
+          }),
+        ).toBe(1);
+
+        // Regularizado pero suspendido: sin trabajos, ofertas ni asignaciones.
+        expect(await statusOf(worker)).toBe(WorkerProfileStatus.SUSPENDIDO);
+        await asWorker('get', '/api/orders/available').expect(403);
+        await expect(
+          prisma.$transaction((tx) =>
+            profiles.lockApprovedWorker(tx, worker.user.id),
+          ),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        const blocked = await asWorker('get', `${BASE}/me/eligibility`).expect(
+          200,
+        );
+        expect(blocked.body).toMatchObject({
+          eligible: false,
+          status: WorkerProfileStatus.SUSPENDIDO,
+          canTakeNewWork: false,
+        });
+        expect(await reactivationNotices(worker)).toBe(0);
+
+        // Solo el administrador lo reactiva, ahora que cumple los requisitos.
+        await reactivate(worker).expect(200);
+        expect(await statusOf(worker)).toBe(WorkerProfileStatus.APROBADO);
+        await asWorker('get', '/api/orders/available').expect(200);
+        const free = await asWorker('get', `${BASE}/me/eligibility`).expect(
+          200,
+        );
+        expect(free.body).toMatchObject({
+          eligible: true,
+          canTakeNewWork: true,
+        });
+        expect(await reactivationNotices(worker)).toBe(1);
+      });
+    });
+
+    describe('T4-F4: elegibilidad', () => {
+      it('informa la solicitud pendiente y el bloqueo para trabajos nuevos', async () => {
+        const { worker, requestId } = await pendingRequest('elegibilidad');
+        const eligibility = () =>
+          http()
+            .get(`${BASE}/me/eligibility`)
+            .set('Authorization', auth(worker.user))
+            .expect(200);
+
+        const blocked = await eligibility();
+        expect(blocked.body).toMatchObject({
+          eligible: true,
+          status: WorkerProfileStatus.APROBADO,
+          reason: null,
+          canTakeNewWork: false,
+          pendingZoneChangeRequest: {
+            id: requestId,
+            toZone: { id: zoneB.id, name: zoneB.name, isActive: true },
+          },
+        });
+        expect(blocked.body.pendingZoneChangeRequest.createdAt).toEqual(
+          expect.any(String),
+        );
+
+        await http()
+          .post(`${BASE}/me/zone-change-requests/${requestId}/withdraw`)
+          .set('Authorization', auth(worker.user))
+          .expect(200);
+
+        const free = await eligibility();
+        expect(free.body).toMatchObject({
+          eligible: true,
+          canTakeNewWork: true,
+          pendingZoneChangeRequest: null,
+        });
+      });
     });
   });
 });

@@ -117,6 +117,11 @@ type OwnProfile = Prisma.WorkerProfileGetPayload<{
 
 type RequestWithProfile = ZoneChangeRequest & { profile: OwnProfile };
 
+// Cancelaciones automaticas por suspension: del perfil (T4.2) o de la cuenta (T4-F3).
+type SuspensionCause =
+  | typeof ZoneChangeCancellationCause.SUSPENSION_PERFIL
+  | typeof ZoneChangeCancellationCause.SUSPENSION_CUENTA;
+
 const ACTIVE_WORK_LABELS: Record<ActiveWorkKind, string> = {
   PEDIDOS: 'pedidos',
   OFERTAS: 'ofertas',
@@ -343,6 +348,20 @@ export class ZoneChangeRequestsService {
       // Misma fila bloqueada que al solicitar, al suspender el perfil (su
       // UPDATE espera) y en pedidos y ofertas: la decision no se cruza con
       // esas operaciones. El estado del perfil se relee con el bloqueo.
+      if (approved) {
+        // T4-F3: no se aprueba si la cuenta del trabajador esta suspendida. Se
+        // lee con FOR SHARE (orden del proyecto: la cuenta antes que el
+        // trabajador): una suspension simultanea espera o ya se ve aplicada.
+        const account = await this.users.findByIdForShare(
+          tx,
+          request.profile.userId,
+        );
+        if (account.status === UserStatus.SUSPENDIDO) {
+          throw new ConflictException(
+            'No se puede aprobar: la cuenta del trabajador está suspendida',
+          );
+        }
+      }
       await this.activeWork.lockWorker(tx, request.profile.userId);
       if (approved) {
         const profile = await tx.workerProfile.findUniqueOrThrow({
@@ -425,6 +444,7 @@ export class ZoneChangeRequestsService {
     tx: Db,
     adminId: string,
     profile: { id: string; userId: string },
+    cause: SuspensionCause = ZoneChangeCancellationCause.SUSPENSION_PERFIL,
   ): Promise<boolean> {
     const pending = await tx.zoneChangeRequest.findFirst({
       where: {
@@ -439,7 +459,7 @@ export class ZoneChangeRequestsService {
       where: { id: pending.id, status: ZoneChangeRequestStatus.PENDIENTE },
       data: {
         status: ZoneChangeRequestStatus.CANCELADA,
-        cancellationCause: ZoneChangeCancellationCause.SUSPENSION_PERFIL,
+        cancellationCause: cause,
         decidedAt: new Date(),
         decidedById: adminId,
       },
@@ -460,7 +480,7 @@ export class ZoneChangeRequestsService {
           toZoneId: pending.toZoneId,
           fromStatus: ZoneChangeRequestStatus.PENDIENTE,
           toStatus: ZoneChangeRequestStatus.CANCELADA,
-          cause: ZoneChangeCancellationCause.SUSPENSION_PERFIL,
+          cause,
         },
       },
       tx,
@@ -470,10 +490,42 @@ export class ZoneChangeRequestsService {
       zoneRequestCancelledBySuspensionNotification(
         pending.id,
         await this.zoneNames(pending),
+        cause,
       ),
       tx,
     );
     return true;
+  }
+
+  /**
+   * T4-F3: al suspender la CUENTA de usuario (UsersService.updateStatus, por un
+   * administrador) se cancela su solicitud de cambio de zona pendiente, dentro
+   * de la misma transaccion. Es distinto de suspender el PERFIL de trabajador:
+   * la causa queda como SUSPENSION_CUENTA. Se registra quien la provoco y
+   * cuando, en la bitacora, y se avisa al trabajador. La zona no cambia.
+   *
+   * La cuenta ya esta bloqueada por el UPDATE de estado; despues se bloquea al
+   * trabajador (orden del proyecto: cuenta y luego trabajador).
+   */
+  async cancelPendingOnAccountSuspension(
+    tx: Db,
+    adminId: string,
+    userId: string,
+  ): Promise<boolean> {
+    await this.activeWork.lockWorker(tx, userId);
+    const profile = await tx.workerProfile.findUnique({
+      where: { userId },
+      select: { id: true, userId: true },
+    });
+    if (!profile) {
+      return false;
+    }
+    return this.cancelPendingOnSuspension(
+      tx,
+      adminId,
+      profile,
+      ZoneChangeCancellationCause.SUSPENSION_CUENTA,
+    );
   }
 
   // ---------------------------------------------------------------------

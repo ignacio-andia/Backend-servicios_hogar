@@ -115,7 +115,7 @@ Los horarios de atención **no son reservas**: no existe agenda de trabajos.
 
 | RF | Estado | Contrato |
 |---|---|---|
-| RF-47 Revisar y suspender trabajadores | 🟡 | Listar (#56), ver (#57), suspender y reactivar (#55). Además, #41 (perfiles con zona inactiva) y la decisión de cambios de zona (#38–#40). Falta la consulta de documentos |
+| RF-47 Revisar y suspender trabajadores | 🟡 | Listar (#56), ver (#57), documentos (#58–#60), suspender y reactivar (#55; la reactivación exige los requisitos vigentes, T4-F1; mientras está suspendido el trabajador puede regularizar su perfil, T4-F7). Además, #41 (perfiles con zona inactiva), #66 (reasignación de zona) y la decisión de cambios de zona (#38–#40) |
 | RF-48 Categorías | ✅ | #8, #9, #12, #13, #16–#18 (sin reactivación) |
 | RF-49 Zonas | ✅ | #10, #11, #14, #15, #19–#21 (sin reactivación). Perfiles afectados: #41; un perfil `RECHAZADO` con la zona desactivada recibe otra zona por reasignación administrativa (#66, T4.4) |
 | RF-50 Supervisar pedidos | ⛔ | No hay vista administrativa de pedidos |

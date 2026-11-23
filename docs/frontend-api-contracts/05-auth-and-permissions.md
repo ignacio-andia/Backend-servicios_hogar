@@ -96,12 +96,13 @@ Si no se cumple alguna condición, responde **404** (igual que un pedido inexist
 
 | Acción | Estado requerido | Respuesta si no se cumple |
 |---|---|---|
-| Editar el perfil, especialidades o documentos | Perfil `BORRADOR`, `OBSERVADO` o `RECHAZADO` | 409 |
+| Editar el perfil, especialidades o documentos | Perfil `BORRADOR`, `OBSERVADO`, `RECHAZADO` o `SUSPENDIDO`. La zona solo en `BORRADOR` (403) | 409 |
 | Cambiar la zona directamente | Perfil `BORRADOR` | 403 (hay que usar una solicitud) |
-| Aprobar un cambio de zona | Administrador activo, no su propia solicitud; perfil no `SUSPENDIDO` ni `RECHAZADO`; zona destino activa | 403 o 409 |
+| Aprobar un cambio de zona | Administrador activo, no su propia solicitud; perfil no `SUSPENDIDO` ni `RECHAZADO`; cuenta del trabajador no `SUSPENDIDO` (T4-F3); zona destino activa | 403 o 409 |
+| Aprobar o reactivar un perfil (#55) | Requisitos vigentes: teléfono, especialidades activas, zona activa y un horario activo (T4-F1), comprobados con bloqueos dentro de la transacción | 409 con la lista |
 | Rechazar un cambio de zona | Administrador activo, no su propia solicitud; motivo no vacío | 403 o 400 |
 | Retirar una solicitud de cambio de zona | Solo la propia (404 si es ajena) y `PENDIENTE` | 404 o 409 |
-| Reasignar la zona de un perfil (#66) | Administrador activo, no su propio perfil (403); perfil `RECHAZADO` (409) con la zona actual inactiva (409); zona destino existente (404), activa y distinta (400); justificación no vacía (400) | 400, 403, 404 o 409 |
+| Reasignar la zona de un perfil (#66) | Administrador activo, no su propio perfil (403); perfil `RECHAZADO`, `OBSERVADO`, `PENDIENTE` o `SUSPENDIDO` (409), que conserva su estado, con la zona actual inactiva (409); zona destino existente (404), activa y distinta (400); justificación no vacía (400) | 400, 403, 404 o 409 |
 | Ofertar o recibir un trabajo nuevo | Perfil `APROBADO`, cuenta activa y **sin** solicitud de cambio de zona `PENDIENTE` (T4.3). Los trabajos ya acordados no se afectan | 403 o 409 `"Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire."` |
 | Enviar a revisión (o reenviar) | `BORRADOR`, `OBSERVADO` o `RECHAZADO`, sin requisitos pendientes | 409 o 400 |
 | Solicitar cambio de zona | Perfil `APROBADO` (T4.2); sin solicitud pendiente; sin trabajo activo; fuentes de verificación disponibles | 409 con un arreglo de motivos |

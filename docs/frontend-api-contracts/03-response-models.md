@@ -32,7 +32,7 @@ Cada modelo se obtuvo de lo que **construye el service** (selects explícitos, f
 | #39, #40 solicitud (admin) | `AdminZoneChangeRequestView` |
 | #41 perfiles con zona inactiva | `AffectedProfile[]` |
 | #55 decisión administrativa sobre un perfil | `WorkerProfileView` (el perfil ya actualizado; **sin** el motivo ni el historial) |
-| #66 reasignar la zona de un perfil `RECHAZADO` | `AdminWorkerProfileView` (el detalle de #57, con la zona nueva y el estado `RECHAZADO`) |
+| #66 reasignar la zona de un perfil `RECHAZADO`, `OBSERVADO`, `PENDIENTE` o `SUSPENDIDO` | `AdminWorkerProfileView` (el detalle de #57, con la zona nueva y el mismo estado) |
 | #56 perfiles para revisar (admin) | `Paginated<AdminWorkerProfileSummary>` |
 | #57 detalle de un perfil (admin) | `AdminWorkerProfileView` |
 | #58 documentos de un perfil (admin) | `WorkerDocumentView[]` (los mismos metadatos que ve el trabajador) |
@@ -185,11 +185,11 @@ Formas de `details` que escribe el código hoy:
 | `CATEGORIA_SERVICIO` o `ZONA` / `EDICION` | `{ before: { name?, description? }, after: { name?, description? } }` (solo los campos cambiados) |
 | `CATEGORIA_SERVICIO` o `ZONA` / `DESACTIVACION` | `{ name: string }` |
 | `SOLICITUD_CAMBIO_ZONA` / `APROBACION` o `RECHAZO` | `{ profileId, workerUserId, fromZoneId, toZoneId, fromStatus: 'PENDIENTE', toStatus: 'APROBADA' \| 'RECHAZADA', comment: string \| null }` (`fromStatus` y `toStatus` desde T4.2) |
-| `SOLICITUD_CAMBIO_ZONA` / `CAMBIO_ESTADO` | Cancelación automática al suspender el perfil (T4.2): `{ profileId, workerUserId, fromZoneId, toZoneId, fromStatus: 'PENDIENTE', toStatus: 'CANCELADA', cause: 'SUSPENSION_PERFIL' }`. `actor` = administrador que suspendió |
+| `SOLICITUD_CAMBIO_ZONA` / `CAMBIO_ESTADO` | Cancelación automática al suspender el perfil (T4.2) o la cuenta (T4-F3): `{ profileId, workerUserId, fromZoneId, toZoneId, fromStatus: 'PENDIENTE', toStatus: 'CANCELADA', cause: 'SUSPENSION_PERFIL' \| 'SUSPENSION_CUENTA' }`. `actor` = administrador que suspendió |
 | `PERFIL_TRABAJADOR` / `CONSULTA_DOCUMENTOS` | `{ documentCount: number }`. `entityId` = id del perfil |
 | `PERFIL_TRABAJADOR` / `VISUALIZACION_DOCUMENTO` o `DESCARGA_DOCUMENTO` | `{ documentId, documentType: WorkerDocumentType }`. `entityId` = id del perfil |
 | `PERFIL_TRABAJADOR` / `CAMBIO_ESTADO` | `{ from, to, reason: string \| null }`. Lo genera la decisión administrativa (#55) |
-| `PERFIL_TRABAJADOR` / `EDICION` | Reasignación de zona de un perfil `RECHAZADO` (#66, T4.4): `{ operation: 'REASIGNACION_ZONA', workerUserId, profileStatus: 'RECHAZADO', fromZoneId, toZoneId, justification }`. `actor` = administrador; `createdAt` = fecha |
+| `PERFIL_TRABAJADOR` / `EDICION` | Reasignación de zona (#66, T4.4 y T4-F2): `{ operation: 'REASIGNACION_ZONA', workerUserId, profileStatus: 'RECHAZADO' \| 'OBSERVADO' \| 'PENDIENTE', fromZoneId, toZoneId, justification }`. `actor` = administrador; `createdAt` = fecha |
 
 ---
 
@@ -211,8 +211,8 @@ Formas de `details` que escribe el código hoy:
 | `specialties` | `CatalogRef[]` | no | | Ordenadas por nombre |
 | `schedules` | `ScheduleView[]` | no | | Por día (LUNES→DOMINGO) y hora de inicio |
 | `pendingRequirements` | `PendingRequirement[]` | no | ✔ | Lo que falta para enviar a revisión |
-| `canEdit` | boolean | no | ✔ | Estado `BORRADOR`, `OBSERVADO` o `RECHAZADO` (afecta a datos, especialidades y documentos; **no** a los horarios ni a la zona fuera de `BORRADOR`) |
-| `canSubmit` | boolean | no | ✔ | `canEdit` y sin requisitos pendientes |
+| `canEdit` | boolean | no | ✔ | Estado `BORRADOR`, `OBSERVADO`, `RECHAZADO` o `SUSPENDIDO` (afecta a datos, especialidades y documentos; **no** a los horarios ni a la zona fuera de `BORRADOR`) |
+| `canSubmit` | boolean | no | ✔ | Estado `BORRADOR`, `OBSERVADO` o `RECHAZADO` y sin requisitos pendientes. En `SUSPENDIDO` es `false` aunque `canEdit` sea `true`: no puede enviarse a revisión (T4-F7) |
 
 `ScheduleView`:
 
@@ -279,6 +279,8 @@ Condiciones de cada requisito:
 | `status` | `WorkerProfileStatus` | **sí** | `null` si la cuenta no está activa, no tiene el rol o no tiene perfil |
 | `message` | string | no | Texto para el usuario, por ejemplo `"Su perfil de trabajador está pendiente de revisión."` |
 | `reason` | string | **sí** | Motivo registrado por el administrador para el estado vigente |
+| `pendingZoneChangeRequest` | `{ id, toZone: CatalogRef, createdAt }` | **sí** | T4-F4: la solicitud de cambio de zona `PENDIENTE`, o `null` |
+| `canTakeNewWork` | boolean | no | T4-F4: `eligible` y sin solicitud de cambio de zona pendiente. Con `false` y `eligible: true` puede ver pedidos (#52–#54) pero no ofertar ni recibir asignaciones nuevas (409) |
 
 ### `WorkerDocumentView`
 
@@ -383,7 +385,7 @@ Valores de `code`:
 | `createdAt` | string | no |
 | `decidedAt` | string | **sí** |
 | `decisionComment` | string | **sí** (en la entrada se llama `comment`). Siempre presente en `RECHAZADA`; `null` en `CANCELADA` |
-| `cancellationCause` | `ZoneChangeCancellationCause` | **sí**. Solo en `CANCELADA`: `SUSPENSION_PERFIL` (T4.2; `decidedBy` es el administrador que suspendió) o `RETIRO_TRABAJADOR` (T4.3; `decidedBy` es el propio trabajador). `decidedAt` es la fecha de la cancelación. En `AdminZoneChangeRequestView`, `decidedBy` puede ser entonces el trabajador |
+| `cancellationCause` | `ZoneChangeCancellationCause` | **sí**. Solo en `CANCELADA`: `SUSPENSION_PERFIL` (T4.2; `decidedBy` es el administrador que suspendió el perfil), `SUSPENSION_CUENTA` (T4-F3; `decidedBy` es el administrador que suspendió la cuenta) o `RETIRO_TRABAJADOR` (T4.3; `decidedBy` es el propio trabajador). `decidedAt` es la fecha de la cancelación. En `AdminZoneChangeRequestView`, `decidedBy` puede ser entonces el trabajador |
 
 ### `AdminZoneChangeRequestView` (extiende `ZoneChangeRequestView`)
 

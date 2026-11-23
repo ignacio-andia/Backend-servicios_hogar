@@ -331,8 +331,9 @@ export class WorkerProfileController {
     return this.profiles.changeStatusByAdmin(admin.id, profileId, dto);
   }
 
-  // T4.4: reasignacion de zona de un perfil RECHAZADO cuya zona fue
-  // desactivada. Justificacion obligatoria; nunca sobre el propio perfil.
+  // T4.4 y T4-F2: reasignacion de zona de un perfil RECHAZADO, OBSERVADO o
+  // PENDIENTE cuya zona fue desactivada. Justificacion obligatoria; nunca
+  // sobre el propio perfil; el perfil conserva su estado.
   @Patch('admin/profiles/:profileId/zone')
   @Auth(RoleName.ADMINISTRADOR)
   reassignRejectedProfileZone(

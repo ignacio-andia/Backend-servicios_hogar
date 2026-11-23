@@ -6,15 +6,25 @@ import { ActiveWorkKind } from './active-work.registry.js';
 // RECHAZADO no es terminal (v1.0 §5): el trabajador corrige y vuelve a
 // enviar; el rechazo y su motivo quedan en el historial. La zona sigue fija
 // fuera de BORRADOR (RF-13, decision del equipo).
+// SUSPENDIDO (T4-F7): puede regularizar su perfil (datos, especialidades y
+// documentos) pero sigue SUSPENDIDO: no puede enviarlo a revision (ver
+// SUBMITTABLE_STATUSES) ni recupera permisos. Solo un administrador lo
+// reactiva, y solo si cumple los requisitos vigentes.
 export const EDITABLE_STATUSES: readonly WorkerProfileStatus[] = [
   WorkerProfileStatus.BORRADOR,
   WorkerProfileStatus.OBSERVADO,
   WorkerProfileStatus.RECHAZADO,
+  WorkerProfileStatus.SUSPENDIDO,
 ];
 
 // Estados desde los que el trabajador puede enviar el perfil a revision
 // (BORRADOR -> PENDIENTE; OBSERVADO o RECHAZADO -> PENDIENTE, como reenvio).
-export const SUBMITTABLE_STATUSES = EDITABLE_STATUSES;
+// No incluye SUSPENDIDO: editar no le permite salir de la suspension.
+export const SUBMITTABLE_STATUSES: readonly WorkerProfileStatus[] = [
+  WorkerProfileStatus.BORRADOR,
+  WorkerProfileStatus.OBSERVADO,
+  WorkerProfileStatus.RECHAZADO,
+];
 
 // La zona solo se elige directamente antes del primer envio (RF-13).
 export const ZONE_DIRECTLY_EDITABLE_STATUS = WorkerProfileStatus.BORRADOR;
@@ -108,11 +118,19 @@ export const PENDING_ZONE_CHANGE_BLOCKS_NEW_WORK_MESSAGE =
   'Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire.';
 
 /**
- * Unico estado en el que un administrador puede reasignar la zona de un
- * perfil, y solo si su zona actual fue desactivada (T4.4). El perfil sigue
- * en ese estado despues de la reasignacion.
+ * Estados en los que un administrador puede reasignar la zona de un perfil, y
+ * solo si su zona actual fue desactivada (T4.4; OBSERVADO y PENDIENTE desde
+ * T4-F2; SUSPENDIDO desde T4-F7, para regularizarse). Ninguno puede cambiar la
+ * zona ni pedir un cambio, y sin una zona activa no se puede reenviar, aprobar
+ * ni reactivar. El perfil conserva su estado. No se admiten APROBADO (pide un
+ * cambio de zona) ni BORRADOR (elige la zona directamente).
  */
-export const ZONE_REASSIGNMENT_STATUS = WorkerProfileStatus.RECHAZADO;
+export const ZONE_REASSIGNMENT_STATUSES: readonly WorkerProfileStatus[] = [
+  WorkerProfileStatus.RECHAZADO,
+  WorkerProfileStatus.OBSERVADO,
+  WorkerProfileStatus.PENDIENTE,
+  WorkerProfileStatus.SUSPENDIDO,
+];
 
 // Decisiones que deben explicarse al trabajador (RF-10 y CU-03 A1).
 export const STATUSES_REQUIRING_REASON: readonly WorkerProfileStatus[] = [

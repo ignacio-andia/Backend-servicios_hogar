@@ -4,7 +4,7 @@ Documentación técnica de los contratos **reales** entre el backend NestJS de S
 
 > **Fuente de verdad:** el código del backend. Si esta documentación y el código difieren, manda el código y hay que actualizar este documento.
 >
-> **Versión inspeccionada:** commit `207f2cb` (rama `main`). Ese commit, que incluye OrdersModule, las solicitudes de cambio de zona, la cola de borrado de archivos y las migraciones `20261114000000` y `20261115000000`, **todavía no está en `origin/main`**: quien clone el repositorio remoto antes del push no tendrá los endpoints de pedidos.
+> **Versión inspeccionada:** rama `main` local, con las correcciones de cierre de T4. Los commits locales de T2 a T4 (OrdersModule, verificación, documentos, notificaciones, cambio de zona y sus migraciones) **no están publicados** en `origin/main` al momento de esta revisión: la rama `main` local está por delante: quien clone el repositorio remoto antes del push no tendrá esos endpoints.
 
 ## Índice
 

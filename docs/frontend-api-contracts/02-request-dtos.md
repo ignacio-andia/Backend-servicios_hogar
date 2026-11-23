@@ -92,7 +92,7 @@ Hay que enviar al menos una propiedad (400 si no). `email`, `roles`, `status` y 
 
 | Propiedad | Tipo | Omitir / null | Valores | Reglas |
 |---|---|---|---|---|
-| `status` | `UserStatus` | Obligatoria | `ACTIVO`, `INACTIVO`, `SUSPENDIDO` | Un usuario no admin solo puede enviar `INACTIVO` sobre su propia cuenta. No se puede dejar la plataforma sin administradores activos |
+| `status` | `UserStatus` | Obligatoria | `ACTIVO`, `INACTIVO`, `SUSPENDIDO` | Un usuario no admin solo puede enviar `INACTIVO` sobre su propia cuenta. No se puede dejar la plataforma sin administradores activos. `SUSPENDIDO` cancela la solicitud de cambio de zona pendiente (T4-F3); `INACTIVO` no |
 
 ---
 
@@ -194,7 +194,7 @@ Ejemplo inválido: `"schedules": [{ "dayOfWeek": "LUNES", "startTime": "10:00", 
 | `description` | string \| null | Omitible, admite null | ≤ 1000 | `null` o `""` borra la descripción |
 | `zoneId` | string | Omitible, **no admite null** | UUID | Solo se puede **cambiar** en `BORRADOR` (403 en otro estado); enviar la misma zona no cuenta como cambio |
 
-Hay que enviar al menos una propiedad (400). El perfil debe estar en `BORRADOR`, `OBSERVADO` o `RECHAZADO` (409). En `RECHAZADO` se corrigen los datos, pero la zona sigue fija (403), igual que en `OBSERVADO`.
+Hay que enviar al menos una propiedad (400). El perfil debe estar en `BORRADOR`, `OBSERVADO`, `RECHAZADO` o `SUSPENDIDO` (409). En `RECHAZADO` y `SUSPENDIDO` se corrigen los datos, pero la zona sigue fija (403), igual que en `OBSERVADO`. Editar no cambia el estado: un perfil `SUSPENDIDO` sigue suspendido (T4-F7).
 
 ### `UpdateSpecialtiesDto`: `PUT /api/worker-profile/me/specialties` (JSON)
 
@@ -288,7 +288,7 @@ Ejemplos inválidos:
 | `zoneId` | string | **Obligatoria** | UUID | Debe existir (404), estar activa (400) y ser distinta de la zona actual (400) |
 | `justification` | string | **Obligatoria**, no admite null | 1 a 500 después de recortar; `""` o solo espacios responden 400 | Queda en la bitácora; no se envía al trabajador |
 
-No acepta otras propiedades (400): la operación no cambia el estado ni otros datos del perfil. Solo para perfiles `RECHAZADO` cuya zona actual está inactiva (T4.4).
+No acepta otras propiedades (400): la operación no cambia el estado ni otros datos del perfil. Solo para perfiles `RECHAZADO`, `OBSERVADO`, `PENDIENTE` o `SUSPENDIDO` cuya zona actual está inactiva (T4.4, T4-F2 y T4-F7). El perfil conserva su estado.
 
 ### `ListInactiveZoneProfilesQueryDto`: `GET /api/worker-profile/admin/inactive-zone-profiles` (query)
 

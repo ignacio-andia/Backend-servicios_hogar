@@ -117,7 +117,7 @@ describe('ZoneChangeRequestsService', () => {
     $transaction: ReturnType<typeof vi.fn>;
     $queryRaw: ReturnType<typeof vi.fn>;
   };
-  let users: { findById: ReturnType<typeof vi.fn> };
+  let users: Record<'findById' | 'findByIdForShare', ReturnType<typeof vi.fn>>;
   let catalogs: Record<
     | 'assertActive'
     | 'assertActiveForShare'
@@ -174,6 +174,8 @@ describe('ZoneChangeRequestsService', () => {
       findById: vi.fn((id: string) =>
         Promise.resolve(id === ADMIN_ID ? admin : account()),
       ),
+      // Cuenta del trabajador leida con FOR SHARE al aprobar (T4-F3).
+      findByIdForShare: vi.fn().mockResolvedValue(account()),
     };
     catalogs = fns(
       'assertActive',
@@ -570,6 +572,39 @@ describe('ZoneChangeRequestsService', () => {
       ).rejects.toThrow('sin conexion');
     });
 
+    it('no aprueba si la cuenta del trabajador esta suspendida (T4-F3)', async () => {
+      users.findByIdForShare.mockResolvedValue(
+        account({ status: UserStatus.SUSPENDIDO }),
+      );
+
+      await expect(
+        service.decide(ADMIN_ID, REQUEST_ID, { decision: 'APROBADA' }),
+      ).rejects.toThrow(
+        new ConflictException(
+          'No se puede aprobar: la cuenta del trabajador está suspendida',
+        ),
+      );
+      expect(prisma.zoneChangeRequest.updateMany).not.toHaveBeenCalled();
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('al aprobar bloquea la cuenta antes que al trabajador; al rechazar no la lee', async () => {
+      await service.decide(ADMIN_ID, REQUEST_ID, { decision: 'APROBADA' });
+
+      expect(users.findByIdForShare).toHaveBeenCalledWith(prisma, WORKER_ID);
+      expect(users.findByIdForShare.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.$queryRaw.mock.invocationCallOrder[0],
+      );
+
+      users.findByIdForShare.mockClear();
+      prisma.zoneChangeRequest.findUnique.mockResolvedValue(request());
+      await service.decide(ADMIN_ID, REQUEST_ID, {
+        decision: 'RECHAZADA',
+        comment: 'Sin cobertura',
+      });
+      expect(users.findByIdForShare).not.toHaveBeenCalled();
+    });
+
     it('solo un administrador activo decide', async () => {
       await expect(
         service.decide(WORKER_ID, REQUEST_ID, { decision: 'APROBADA' }),
@@ -853,6 +888,80 @@ describe('ZoneChangeRequestsService', () => {
       await expect(service.withdraw(WORKER_ID, REQUEST_ID)).rejects.toThrow(
         'sin conexion',
       );
+    });
+  });
+
+  describe('cancelPendingOnAccountSuspension (T4-F3)', () => {
+    it('sin perfil de trabajador no hace nada', async () => {
+      prisma.workerProfile.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.cancelPendingOnAccountSuspension(
+          prisma as never,
+          ADMIN_ID,
+          WORKER_ID,
+        ),
+      ).resolves.toBe(false);
+      expect(prisma.zoneChangeRequest.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('cancela la pendiente con la causa SUSPENSION_CUENTA, la audita y avisa', async () => {
+      prisma.zoneChangeRequest.findFirst.mockResolvedValue(request());
+
+      await expect(
+        service.cancelPendingOnAccountSuspension(
+          prisma as never,
+          ADMIN_ID,
+          WORKER_ID,
+        ),
+      ).resolves.toBe(true);
+
+      // Bloquea al trabajador antes de buscar su perfil y su solicitud.
+      expect(prisma.$queryRaw.mock.calls[0][1]).toBe(WORKER_ID);
+      expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.workerProfile.findUnique.mock.invocationCallOrder[0],
+      );
+      expect(prisma.zoneChangeRequest.updateMany).toHaveBeenCalledWith({
+        where: { id: REQUEST_ID, status: ZoneChangeRequestStatus.PENDIENTE },
+        data: {
+          status: ZoneChangeRequestStatus.CANCELADA,
+          cancellationCause: ZoneChangeCancellationCause.SUSPENSION_CUENTA,
+          decidedAt: expect.any(Date),
+          decidedById: ADMIN_ID,
+        },
+      });
+      expect(prisma.workerProfile.updateMany).not.toHaveBeenCalled();
+      expect(audit.record.mock.calls[0][0]).toMatchObject({
+        actorId: ADMIN_ID,
+        action: AuditAction.CAMBIO_ESTADO,
+        entityType: AuditEntityType.SOLICITUD_CAMBIO_ZONA,
+        entityId: REQUEST_ID,
+        details: {
+          toStatus: ZoneChangeRequestStatus.CANCELADA,
+          cause: ZoneChangeCancellationCause.SUSPENSION_CUENTA,
+        },
+      });
+      expect(notifications.create).toHaveBeenCalledWith(
+        WORKER_ID,
+        expect.objectContaining({
+          type: NotificationType.SOLICITUD_ZONA_CANCELADA,
+          message:
+            'Su solicitud de cambio a la zona "Zona 2" se canceló porque su cuenta fue suspendida. Conserva su zona "Zona 1".',
+        }),
+        prisma,
+      );
+    });
+
+    it('sin solicitud pendiente no audita ni notifica', async () => {
+      await expect(
+        service.cancelPendingOnAccountSuspension(
+          prisma as never,
+          ADMIN_ID,
+          WORKER_ID,
+        ),
+      ).resolves.toBe(false);
+      expect(audit.record).not.toHaveBeenCalled();
+      expect(notifications.create).not.toHaveBeenCalled();
     });
   });
 

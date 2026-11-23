@@ -37,7 +37,8 @@ export const WORKER_DOCUMENT_TYPES = ['IDENTIDAD', 'ANTECEDENTES', 'CERTIFICADO'
 export type WorkerDocumentType = (typeof WORKER_DOCUMENT_TYPES)[number];
 
 export const ZONE_CHANGE_REQUEST_STATUSES = ['PENDIENTE', 'APROBADA', 'RECHAZADA', 'CANCELADA'] as const;
-export type ZoneChangeCancellationCause = 'SUSPENSION_PERFIL' | 'RETIRO_TRABAJADOR';
+export type ZoneChangeCancellationCause =
+  | 'SUSPENSION_PERFIL' | 'SUSPENSION_CUENTA' | 'RETIRO_TRABAJADOR';
 export type ZoneChangeRequestStatus = (typeof ZONE_CHANGE_REQUEST_STATUSES)[number];
 
 export const ORDER_STATUSES = [
@@ -241,7 +242,8 @@ export interface ChangeWorkerProfileStatusRequest {
   reason?: string; // obligatorio y no vacio salvo APROBADO; no admite null
 }
 // Solo administradores: PATCH /worker-profile/admin/profiles/:profileId/zone (T4.4).
-// Perfil RECHAZADO con la zona actual inactiva. Responde AdminWorkerProfileView.
+// Perfil RECHAZADO, OBSERVADO, PENDIENTE o SUSPENDIDO con la zona actual inactiva; conserva
+// su estado. Responde AdminWorkerProfileView.
 export interface ReassignRejectedProfileZoneRequest {
   zoneId: string;
   justification: string; // obligatoria y no vacia
@@ -320,6 +322,9 @@ export interface WorkerEligibility {
   status: WorkerProfileStatus | null;
   message: string;
   reason: string | null;
+  // T4-F4: solicitud de cambio de zona pendiente y si puede asumir trabajos nuevos.
+  pendingZoneChangeRequest: { id: string; toZone: CatalogRef; createdAt: string } | null;
+  canTakeNewWork: boolean; // eligible y sin solicitud pendiente
 }
 export interface WorkerDocument {
   id: string;

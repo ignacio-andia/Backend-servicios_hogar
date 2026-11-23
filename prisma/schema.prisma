@@ -182,10 +182,12 @@ enum ZoneChangeRequestStatus {
 /// decision del administrador sobre la solicitud.
 /// SUSPENSION_PERFIL (T4.2): automatica al suspender el perfil; decidedBy es el
 /// administrador que suspendio. RETIRO_TRABAJADOR (T4.3): el trabajador la
-/// retiro; decidedBy es el propio trabajador.
+/// retiro; decidedBy es el propio trabajador. SUSPENSION_CUENTA (T4-F3): la
+/// cuenta de usuario se suspendio; decidedBy es el administrador que la suspendio.
 enum ZoneChangeCancellationCause {
   SUSPENSION_PERFIL
   RETIRO_TRABAJADOR
+  SUSPENSION_CUENTA
 }
 
 /// Perfil del trabajador (RF-06). Nombre, correo y teléfono pertenecen a User.

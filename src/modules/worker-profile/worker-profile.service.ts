@@ -45,7 +45,7 @@ import {
   STATUSES_REQUIRING_REASON,
   SUBMITTABLE_STATUSES,
   ZONE_DIRECTLY_EDITABLE_STATUS,
-  ZONE_REASSIGNMENT_STATUS,
+  ZONE_REASSIGNMENT_STATUSES,
 } from './worker-profile.rules.js';
 import {
   assertActiveAdmin,
@@ -159,11 +159,29 @@ export interface WorkerStatusView {
   history: StatusHistoryEntry[];
 }
 
+/** Solicitud de cambio de zona pendiente, resumida para la elegibilidad. */
+export interface PendingZoneChangeSummary {
+  id: string;
+  toZone: CatalogRef;
+  createdAt: Date;
+}
+
 export interface WorkerEligibility {
   eligible: boolean;
   status: WorkerProfileStatus | null;
   message: string;
   reason: string | null;
+  /**
+   * T4-F4: solicitud de cambio de zona PENDIENTE, o null. Mientras exista no
+   * puede asumir trabajos nuevos, aunque su perfil este APROBADO.
+   */
+  pendingZoneChangeRequest: PendingZoneChangeSummary | null;
+  /**
+   * T4-F4: si puede asumir trabajos nuevos (ofertar, recibir asignaciones):
+   * `eligible` y sin solicitud de cambio de zona pendiente. `eligible` sigue
+   * indicando solo el acceso a las funciones de trabajador (ver pedidos).
+   */
+  canTakeNewWork: boolean;
 }
 
 /** Datos de la cuenta que ve un administrador (nunca el hash). */
@@ -499,12 +517,17 @@ export class WorkerProfileService {
     if (!profile) {
       return notEligible(null, 'Aún no registró su perfil de trabajador.');
     }
+    const pendingZoneChangeRequest = await this.findPendingZoneChange(
+      profile.id,
+    );
     if (profile.status === WorkerProfileStatus.APROBADO) {
       return {
         eligible: true,
         status: profile.status,
         message: NOT_APPROVED_MESSAGES.APROBADO,
         reason: null,
+        pendingZoneChangeRequest,
+        canTakeNewWork: pendingZoneChangeRequest === null,
       };
     }
     const latest = await this.prisma.workerProfileStatusHistory.findFirst({
@@ -512,11 +535,36 @@ export class WorkerProfileService {
       orderBy: { createdAt: 'desc' },
       select: { reason: true },
     });
-    return notEligible(
-      profile.status,
-      NOT_APPROVED_MESSAGES[profile.status],
-      latest?.reason ?? null,
+    return {
+      ...notEligible(
+        profile.status,
+        NOT_APPROVED_MESSAGES[profile.status],
+        latest?.reason ?? null,
+      ),
+      pendingZoneChangeRequest,
+    };
+  }
+
+  /** T4-F4: la solicitud de cambio de zona pendiente del perfil, si existe. */
+  private async findPendingZoneChange(
+    profileId: string,
+  ): Promise<PendingZoneChangeSummary | null> {
+    const pending = await this.prisma.zoneChangeRequest.findFirst({
+      where: { profileId, status: ZoneChangeRequestStatus.PENDIENTE },
+      select: { id: true, toZoneId: true, createdAt: true },
+    });
+    if (!pending) {
+      return null;
+    }
+    const zone = await this.catalogs.findById(
+      CatalogKind.ZONE,
+      pending.toZoneId,
     );
+    return {
+      id: pending.id,
+      toZone: toRef(zone),
+      createdAt: pending.createdAt,
+    };
   }
 
   /**
@@ -671,7 +719,7 @@ export class WorkerProfileService {
 
   /**
    * Cambio de estado administrativo (aprobar, observar, rechazar, suspender,
-   * reactivar). Lo usara el modulo de verificacion; aqui no tiene endpoint.
+   * reactivar). Endpoint #55 (PATCH /admin/profiles/:profileId/status).
    * Registra historial, bitacora y la notificacion al trabajador en la misma
    * transaccion: si alguno falla, el cambio de estado se revierte. Al
    * suspender, cancela tambien la solicitud de cambio de zona pendiente (T4.2).
@@ -707,14 +755,25 @@ export class WorkerProfileService {
         `Debe indicar el motivo para el estado ${status}`,
       );
     }
-    if (
-      profile.status === WorkerProfileStatus.PENDIENTE &&
-      status === WorkerProfileStatus.APROBADO
-    ) {
-      await this.assertMeetsApprovalRequirements(profile);
-    }
-
     await this.prisma.$transaction(async (tx) => {
+      if (status === WorkerProfileStatus.APROBADO) {
+        // T4-F1 y T4-F5: aprobar o reactivar exige los requisitos vigentes,
+        // comprobados con bloqueos y en el orden del proyecto: la cuenta
+        // (FOR SHARE: telefono y estado), el perfil (FOR UPDATE) y despues
+        // la zona y las especialidades (FOR SHARE).
+        const account = await this.users.findByIdForShare(tx, profile.userId);
+        await this.activeWork.lockWorker(tx, profile.userId);
+        const current = await tx.workerProfile.findUniqueOrThrow({
+          where: { id: profileId },
+          select: PROFILE_SELECT,
+        });
+        if (current.status !== profile.status) {
+          throw new ConflictException(
+            'El perfil cambió de estado mientras se procesaba la solicitud. Vuelva a intentarlo.',
+          );
+        }
+        await this.assertMeetsApprovalRequirements(tx, current, account);
+      }
       await lockStatus(tx, profile, { status });
       await tx.workerProfileStatusHistory.create({
         data: {
@@ -758,13 +817,14 @@ export class WorkerProfileService {
   }
 
   /**
-   * T4.4: reasignacion administrativa de zona de un perfil RECHAZADO cuya
-   * zona fue desactivada. Un RECHAZADO no puede pedir un cambio de zona ni
-   * editarla (RF-13), y sin una zona activa no puede reenviar su perfil: esta
-   * operacion le asigna otra zona activa. No es un mecanismo general de cambio
+   * T4.4 y T4-F2: reasignacion administrativa de zona de un perfil
+   * RECHAZADO, OBSERVADO, PENDIENTE o SUSPENDIDO (T4-F7) cuya zona fue
+   * desactivada. Ninguno puede
+   * pedir un cambio de zona ni editarla (RF-13), y sin una zona activa no se
+   * puede reenviar ni aprobar: esta operacion le asigna otra zona activa. No es un mecanismo general de cambio
    * de zona: exige que la zona actual este inactiva.
    *
-   * No cambia el estado (sigue RECHAZADO) ni otros datos del perfil, y no crea
+   * No cambia el estado (lo conserva) ni otros datos del perfil, y no crea
    * una solicitud de cambio de zona. En una sola transaccion: cambia la zona,
    * deja constancia en la bitacora (EDICION sobre PERFIL_TRABAJADOR, con zona
    * anterior, nueva y justificacion) y avisa al trabajador.
@@ -807,9 +867,9 @@ export class WorkerProfileService {
         where: { id: profileId },
         select: { id: true, userId: true, status: true, zoneId: true },
       });
-      if (profile.status !== ZONE_REASSIGNMENT_STATUS) {
+      if (!ZONE_REASSIGNMENT_STATUSES.includes(profile.status)) {
         throw new ConflictException(
-          `Solo se puede reasignar la zona de un perfil ${ZONE_REASSIGNMENT_STATUS} (estado actual: ${profile.status})`,
+          `Solo se puede reasignar la zona de un perfil RECHAZADO, OBSERVADO, PENDIENTE o SUSPENDIDO (estado actual: ${profile.status})`,
         );
       }
       if (zoneId === profile.zoneId) {
@@ -839,7 +899,7 @@ export class WorkerProfileService {
       const { count } = await tx.workerProfile.updateMany({
         where: {
           id: profileId,
-          status: ZONE_REASSIGNMENT_STATUS,
+          status: profile.status,
           zoneId: profile.zoneId,
         },
         data: { zoneId },
@@ -868,10 +928,14 @@ export class WorkerProfileService {
       );
       await this.notifications.create(
         profile.userId,
-        zoneReassignedNotification(profileId, {
-          fromZone: current?.name ?? '',
-          toZone: target.name,
-        }),
+        zoneReassignedNotification(
+          profileId,
+          {
+            fromZone: current?.name ?? '',
+            toZone: target.name,
+          },
+          profile.status,
+        ),
         tx,
       );
     });
@@ -1046,21 +1110,39 @@ export class WorkerProfileService {
   }
 
   /**
-   * Un perfil PENDIENTE solo se aprueba si sigue cumpliendo lo que se exigio
-   * al enviarlo (zona y especialidades activas, telefono, horario activo):
-   * pudo cambiar despues del envio, por ejemplo si se desactivo su zona.
-   * Decision del equipo: bloquear con 409 y mostrar lo que falta. La
-   * reactivacion SUSPENDIDO -> APROBADO no se valida aqui: un perfil aprobado
-   * conserva su estado aunque se desactive su zona (RF-49).
+   * Requisitos vigentes para aprobar (PENDIENTE -> APROBADO) o reactivar
+   * (SUSPENDIDO -> APROBADO, T4-F1): telefono en la cuenta, especialidades
+   * activas, zona activa y al menos un horario activo (pendingRequirementsFor,
+   * los mismos del envio). Se evalua dentro de la transaccion de la decision
+   * (T4-F5): la cuenta ya esta bloqueada con FOR SHARE y el perfil con FOR
+   * UPDATE; aqui se leen la zona y las especialidades con FOR SHARE (orden del
+   * proyecto: cuenta, trabajador y catalogos). Una edicion, una suspension o
+   * una desactivacion simultanea espera o ya se ve aplicada. Si falta algo,
+   * 409 con la lista.
    */
   private async assertMeetsApprovalRequirements(
+    tx: Db,
     profile: ProfileRecord,
+    account: PublicUser,
   ): Promise<void> {
-    const { pendingRequirements } = await this.buildView(profile);
-    if (pendingRequirements.length > 0) {
+    const [zone] = await this.catalogs.findByIdsForShare(tx, CatalogKind.ZONE, [
+      profile.zoneId,
+    ]);
+    const categories = await this.catalogs.findByIdsForShare(
+      tx,
+      CatalogKind.CATEGORY,
+      profile.specialties.map((item) => item.categoryId),
+    );
+    if (!zone) {
+      throw new ConflictException('La zona del perfil no existe');
+    }
+    const pending = pendingRequirementsFor(profile, account, zone, categories);
+    if (pending.length > 0) {
       throw new ConflictException([
-        'El perfil no cumple los requisitos para ser aprobado. Obsérvelo para que el trabajador lo corrija.',
-        ...pendingRequirements.map((item) => item.message),
+        profile.status === WorkerProfileStatus.SUSPENDIDO
+          ? 'El perfil no cumple los requisitos para ser reactivado. Deben corregirse antes de reactivarlo.'
+          : 'El perfil no cumple los requisitos para ser aprobado. Obsérvelo para que el trabajador lo corrija.',
+        ...pending.map((item) => item.message),
       ]);
     }
   }
@@ -1208,7 +1290,14 @@ function notEligible(
   message: string,
   reason: string | null = null,
 ): WorkerEligibility {
-  return { eligible: false, status, message, reason };
+  return {
+    eligible: false,
+    status,
+    message,
+    reason,
+    pendingZoneChangeRequest: null,
+    canTakeNewWork: false,
+  };
 }
 
 function toApprovedWorker(profile: ProfileRecord): ApprovedWorker {

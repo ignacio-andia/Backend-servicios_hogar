@@ -5,8 +5,8 @@ import { Trim } from '../../../common/decorators/trim.decorator.js';
 export const ZONE_REASSIGNMENT_JUSTIFICATION_MAX_LENGTH = 500;
 
 /**
- * Reasignacion administrativa de zona de un perfil RECHAZADO cuya zona fue
- * desactivada (T4.4). La justificacion es obligatoria y no puede quedar vacia
+ * Reasignacion administrativa de zona de un perfil RECHAZADO, OBSERVADO o
+ * PENDIENTE cuya zona fue desactivada (T4.4 y T4-F2). La justificacion es obligatoria y no puede quedar vacia
  * despues de recortar los espacios: queda en la bitacora.
  */
 export class ReassignRejectedProfileZoneDto {

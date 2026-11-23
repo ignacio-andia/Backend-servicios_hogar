@@ -9,6 +9,7 @@ import {
 import { isUUID } from 'class-validator';
 import { Prisma, RoleName, UserStatus } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { AccountStatusRegistry } from './account-status.registry.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto.js';
@@ -70,7 +71,10 @@ const PRISMA_RECORD_NOT_FOUND = 'P2025';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly accountStatus: AccountStatusRegistry,
+  ) {}
 
   /** Crea la cuenta con el rol inicial CLIENTE. Lo invoca AuthModule en el registro. */
   async create(dto: CreateUserDto): Promise<PublicUser> {
@@ -334,12 +338,49 @@ export class UsersService {
       );
     }
 
-    const updated = await this.prisma.user.update({
-      where: { id },
-      data: { status },
-      select: PUBLIC_USER_SELECT,
+    // Suspender una cuenta tiene efectos en otros modulos (por ejemplo,
+    // cancelar su solicitud de cambio de zona pendiente, T4-F3). Van en la
+    // misma transaccion que el cambio de estado: si alguno falla, la cuenta
+    // no queda suspendida. Solo un administrador puede suspender (arriba).
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.user.update({
+        where: { id },
+        data: { status },
+        select: PUBLIC_USER_SELECT,
+      });
+      if (status === UserStatus.SUSPENDIDO) {
+        await this.accountStatus.runSuspended(tx, {
+          userId: id,
+          actorId: actor.id,
+        });
+      }
+      return row;
     });
     return toPublicUser(updated);
+  }
+
+  /**
+   * Para otros modulos: dentro de la transaccion `tx` del llamador bloquea la
+   * cuenta con FOR SHARE y la devuelve. Hasta que esa transaccion termine nadie
+   * puede cambiar su estado ni su telefono: una suspension o una edicion
+   * simultanea espera, o ya se ve aplicada si se confirmo antes.
+   *
+   * Orden de bloqueos del proyecto: la cuenta va primero, antes que el
+   * trabajador, el pedido y los catalogos.
+   */
+  async findByIdForShare(
+    tx: Prisma.TransactionClient,
+    id: string,
+  ): Promise<PublicUser> {
+    await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${id}::uuid FOR SHARE`;
+    const user = await tx.user.findUnique({
+      where: { id },
+      select: PUBLIC_USER_SELECT,
+    });
+    if (!user) {
+      throw new NotFoundException('Usuario no encontrado');
+    }
+    return toPublicUser(user);
   }
 
   /** Roles y estado del actor se leen de la base de datos, no de la petición. */

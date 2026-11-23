@@ -7,6 +7,7 @@ import { AuditModule } from '../audit/audit.module.js';
 import { CatalogsModule } from '../catalogs/catalogs.module.js';
 import { NotificationsModule } from '../notifications/notifications.module.js';
 import { UsersModule } from '../users/users.module.js';
+import { ZoneRequestsAccountSuspensionHook } from './account-suspension.hook.js';
 import { WorkerActiveWorkRegistry } from './active-work.registry.js';
 import { ApprovedWorkerGuard } from './approved-worker.guard.js';
 import { documentMaxBytes } from './document-file.js';
@@ -43,6 +44,8 @@ import { ZoneChangeRequestsService } from './zone-change-requests.service.js';
     WorkerProfileService,
     WorkerDocumentsService,
     ZoneChangeRequestsService,
+    // T4-F3: cancela la solicitud de zona pendiente al suspender la cuenta.
+    ZoneRequestsAccountSuspensionHook,
     WorkerActiveWorkRegistry,
     DocumentTooLargeFilter,
     ApprovedWorkerGuard,

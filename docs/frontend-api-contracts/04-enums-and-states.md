@@ -20,7 +20,7 @@ Una cuenta puede tener varios roles (RN-14 y RF-02). Ningún endpoint quita role
 |---|---|
 | `ACTIVO` | Puede iniciar sesión y usar la API |
 | `INACTIVO` | No puede iniciar sesión (403). Sus tokens existentes responden 401. Sus pedidos se ocultan a los trabajadores |
-| `SUSPENDIDO` | Igual que `INACTIVO` |
+| `SUSPENDIDO` | Igual que `INACTIVO`. Además, al suspender se cancela la solicitud de cambio de zona pendiente (`SUSPENSION_CUENTA`, T4-F3). No confundir con suspender el **perfil** de trabajador (#55) |
 
 Transiciones (`PATCH /users/:id/status`):
 
@@ -36,11 +36,11 @@ Si el estado no cambia, responde 200 sin modificar nada.
 | Valor | Significado | ¿Editable? | ¿Usa funciones de trabajador? | ¿Puede pedir cambio de zona? |
 |---|---|---|---|---|
 | `BORRADOR` | Creado, aún no enviado | ✔ | ✘ | ✘ (elige la zona directamente) |
-| `PENDIENTE` | Enviado a revisión | ✘ | ✘ | ✘ |
-| `OBSERVADO` | Con observaciones que corregir | ✔ | ✘ | ✘ |
-| `APROBADO` | Habilitado | ✘ | ✔ | ✔ |
+| `PENDIENTE` | Enviado a revisión | ✘ | ✘ | ✘ (si su zona se desactiva, un administrador le asigna otra: #66) |
+| `OBSERVADO` | Con observaciones que corregir | ✔ | ✘ | ✘ (si su zona se desactiva, un administrador le asigna otra: #66) |
+| `APROBADO` | Habilitado | ✘ | ✔ (sin trabajos nuevos mientras tenga una solicitud de cambio de zona pendiente: `canTakeNewWork`) | ✔ |
 | `RECHAZADO` | Rechazado; puede corregir y reenviar | ✔ (salvo la zona) | ✘ | ✘ (si su zona se desactiva, un administrador le asigna otra: #66) |
-| `SUSPENDIDO` | Suspendido | ✘ | ✘ | ✘ (al suspender se cancela la pendiente) |
+| `SUSPENDIDO` | Suspendido; puede regularizar su perfil | ✔ (salvo la zona; no puede enviarlo a revisión) | ✘ | ✘ (al suspender se cancela la pendiente; si su zona se desactiva, un administrador le asigna otra: #66) |
 
 "Editable" se refiere a datos, especialidades y documentos. Los horarios se pueden reemplazar en **cualquier** estado.
 
@@ -51,11 +51,13 @@ Transiciones:
 | (nuevo) → `BORRADOR` | Trabajador, `POST /worker-profile` | ✅ |
 | `BORRADOR` → `PENDIENTE`, `OBSERVADO` → `PENDIENTE`, `RECHAZADO` → `PENDIENTE` (reenvío) | Trabajador, `POST /me/submit` | ✅ Exige los mismos requisitos que el primer envío (400 con la lista). Cada envío agrega una entrada al historial (`changedBy: TRABAJADOR`); no se registra en la bitácora administrativa |
 | `PENDIENTE` → `APROBADO` / `OBSERVADO` / `RECHAZADO` | Administrador (`ADMIN_TRANSITIONS`), nunca sobre su propio perfil | ✅ `PATCH /worker-profile/admin/profiles/:profileId/status` (#55). Aprobar exige que el perfil siga cumpliendo los requisitos de envío |
-| `APROBADO` → `SUSPENDIDO`, `SUSPENDIDO` → `APROBADO` | Administrador, nunca sobre su propio perfil | ✅ #55. La reactivación (`SUSPENDIDO` → `APROBADO`) no vuelve a exigir los requisitos de envío (decisión previa del equipo) |
+| `APROBADO` → `SUSPENDIDO`, `SUSPENDIDO` → `APROBADO` | Administrador, nunca sobre su propio perfil | ✅ #55. La reactivación (`SUSPENDIDO` → `APROBADO`) exige los mismos requisitos vigentes que la aprobación (T4-F1), comprobados dentro de la transacción |
 
 `OBSERVADO`, `RECHAZADO` y `SUSPENDIDO` exigen un motivo no vacío (`STATUSES_REQUIRING_REASON`). Cualquier otra transición responde 409. Rechazar o suspender un perfil **no** cambia los roles ni el estado de la cuenta: el usuario sigue siendo `CLIENTE` y `ACTIVO`.
 
-`RECHAZADO` **no es terminal** (v1.0 §5, T3.1): el trabajador ve el motivo en `/me/status` y `/me/eligibility`, corrige datos, especialidades, horarios y documentos, y reenvía con `POST /me/submit`. La zona sigue fija (RF-13): no puede cambiarla ni pedir un cambio de zona. Si su zona fue desactivada, solo un administrador puede asignarle otra zona activa (#66, T4.4), con justificación y sin cambiar el estado. Mientras esté `RECHAZADO` o `PENDIENTE` no recibe pedidos; vuelve a recibirlos solo con una nueva aprobación.
+`RECHAZADO` **no es terminal** (v1.0 §5, T3.1): el trabajador ve el motivo en `/me/status` y `/me/eligibility`, corrige datos, especialidades, horarios y documentos, y reenvía con `POST /me/submit`. La zona sigue fija (RF-13): no puede cambiarla ni pedir un cambio de zona. Si su zona fue desactivada, solo un administrador puede asignarle otra zona activa (#66, T4.4), con justificación y sin cambiar el estado. Lo mismo vale para `OBSERVADO` y `PENDIENTE` (T4-F2).
+
+`SUSPENDIDO` (T4-F7): el trabajador puede regularizar su perfil (datos, especialidades, horarios y documentos), pero no cambiar su zona ni enviarlo a revisión, y sigue sin pedidos, ofertas ni asignaciones nuevas. Si su zona fue desactivada, un administrador se la reasigna (#66) sin cambiar el estado. Nunca se reactiva solo: un administrador lo pasa a `APROBADO` (#55), y solo si cumple todos los requisitos vigentes. Mientras esté `RECHAZADO` o `PENDIENTE` no recibe pedidos; vuelve a recibirlos solo con una nueva aprobación.
 
 ### `WeekDay`
 
@@ -74,11 +76,11 @@ Transiciones:
 | `RECHAZADA` | El perfil conserva su zona. Siempre tiene motivo (`decisionComment`) |
 | `CANCELADA` | Cerrada sin decisión administrativa (T4.2); el perfil conserva su zona. La causa está en `cancellationCause` |
 
-`ZoneChangeCancellationCause`: `SUSPENSION_PERFIL` (el perfil se suspendió con la solicitud pendiente, T4.2) o `RETIRO_TRABAJADOR` (el trabajador la retiró con #65, T4.3; migración `20261122300000_zone_change_withdrawal`).
+`ZoneChangeCancellationCause`: `SUSPENSION_PERFIL` (el perfil se suspendió con la solicitud pendiente, T4.2), `SUSPENSION_CUENTA` (la cuenta de usuario se suspendió, T4-F3; migración `20261122500000_zone_change_account_suspension`) o `RETIRO_TRABAJADOR` (el trabajador la retiró con #65, T4.3; migración `20261122300000_zone_change_withdrawal`).
 
 Mientras exista una solicitud `PENDIENTE`, el trabajador no puede ofertar ni recibir trabajos nuevos (409); al aprobarse, rechazarse, retirarse o cancelarse vuelve a poder hacerlo, en la zona vigente. No afecta a los trabajos que ya tiene.
 
-Transiciones: `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un administrador (`PATCH /admin/zone-change-requests/:id`); `PENDIENTE` → `CANCELADA`, automáticamente al suspender el perfil (#55) o cuando el trabajador la retira (#65). Solo un perfil `APROBADO` puede crear una solicitud, y no se aprueba una de un perfil `SUSPENDIDO` o `RECHAZADO`. Las solicitudes resueltas no cambian más (lo impide un trigger en la BD) y una CHECK exige la causa solo en `CANCELADA` (migración `20261122200000_zone_change_cancellation`).
+Transiciones: `PENDIENTE` → `APROBADA` o `PENDIENTE` → `RECHAZADA`, por un administrador (`PATCH /admin/zone-change-requests/:id`); `PENDIENTE` → `CANCELADA`, automáticamente al suspender el perfil (#55) o la cuenta (#7), o cuando el trabajador la retira (#65). Solo un perfil `APROBADO` puede crear una solicitud, y no se aprueba una de un perfil `SUSPENDIDO` o `RECHAZADO` ni de una cuenta `SUSPENDIDO`. Las solicitudes resueltas no cambian más (lo impide un trigger en la BD) y una CHECK exige la causa solo en `CANCELADA` (migración `20261122200000_zone_change_cancellation`).
 
 ### `OrderStatus`
 
@@ -118,7 +120,7 @@ Todo cambio de estado queda en `order_status_history`, pero **no hay endpoint pa
 
 | Enum | Valores | Uso real hoy |
 |---|---|---|
-| `AuditAction` | `CREACION`, `EDICION`, `DESACTIVACION`, `CAMBIO_ESTADO`, `APROBACION`, `RECHAZO`, `CONSULTA_DOCUMENTOS`, `VISUALIZACION_DOCUMENTO`, `DESCARGA_DOCUMENTO` | Catálogos (las tres primeras); solicitudes de zona (`APROBACION`, `RECHAZO`); decisiones sobre perfiles (`CAMBIO_ESTADO`, #55); acceso administrativo a documentos (las tres últimas, #58–#60; migración `20261122000000_audit_document_access`) |
+| `AuditAction` | `CREACION`, `EDICION`, `DESACTIVACION`, `CAMBIO_ESTADO`, `APROBACION`, `RECHAZO`, `CONSULTA_DOCUMENTOS`, `VISUALIZACION_DOCUMENTO`, `DESCARGA_DOCUMENTO` | Catálogos (las tres primeras); solicitudes de zona (`APROBACION`, `RECHAZO`); decisiones sobre perfiles (`CAMBIO_ESTADO`, #55); cancelaciones automáticas de solicitudes de zona (`CAMBIO_ESTADO`); reasignación de zona de un perfil (`EDICION` sobre `PERFIL_TRABAJADOR`, #66); acceso administrativo a documentos (las tres últimas, #58–#60; migración `20261122000000_audit_document_access`) |
 | `AuditEntityType` | `CATEGORIA_SERVICIO`, `ZONA`, `PERFIL_TRABAJADOR`, `SOLICITUD_CAMBIO_ZONA` | Filtro de `GET /audit-logs` |
 
 ### `NotificationType` y `NotificationResourceType`

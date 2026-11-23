@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, RoleName, UserStatus } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { AccountStatusRegistry } from './account-status.registry.js';
 import { UsersService } from './users.service.js';
 
 const ADMIN_ID = '8f1c2a8e-5a2b-4c3d-9e4f-1a2b3c4d5e6f';
@@ -49,7 +50,9 @@ describe('UsersService', () => {
     >;
     userRole: Record<'upsert' | 'delete', ReturnType<typeof vi.fn>>;
     $transaction: ReturnType<typeof vi.fn>;
+    $queryRaw: ReturnType<typeof vi.fn>;
   };
+  let accountStatus: AccountStatusRegistry;
   let service: UsersService;
 
   beforeEach(() => {
@@ -62,11 +65,19 @@ describe('UsersService', () => {
         update: vi.fn(),
       },
       userRole: { upsert: vi.fn(), delete: vi.fn() },
-      $transaction: vi.fn((queries: Promise<unknown>[]) =>
-        Promise.all(queries),
+      // Forma de arreglo (listados) o interactiva (cambio de estado).
+      $transaction: vi.fn((work: unknown) =>
+        typeof work === 'function'
+          ? (work as (tx: unknown) => Promise<unknown>)(prisma)
+          : Promise.all(work as Promise<unknown>[]),
       ),
+      $queryRaw: vi.fn().mockResolvedValue([]),
     };
-    service = new UsersService(prisma as unknown as PrismaService);
+    accountStatus = new AccountStatusRegistry();
+    service = new UsersService(
+      prisma as unknown as PrismaService,
+      accountStatus,
+    );
   });
 
   describe('create', () => {
@@ -292,6 +303,115 @@ describe('UsersService', () => {
         }),
       ).rejects.toBeInstanceOf(ConflictException);
       expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('suspension de cuenta y efectos de otros modulos (T4-F3)', () => {
+    const suspendAs = () => {
+      prisma.user.findUnique
+        .mockResolvedValueOnce(actorRecord(ADMIN_ID, [RoleName.ADMINISTRADOR]))
+        .mockResolvedValueOnce(userRecord(OTHER_ID));
+      prisma.user.update.mockResolvedValue(
+        userRecord(OTHER_ID, [RoleName.CLIENTE], UserStatus.SUSPENDIDO),
+      );
+    };
+
+    it('al suspender ejecuta los efectos registrados en la misma transaccion', async () => {
+      const onSuspended = vi.fn().mockResolvedValue(undefined);
+      accountStatus.register({ name: 'prueba', onSuspended });
+      suspendAs();
+
+      await service.updateStatus(ADMIN_ID, OTHER_ID, {
+        status: UserStatus.SUSPENDIDO,
+      });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(onSuspended).toHaveBeenCalledWith(prisma, {
+        userId: OTHER_ID,
+        actorId: ADMIN_ID,
+      });
+      // Primero el cambio de estado (bloquea la cuenta), despues los efectos.
+      expect(prisma.user.update.mock.invocationCallOrder[0]).toBeLessThan(
+        onSuspended.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('si un efecto falla, la suspension falla (se revierte)', async () => {
+      accountStatus.register({
+        name: 'falla',
+        onSuspended: () => Promise.reject(new Error('sin conexion')),
+      });
+      suspendAs();
+
+      await expect(
+        service.updateStatus(ADMIN_ID, OTHER_ID, {
+          status: UserStatus.SUSPENDIDO,
+        }),
+      ).rejects.toThrow('sin conexion');
+    });
+
+    it.each([UserStatus.INACTIVO, UserStatus.ACTIVO])(
+      'pasar a %s no ejecuta los efectos de suspension',
+      async (status) => {
+        const onSuspended = vi.fn();
+        accountStatus.register({ name: 'prueba', onSuspended });
+        prisma.user.findUnique
+          .mockResolvedValueOnce(
+            actorRecord(ADMIN_ID, [RoleName.ADMINISTRADOR]),
+          )
+          .mockResolvedValueOnce(
+            userRecord(
+              OTHER_ID,
+              [RoleName.CLIENTE],
+              status === UserStatus.ACTIVO
+                ? UserStatus.SUSPENDIDO
+                : UserStatus.ACTIVO,
+            ),
+          );
+        prisma.user.update.mockResolvedValue(
+          userRecord(OTHER_ID, [RoleName.CLIENTE], status),
+        );
+
+        await service.updateStatus(ADMIN_ID, OTHER_ID, { status });
+
+        expect(onSuspended).not.toHaveBeenCalled();
+      },
+    );
+
+    it('no admite dos efectos con el mismo nombre', () => {
+      accountStatus.register({ name: 'x', onSuspended: vi.fn() });
+      expect(() =>
+        accountStatus.register({ name: 'x', onSuspended: vi.fn() }),
+      ).toThrow('Ya hay un efecto registrado con el nombre x');
+    });
+  });
+
+  describe('findByIdForShare', () => {
+    it('bloquea la cuenta con FOR SHARE y la lee con la transaccion', async () => {
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([]),
+        user: { findUnique: vi.fn().mockResolvedValue(userRecord(OTHER_ID)) },
+      };
+
+      await expect(
+        service.findByIdForShare(tx as never, OTHER_ID),
+      ).resolves.toMatchObject({ id: OTHER_ID, roles: [RoleName.CLIENTE] });
+      expect(tx.$queryRaw.mock.calls[0][0].join('')).toContain('FOR SHARE');
+      expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        tx.user.findUnique.mock.invocationCallOrder[0],
+      );
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('responde 404 si la cuenta no existe', async () => {
+      const tx = {
+        $queryRaw: vi.fn().mockResolvedValue([]),
+        user: { findUnique: vi.fn().mockResolvedValue(null) },
+      };
+
+      await expect(
+        service.findByIdForShare(tx as never, OTHER_ID),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 
