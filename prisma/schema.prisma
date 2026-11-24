@@ -364,16 +364,22 @@ model Order {
   createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  client         User                 @relation("OrderClient", fields: [clientId], references: [id], onDelete: Restrict)
-  category       ServiceCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  zone           Zone                 @relation(fields: [zoneId], references: [id], onDelete: Restrict)
-  assignedWorker User?                @relation("OrderAssignedWorker", fields: [assignedWorkerId], references: [id], onDelete: Restrict)
-  address        OrderAddress?
-  images         OrderImage[]
-  statusHistory  OrderStatusHistory[]
+  client            User                 @relation("OrderClient", fields: [clientId], references: [id], onDelete: Restrict)
+  category          ServiceCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  zone              Zone                 @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  assignedWorker    User?                @relation("OrderAssignedWorker", fields: [assignedWorkerId], references: [id], onDelete: Restrict)
+  address           OrderAddress?
+  images            OrderImage[]
+  statusHistory     OrderStatusHistory[]
   /// T6.1: solo relaciones inversas (OffersModule); no cambian la tabla orders.
-  offers         Offer[]
-  offerEvents    OfferEvent[]
+  offers            Offer[]
+  offerEvents       OfferEvent[]
+  /// ServiceWorkflow / Claims (Persona A): solo relaciones inversas.
+  visit             OrderVisit?
+  additionalBudgets AdditionalBudget[]
+  execution         OrderExecution?
+  noShowReport      NoShowReport?
+  claim             Claim?
 
   @@index([zoneId, categoryId, status, expiresAt])
   @@index([clientId, createdAt])
@@ -618,4 +624,140 @@ model Notification {
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, readAt])
   @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// Ciclo de vida del trabajo y reclamos (ServiceWorkflowModule / ClaimsModule).
+// Registro OPERATIVO: el dinero (cobros, constancias) es de PaymentsModule y
+// aqui no se guarda ningun monto pagado, metodo ni fecha de cobro.
+// Los ids de usuario que actuan (decidedById) son escalares sin FK a users a
+// proposito: agregar la relacion exige tocar el modelo User, compartido con
+// otros modulos; se hara al coordinar el schema combinado.
+// ---------------------------------------------------------------------------
+
+/// Visita realizada (RF-25). Una por pedido. visitCost es la copia del costo
+/// acordado en la oferta aceptada (null o 0: visita sin costo).
+model OrderVisit {
+  orderId     String   @id @map("order_id") @db.Uuid
+  performedAt DateTime @default(now()) @map("performed_at") @db.Timestamptz(3)
+  visitCost   Decimal? @map("visit_cost") @db.Decimal(10, 2)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@map("order_visits")
+}
+
+/// Estado de un presupuesto adicional (RF-26). RECHAZADO existe porque el
+/// rechazo esta confirmado (RF-27), pero NADIE lo escribe todavia: el efecto
+/// sobre el pedido esta pendiente del docente.
+enum AdditionalBudgetStatus {
+  PENDIENTE
+  ACEPTADO
+  RECHAZADO
+  /// Estado terminal: el pedido se cancelo con el adicional aun PENDIENTE. No
+  /// fue aceptado ni rechazado por el cliente (respondedAt queda null) y ya no
+  /// puede aceptarse. Lo escribe un hook al evento CANCELADO.
+  SIN_EFECTO_POR_CANCELACION
+}
+
+/// Presupuesto adicional (RF-26). No modifica el monto acordado: el monto
+/// final es la oferta aceptada mas los adicionales ACEPTADO. Indice parcial en
+/// la migracion: un solo PENDIENTE por pedido.
+model AdditionalBudget {
+  id          String                 @id @default(uuid()) @db.Uuid
+  orderId     String                 @map("order_id") @db.Uuid
+  amount      Decimal                @db.Decimal(10, 2)
+  reason      String                 @db.VarChar(1000)
+  materials   String                 @db.VarChar(1000)
+  status      AdditionalBudgetStatus @default(PENDIENTE)
+  respondedAt DateTime?              @map("responded_at") @db.Timestamptz(3)
+  createdAt   DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId, status])
+  @@map("additional_budgets")
+}
+
+/// Ejecucion del trabajo (RF-28): inicio, fin, plazo de conformidad (RN-10) y
+/// conformidad del cliente. conformityDeadline se fija al terminar y no se
+/// recalcula.
+model OrderExecution {
+  orderId            String    @id @map("order_id") @db.Uuid
+  startedAt          DateTime? @map("started_at") @db.Timestamptz(3)
+  finishedAt         DateTime? @map("finished_at") @db.Timestamptz(3)
+  conformityDeadline DateTime? @map("conformity_deadline") @db.Timestamptz(3)
+  conformedAt        DateTime? @map("conformed_at") @db.Timestamptz(3)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([conformityDeadline])
+  @@map("order_executions")
+}
+
+/// Reporte de inasistencia del trabajador (RF-36). Solo registra el hecho:
+/// sin penalizacion, sin cambio de estado del pedido ni efecto en estrellas.
+/// Uno por pedido.
+model NoShowReport {
+  id           String   @id @default(uuid()) @db.Uuid
+  orderId      String   @unique @map("order_id") @db.Uuid
+  reportedById String   @map("reported_by_id") @db.Uuid
+  description  String?  @db.VarChar(1000)
+  reportedAt   DateTime @default(now()) @map("reported_at") @db.Timestamptz(3)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@map("no_show_reports")
+}
+
+enum ClaimStatus {
+  ABIERTO
+  EN_REVISION
+  RESUELTO
+}
+
+/// Reclamo del cliente (RF-37) y decision del administrador (RF-38). Uno por
+/// pedido. La decision es texto: sin sanciones ni efectos economicos.
+model Claim {
+  id            String      @id @default(uuid()) @db.Uuid
+  orderId       String      @unique @map("order_id") @db.Uuid
+  clientId      String      @map("client_id") @db.Uuid
+  description   String      @db.VarChar(2000)
+  status        ClaimStatus @default(ABIERTO)
+  decision      String?     @db.VarChar(2000)
+  justification String?     @db.VarChar(2000)
+  decidedById   String?     @map("decided_by_id") @db.Uuid
+  decidedAt     DateTime?   @map("decided_at") @db.Timestamptz(3)
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order  Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  images ClaimImage[]
+
+  @@index([status, createdAt])
+  @@map("claims")
+}
+
+/// Foto de un reclamo: evidencia. Nunca se borra mientras el reclamo existe.
+model ClaimImage {
+  id                 String   @id @default(uuid()) @db.Uuid
+  claimId            String   @map("claim_id") @db.Uuid
+  position           Int      @db.SmallInt
+  storageKey         String   @unique @map("storage_key") @db.VarChar(255)
+  thumbnailKey       String   @unique @map("thumbnail_key") @db.VarChar(255)
+  mimeType           String   @map("mime_type") @db.VarChar(50)
+  width              Int
+  height             Int
+  sizeBytes          Int      @map("size_bytes")
+  thumbnailSizeBytes Int      @map("thumbnail_size_bytes")
+  sha256             String   @db.Char(64)
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  claim Claim @relation(fields: [claimId], references: [id], onDelete: Restrict)
+
+  @@unique([claimId, position])
+  @@map("claim_images")
 }

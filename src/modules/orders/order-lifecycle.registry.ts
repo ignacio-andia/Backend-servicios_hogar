@@ -2,6 +2,14 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { OrderStatus, Prisma } from '../../generated/prisma/client.js';
 import type { OrderActor } from './order-history.js';
 
+/** Cambio de estado que OrdersService.transition() esta por aplicar. */
+export interface OrderTransitionAttempt {
+  orderId: string;
+  fromStatus: OrderStatus;
+  toStatus: OrderStatus;
+  actor: OrderActor;
+}
+
 /** Cambios del pedido que pueden interesar a otros modulos. */
 export type OrderLifecycleEvent =
   | { type: 'EDITADO'; orderId: string; revision: number; actor: OrderActor }
@@ -22,6 +30,18 @@ export type OrderLifecycleEvent =
  */
 export interface OrderLifecycleHooks {
   readonly name: string;
+  /**
+   * Invariantes de los modulos de flujo: se ejecuta dentro de la transaccion
+   * de OrdersService.transition(), con el pedido ya bloqueado y ANTES de
+   * aplicar el cambio. Si el cambio no cumple las invariantes del modulo
+   * (por ejemplo, TERMINADO sin registro de ejecucion), debe lanzar
+   * ConflictException; no debe escribir ni cambiar el estado. No debe llamar
+   * a lockWorker() (orden de bloqueos: trabajador antes que pedido).
+   */
+  beforeTransition?(
+    attempt: OrderTransitionAttempt,
+    tx: Prisma.TransactionClient,
+  ): Promise<void>;
   /**
    * Dentro de la transaccion del pedido. Solo escrituras en la BD que deben
    * confirmarse junto con el cambio, por ejemplo dejar las ofertas SIN_EFECTO
@@ -57,6 +77,15 @@ export class OrderLifecycleRegistry {
       throw new Error(`Ya hay hooks registrados con el nombre ${hooks.name}`);
     }
     this.hooks.push(hooks);
+  }
+
+  async runBeforeTransition(
+    attempt: OrderTransitionAttempt,
+    tx: Prisma.TransactionClient,
+  ): Promise<void> {
+    for (const hook of this.hooks) {
+      await hook.beforeTransition?.(attempt, tx);
+    }
   }
 
   async runInTransaction(
