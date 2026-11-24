@@ -69,6 +69,7 @@ import {
   ORDER_EXPIRATION_DAYS,
   ORDER_INTERNAL_TARGETS,
   ORDER_TRANSITIONS,
+  ORDER_WORK_CANCELLABLE_STATUSES,
   ORDER_WORKER_REQUIRED_STATUSES,
 } from './orders.rules.js';
 
@@ -710,6 +711,93 @@ export class OrdersService {
   }
 
   /**
+   * Consulta publica minima para los modulos de flujo: estado del pedido y
+   * rol del usuario en el (cliente dueno o trabajador asignado), o null si el
+   * pedido no existe o el usuario no participa (el llamador responde 404).
+   * Solo lectura; no expone direccion ni datos personales.
+   */
+  async findParticipation(
+    db: Db,
+    userId: string,
+    orderId: string,
+  ): Promise<{
+    status: OrderStatus;
+    role: 'CLIENTE' | 'TRABAJADOR';
+    clientId: string;
+    assignedWorkerId: string | null;
+  } | null> {
+    const order = await db.order.findFirst({
+      where: {
+        id: orderId,
+        OR: [{ clientId: userId }, { assignedWorkerId: userId }],
+      },
+      select: { status: true, clientId: true, assignedWorkerId: true },
+    });
+    if (!order) {
+      return null;
+    }
+    return {
+      ...order,
+      role: order.clientId === userId ? 'CLIENTE' : 'TRABAJADOR',
+    };
+  }
+
+  /**
+   * "Cancelar trabajo" (RF-34): el cliente dueno cancela un pedido con
+   * acuerdo que aun no esta terminado. Estado, fecha (cancelled_at), actor y
+   * motivo quedan en orders y order_status_history (no hay otro historial).
+   * Avisa a los modulos registrados (CANCELADO). NO limpia el pedido: ya tuvo
+   * un acuerdo y sus datos pueden ser evidencia. Conserva el trabajador
+   * asignado; la agenda se libera sola porque CANCELADO no es un estado
+   * activo (ACTIVE_ORDER_STATUSES).
+   * PENDIENTE DE CONFIRMAR CON EL DOCENTE: tratamiento del anticipo. Este
+   * metodo no decide nada economico.
+   * Solo bloquea el pedido (no asigna ni libera trabajador). Repetir la
+   * llamada responde 409 y no duplica nada.
+   */
+  async cancelAgreedWork(
+    clientId: string,
+    orderId: string,
+    reason: string,
+  ): Promise<OwnerOrderView> {
+    const actor = clientActor(clientId);
+    const events = await this.prisma.$transaction(async (tx) => {
+      const locked = await lockOrder(tx, orderId, clientId);
+      if (!locked) {
+        throw orderNotFound();
+      }
+      if (!ORDER_WORK_CANCELLABLE_STATUSES.includes(locked.status)) {
+        throw new ConflictException(
+          locked.status === OrderStatus.TERMINADO ||
+            locked.status === OrderStatus.EN_RECLAMO
+            ? 'El trabajo ya terminó: no se puede cancelar. Use el reclamo (RF-37).'
+            : `No se puede cancelar el trabajo de un pedido en estado ${locked.status}`,
+        );
+      }
+      await this.applyTransition(tx, {
+        orderId,
+        from: locked.status,
+        to: OrderStatus.CANCELADO,
+        actor,
+        reason,
+      });
+      const eventList: OrderLifecycleEvent[] = [
+        {
+          type: 'CANCELADO',
+          orderId,
+          fromStatus: locked.status,
+          actor,
+          reason,
+        },
+      ];
+      await this.lifecycle.runInTransaction(eventList, tx);
+      return eventList;
+    });
+    await this.lifecycle.runAfterCommit(events);
+    return this.getOwn(clientId, orderId);
+  }
+
+  /**
    * Punto de integracion para los modulos de flujo (ofertas, pagos, visitas,
    * agenda, reclamos): cambia el estado dentro de SU transaccion `tx`, valida
    * la transicion contra ORDER_TRANSITIONS y deja el historial. Si se indica
@@ -806,6 +894,18 @@ export class OrdersService {
         `No se permite pasar un pedido de ${locked.status} a ${request.to}`,
       );
     }
+
+    // Invariantes de los modulos de flujo (visita, ejecucion, reclamos...):
+    // ningun llamador puede saltarselas aunque la matriz permita el par.
+    await this.lifecycle.runBeforeTransition(
+      {
+        orderId: request.orderId,
+        fromStatus: locked.status,
+        toStatus: request.to,
+        actor: request.actor,
+      },
+      tx,
+    );
 
     let assignedWorkerId = locked.assignedWorkerId;
     if (request.assignWorkerId !== undefined) {

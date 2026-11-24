@@ -51,6 +51,15 @@ import { OrderVisibilityService } from './order-visibility.service.js';
     OrderRetentionService,
     OrdersActiveWorkSource,
   ],
-  exports: [OrdersService, OrderVisibilityService, OrderLifecycleRegistry],
+  // OrdersConfig, OrderImageProcessor y OrderImageTooLargeFilter se exportan para
+  // que ClaimsModule reutilice el procesamiento de fotos (WebP sin metadatos).
+  exports: [
+    OrdersService,
+    OrderVisibilityService,
+    OrderLifecycleRegistry,
+    OrdersConfig,
+    OrderImageProcessor,
+    OrderImageTooLargeFilter,
+  ],
 })
 export class OrdersModule {}
