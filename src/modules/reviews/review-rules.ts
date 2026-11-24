@@ -101,6 +101,8 @@ export function summarizeRatings(
   }
   const sum = visible.reduce((total, review) => total + review.rating, 0);
   // average = sum / count con 2 decimales, mitad hacia arriba, en enteros.
-  const hundredths = Math.floor((sum * 200 + visible.length) / (2 * visible.length));
+  const hundredths = Math.floor(
+    (sum * 200 + visible.length) / (2 * visible.length),
+  );
   return { average: hundredths / 100, count: visible.length };
 }

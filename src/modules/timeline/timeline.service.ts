@@ -1,11 +1,7 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import {
-  ORDER_PARTICIPANTS_READER,
-  type OrderParticipantsReader,
-} from '../../common/contracts/order-participants.reader.js';
-import type { Prisma } from '../../generated/prisma/client.js';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { RoleName } from '../../generated/prisma/enums.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { OrdersService } from '../orders/orders.service.js';
 import { buildTimelinePage } from './timeline-page.js';
 import { TimelineSourceRegistry } from './timeline-source.registry.js';
 import type { TimelinePage } from './timeline.types.js';
@@ -27,8 +23,7 @@ export class TimelineService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sources: TimelineSourceRegistry,
-    @Inject(ORDER_PARTICIPANTS_READER)
-    private readonly participants: OrderParticipantsReader,
+    private readonly orders: OrdersService,
   ) {}
 
   async getTimeline(
@@ -36,8 +31,8 @@ export class TimelineService {
     orderId: string,
     options: { limit?: number; cursor?: string } = {},
   ): Promise<TimelinePage> {
-    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      const order = await this.participants.findParticipants(tx, orderId);
+    return this.prisma.$transaction(async (tx) => {
+      const order = await this.orders.findOrderSummary(tx, orderId);
       const isAdmin = viewer.roles.includes(RoleName.ADMINISTRADOR);
       const isParticipant =
         order !== null &&
@@ -46,8 +41,14 @@ export class TimelineService {
       if (!order || (!isAdmin && !isParticipant)) {
         throw new NotFoundException('Pedido no encontrado');
       }
+      const context = {
+        orderId,
+        clientId: order.clientId,
+        workerId: order.assignedWorkerId,
+        viewer: { userId: viewer.userId, isAdmin },
+      };
       const lists = await Promise.all(
-        this.sources.list().map((source) => source.listEvents(tx, orderId)),
+        this.sources.list().map((source) => source.listEvents(tx, context)),
       );
       return buildTimelinePage(lists.flat(), options);
     });

@@ -4,7 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderStatus, Prisma } from '../../generated/prisma/client.js';
+import {
+  OrderActorType,
+  OrderStatus,
+  Prisma,
+  RoleName,
+} from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { FileDeletionService } from '../../storage/file-deletion.service.js';
 import { CatalogKind, CatalogsService } from '../catalogs/catalogs.service.js';
@@ -79,6 +84,19 @@ type Db = Prisma.TransactionClient;
  * Pedidos del cliente (RF-14, RF-15, RF-18) y API publica para otros modulos.
  * La direccion exacta solo aparece en las vistas del dueno.
  */
+/** Registro del historial de estados para la linea de tiempo (solo lectura). */
+export interface OrderStatusHistoryRecord {
+  id: string;
+  fromStatus: OrderStatus | null;
+  toStatus: OrderStatus;
+  actorType: OrderActorType;
+  changedById: string | null;
+  actorRole: RoleName | null;
+  systemProcess: string | null;
+  reason: string | null;
+  createdAt: Date;
+}
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -740,6 +758,54 @@ export class OrdersService {
       ...order,
       role: order.clientId === userId ? 'CLIENTE' : 'TRABAJADOR',
     };
+  }
+
+  /**
+   * Consulta publica de solo lectura para PaymentsModule, ReviewsModule y
+   * TimelineModule: cliente, trabajador asignado y estado del pedido, sin
+   * filtrar por usuario (el llamador decide el permiso). null si no existe.
+   * No expone direccion ni datos personales.
+   */
+  async findOrderSummary(
+    db: Db,
+    orderId: string,
+  ): Promise<{
+    orderId: string;
+    clientId: string;
+    assignedWorkerId: string | null;
+    status: OrderStatus;
+  } | null> {
+    const order = await db.order.findUnique({
+      where: { id: orderId },
+      select: { clientId: true, assignedWorkerId: true, status: true },
+    });
+    return order ? { orderId, ...order } : null;
+  }
+
+  /**
+   * Consulta publica de solo lectura para TimelineModule (RF-32): historial de
+   * estados del pedido (OrderStatusHistory), del mas antiguo al mas reciente.
+   * Es el unico historial de estados: no existe otro.
+   */
+  async listStatusHistory(
+    db: Db,
+    orderId: string,
+  ): Promise<OrderStatusHistoryRecord[]> {
+    return db.orderStatusHistory.findMany({
+      where: { orderId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        fromStatus: true,
+        toStatus: true,
+        actorType: true,
+        changedById: true,
+        actorRole: true,
+        systemProcess: true,
+        reason: true,
+        createdAt: true,
+      },
+    });
   }
 
   /**

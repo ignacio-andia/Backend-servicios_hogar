@@ -4,6 +4,7 @@ import { CatalogsModule } from '../catalogs/catalogs.module.js';
 import { OrdersModule } from '../orders/orders.module.js';
 import { UsersModule } from '../users/users.module.js';
 import { WorkerProfileModule } from '../worker-profile/worker-profile.module.js';
+import { OfferEventRegistry } from './offer-events.registry.js';
 import { OfferExpirationService } from './offer-expiration.service.js';
 import { OffersClosureHooks } from './offers-closure.hooks.js';
 import { OffersController } from './offers.controller.js';
@@ -28,7 +29,12 @@ import { OffersService } from './offers.service.js';
     WorkerProfileModule,
   ],
   controllers: [OffersController],
-  providers: [OffersService, OfferExpirationService, OffersClosureHooks],
-  exports: [OffersService],
+  providers: [
+    OffersService,
+    OfferExpirationService,
+    OffersClosureHooks,
+    OfferEventRegistry,
+  ],
+  exports: [OffersService, OfferEventRegistry],
 })
 export class OffersModule {}

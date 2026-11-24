@@ -1,4 +1,11 @@
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { TrimEmptyAs } from '../../../common/decorators/trim.decorator.js';
 import {
   REVIEW_COMMENT_MAX_LENGTH,

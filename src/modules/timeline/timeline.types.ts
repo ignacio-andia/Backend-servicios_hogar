@@ -5,7 +5,7 @@ type Db = Prisma.TransactionClient;
 
 /** Quien provoco el evento (RF-32: "con fecha, hora y autor"). */
 export type TimelineActor =
-  | { type: 'USUARIO'; userId: string; role: RoleName | null }
+  | { type: 'USUARIO'; userId: string | null; role: RoleName | null }
   | { type: 'SISTEMA'; process: string };
 
 /**
@@ -27,17 +27,25 @@ export interface TimelineEvent {
   details?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
+/** Pedido y espectador de la consulta; ya autorizados por TimelineService. */
+export interface TimelineContext {
+  orderId: string;
+  clientId: string;
+  workerId: string | null;
+  viewer: { userId: string; isAdmin: boolean };
+}
+
 /**
  * Lector PUBLICO que aporta cada modulo propietario de los datos (Orders para
- * el historial de estados, Offers para la negociacion, Payments para pagos,
- * Persona A para visita/ejecucion/reclamo). TimelineModule no lee las tablas
- * de otros modulos (arquitectura §4.2): solo consume lo que ellos exponen.
+ * el historial de estados, Offers para la negociacion, Workflow, Claims y
+ * Payments). TimelineModule no lee las tablas de otros modulos (arquitectura
+ * §4.2): solo consume lo que ellos exponen por sus servicios.
  */
 export interface TimelineSource {
   /** Nombre unico de la fuente. */
   readonly name: string;
-  /** Todos los eventos del pedido. Solo lectura, con la transaccion dada. */
-  listEvents(db: Db, orderId: string): Promise<TimelineEvent[]>;
+  /** Todos los eventos del pedido que el espectador puede ver. Solo lectura. */
+  listEvents(db: Db, context: TimelineContext): Promise<TimelineEvent[]>;
 }
 
 export interface TimelinePage {

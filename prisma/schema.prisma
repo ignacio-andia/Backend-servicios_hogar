@@ -47,6 +47,14 @@ model User {
   notifications        Notification[]
   offersAsWorker       Offer[]                      @relation("OfferWorker")
   offerEvents          OfferEvent[]                 @relation("OfferEventActor")
+  /// Pagos, constancias y calificaciones (PaymentsModule / ReviewsModule, Persona B):
+  /// solo relaciones inversas con nombre explicito; no cambian la tabla users.
+  paymentDeclarations  PaymentDeclaration[]         @relation("PaymentDeclarationUser")
+  receiptsAsClient     ServiceReceipt[]             @relation("ServiceReceiptClient")
+  receiptsAsWorker     ServiceReceipt[]             @relation("ServiceReceiptWorker")
+  reviewsAuthored      Review[]                     @relation("ReviewAuthor")
+  reviewsReceived      Review[]                     @relation("ReviewTarget")
+  reviewsHidden        Review[]                     @relation("ReviewHiddenBy")
 
   @@index([status])
   @@map("users")
@@ -380,6 +388,10 @@ model Order {
   execution         OrderExecution?
   noShowReport      NoShowReport?
   claim             Claim?
+  /// Pagos, constancias y calificaciones (Persona B): solo relaciones inversas.
+  payments          Payment[]
+  serviceReceipt    ServiceReceipt?
+  reviews           Review[]
 
   @@index([zoneId, categoryId, status, expiresAt])
   @@index([clientId, createdAt])
@@ -597,12 +609,42 @@ enum NotificationType {
   /// Para los administradores: un archivo privado no se pudo borrar despues de
   /// varios intentos (T5.4). Se sigue reintentando.
   BORRADO_ARCHIVO_ESCALADO
+  /// Ofertas y negociacion (RF-33): para la contraparte de cada hecho.
+  OFERTA_RECIBIDA
+  CONTRAOFERTA_RECIBIDA
+  OFERTA_ACEPTADA
+  OFERTA_RECHAZADA
+  OFERTA_RETIRADA
+  OFERTA_VENCIDA
+  /// Pedido cancelado o vencido (RF-33, RF-34).
+  PEDIDO_CANCELADO
+  PEDIDO_VENCIDO
+  /// Ciclo de vida del trabajo (ServiceWorkflowModule / ClaimsModule).
+  VISITA_REGISTRADA
+  TRABAJO_INICIADO
+  PRESUPUESTO_ADICIONAL_PROPUESTO
+  PRESUPUESTO_ADICIONAL_ACEPTADO
+  TRABAJO_TERMINADO
+  CONFORMIDAD_CONFIRMADA
+  PEDIDO_CERRADO_POR_PLAZO
+  INASISTENCIA_REPORTADA
+  RECLAMO_PRESENTADO
+  RECLAMO_EN_REVISION
+  RECLAMO_RESUELTO
+  /// Pagos y calificaciones (PaymentsModule / ReviewsModule).
+  PAGO_DECLARADO
+  PAGO_CON_DIFERENCIA
+  CALIFICACION_RECIBIDA
 }
 
 /// Recurso al que apunta una notificacion (para navegar desde la interfaz).
 enum NotificationResourceType {
   PERFIL_TRABAJADOR
   SOLICITUD_CAMBIO_ZONA
+  PEDIDO
+  OFERTA
+  RECLAMO
+  PAGO
 }
 
 /// Notificacion interna de un usuario (v1.0 §6). Se conservan todas: no hay
@@ -760,4 +802,112 @@ model ClaimImage {
 
   @@unique([claimId, position])
   @@map("claim_images")
+}
+
+// ---------------------------------------------------------------------------
+// Pagos, constancias y calificaciones (PaymentsModule / ReviewsModule,
+// Persona B). Bloque independiente. La plataforma NO procesa, recibe, retiene
+// ni garantiza dinero (RN-01, RF-43): aqui solo se guardan DECLARACIONES de las
+// partes. Un comprobante adjunto es una referencia, no prueba de cobro.
+// ---------------------------------------------------------------------------
+
+enum PaymentConcept {
+  VISITA
+  ANTICIPO
+  SALDO
+}
+
+enum PaymentMethod {
+  EFECTIVO
+  QR
+}
+
+enum PaymentDeclarer {
+  CLIENTE
+  TRABAJADOR
+}
+
+/// Un pago de un pedido por concepto (RF-39, RF-40, RF-25). expectedAmount se
+/// congela al crearlo: ANTICIPO (25 % del monto de la oferta aceptada, RN-02) y
+/// VISITA (costo acordado); SALDO es null porque se calcula al consultar con los
+/// presupuestos adicionales aceptados. Un solo pago por pedido y concepto.
+model Payment {
+  id             String         @id @default(uuid()) @db.Uuid
+  orderId        String         @map("order_id") @db.Uuid
+  concept        PaymentConcept
+  expectedAmount Decimal?       @map("expected_amount") @db.Decimal(10, 2)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order        Order                @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  declarations PaymentDeclaration[]
+
+  @@unique([orderId, concept])
+  @@map("payments")
+}
+
+/// Declaracion inmutable de una parte sobre un pago (RF-40 trabajador, RF-42
+/// cliente). Solo insercion (trigger). Cada parte declara una sola vez por pago
+/// y las dos declaraciones son afirmaciones independientes.
+model PaymentDeclaration {
+  id               String          @id @default(uuid()) @db.Uuid
+  paymentId        String          @map("payment_id") @db.Uuid
+  declaredBy       PaymentDeclarer @map("declared_by")
+  userId           String          @map("user_id") @db.Uuid
+  method           PaymentMethod
+  amount           Decimal         @db.Decimal(10, 2)
+  /// Referencia opcional (por ejemplo, comprobante de QR): NO es prueba de pago.
+  referenceFileKey String?         @map("reference_file_key") @db.VarChar(255)
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  user    User    @relation("PaymentDeclarationUser", fields: [userId], references: [id], onDelete: Restrict)
+
+  // CHECK en la migracion: amount > 0.
+  @@unique([paymentId, declaredBy])
+  @@index([userId])
+  @@map("payment_declarations")
+}
+
+/// Constancia del servicio (RF-41): una por pedido con acuerdo, inmutable. Las
+/// constancias de pago son las propias PaymentDeclaration.
+model ServiceReceipt {
+  id           String   @id @default(uuid()) @db.Uuid
+  orderId      String   @unique @map("order_id") @db.Uuid
+  clientId     String   @map("client_id") @db.Uuid
+  workerId     String   @map("worker_id") @db.Uuid
+  /// Monto de la oferta aceptada al emitirse la constancia.
+  agreedAmount Decimal  @map("agreed_amount") @db.Decimal(10, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order  Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  client User  @relation("ServiceReceiptClient", fields: [clientId], references: [id], onDelete: Restrict)
+  worker User  @relation("ServiceReceiptWorker", fields: [workerId], references: [id], onDelete: Restrict)
+
+  @@map("service_receipts")
+}
+
+/// Calificacion mutua (RF-44, RF-45): una por autor y pedido, sin
+/// autocalificacion. CHECK en la migracion: rating entre 1 y 5 y autor distinto
+/// del calificado. hiddenAt: opinion ocultada por el administrador (RF-46 A1);
+/// no se borra.
+model Review {
+  id         String    @id @default(uuid()) @db.Uuid
+  orderId    String    @map("order_id") @db.Uuid
+  authorId   String    @map("author_id") @db.Uuid
+  targetId   String    @map("target_id") @db.Uuid
+  authorRole RoleName  @map("author_role")
+  rating     Int       @db.SmallInt
+  comment    String?   @db.VarChar(1000)
+  hiddenAt   DateTime? @map("hidden_at") @db.Timestamptz(3)
+  hiddenById String?   @map("hidden_by_id") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order    Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  author   User  @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+  target   User  @relation("ReviewTarget", fields: [targetId], references: [id], onDelete: Restrict)
+  hiddenBy User? @relation("ReviewHiddenBy", fields: [hiddenById], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, authorId])
+  @@index([targetId, createdAt(sort: Desc)])
+  @@map("reviews")
 }

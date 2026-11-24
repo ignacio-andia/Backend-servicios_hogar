@@ -81,9 +81,9 @@ describe('buildTimelinePage', () => {
   });
 
   it('rechaza cursores invalidos y limites fuera de rango', () => {
-    expect(() => buildTimelinePage(events, { cursor: 'no-es-un-cursor' })).toThrow(
-      BadRequestException,
-    );
+    expect(() =>
+      buildTimelinePage(events, { cursor: 'no-es-un-cursor' }),
+    ).toThrow(BadRequestException);
     expect(() =>
       buildTimelinePage(events, {
         cursor: Buffer.from('{"at":"x"}').toString('base64url'),
@@ -105,7 +105,10 @@ describe('buildTimelinePage', () => {
 describe('TimelineSourceRegistry', () => {
   it('no admite dos fuentes con el mismo nombre', () => {
     const registry = new TimelineSourceRegistry();
-    const source: TimelineSource = { name: 'orders', listEvents: async () => [] };
+    const source: TimelineSource = {
+      name: 'orders',
+      listEvents: () => Promise.resolve([]),
+    };
     registry.register(source);
     expect(() => registry.register(source)).toThrow();
     expect(registry.list()).toHaveLength(1);
@@ -120,7 +123,7 @@ describe('TimelineService (RF-32)', () => {
     $transaction: vi.fn((fn: (db: object) => unknown) => fn(tx)),
   } as unknown as PrismaService;
   let registry: TimelineSourceRegistry;
-  let findParticipants: ReturnType<typeof vi.fn>;
+  let findOrderSummary: ReturnType<typeof vi.fn>;
   let service: TimelineService;
 
   beforeEach(() => {
@@ -133,13 +136,15 @@ describe('TimelineService (RF-32)', () => {
       name: 'payments',
       listEvents: async () => [event('payments', '1', '2026-11-24T10:00:00Z')],
     });
-    findParticipants = vi.fn().mockResolvedValue({
+    findOrderSummary = vi.fn().mockResolvedValue({
       orderId: 'o1',
       clientId: CLIENT,
       assignedWorkerId: WORKER,
       status: OrderStatus.ACORDADO,
     });
-    service = new TimelineService(prisma, registry, { findParticipants });
+    service = new TimelineService(prisma, registry, {
+      findOrderSummary,
+    } as never);
   });
 
   const viewer = (userId: string, ...roles: RoleName[]) => ({ userId, roles });
@@ -166,7 +171,7 @@ describe('TimelineService (RF-32)', () => {
     await expect(
       service.getTimeline(viewer('otro', RoleName.TRABAJADOR), 'o1'),
     ).rejects.toThrow(NotFoundException);
-    findParticipants.mockResolvedValue(null);
+    findOrderSummary.mockResolvedValue(null);
     await expect(
       service.getTimeline(viewer(CLIENT, RoleName.CLIENTE), 'o1'),
     ).rejects.toThrow(NotFoundException);
@@ -195,8 +200,8 @@ describe('TimelineService (RF-32)', () => {
 
   it('sin fuentes registradas devuelve una linea de tiempo vacia, no inventa eventos', async () => {
     service = new TimelineService(prisma, new TimelineSourceRegistry(), {
-      findParticipants,
-    });
+      findOrderSummary,
+    } as never);
     const page = await service.getTimeline(
       viewer(CLIENT, RoleName.CLIENTE),
       'o1',

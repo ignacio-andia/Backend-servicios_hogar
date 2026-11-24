@@ -8,6 +8,7 @@ import { validate } from 'class-validator';
 import { OrderStatus } from '../../generated/prisma/enums.js';
 import { CreateReviewDto } from './dto/create-review.dto.js';
 import {
+  REVIEW_DISABLED_MESSAGE,
   statusEligibilityPolicy,
   type ReviewEligibilityPolicy,
 } from './review-eligibility.policy.js';
@@ -52,8 +53,12 @@ const resolve = (
   });
 
 describe('statusEligibilityPolicy (aislada y configurable)', () => {
-  it('no tiene un conjunto de estados por defecto', () => {
-    expect(() => statusEligibilityPolicy([])).toThrow();
+  it('sin estados configurados las calificaciones quedan deshabilitadas (sin valores por defecto)', () => {
+    const disabled = statusEligibilityPolicy([]);
+    expect(disabled.eligibleStatuses).toEqual([]);
+    for (const status of Object.values(OrderStatus)) {
+      expect(disabled.denialReason({ status })).toBe(REVIEW_DISABLED_MESSAGE);
+    }
   });
 
   it('habilita solo los estados configurados', () => {
@@ -207,14 +212,14 @@ describe('CreateReviewDto', () => {
   });
 
   it('limita el comentario', async () => {
-    expect(
-      await errorsOf({ rating: 4, comment: 'a'.repeat(1001) }),
-    ).toContain('comment');
+    expect(await errorsOf({ rating: 4, comment: 'a'.repeat(1001) })).toContain(
+      'comment',
+    );
   });
 
   it('el cuerpo no puede elegir autor ni calificado', async () => {
-    expect(
-      await errorsOf({ rating: 4, authorId: 'x', targetId: 'y' }),
-    ).toEqual(expect.arrayContaining(['authorId', 'targetId']));
+    expect(await errorsOf({ rating: 4, authorId: 'x', targetId: 'y' })).toEqual(
+      expect.arrayContaining(['authorId', 'targetId']),
+    );
   });
 });

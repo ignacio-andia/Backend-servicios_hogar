@@ -4,21 +4,24 @@ import { Prisma } from '../../generated/prisma/client.js';
 // retiene ni garantiza dinero (RN-01, RF-43): aqui solo se calculan montos de
 // referencia y se registran declaraciones de las partes.
 
-/**
- * Conceptos de pago de un trabajo. Los tipos locales se reemplazaran por los
- * enums generados de Prisma cuando se autorice el schema (ver
- * docs/persona-b/CONTRATOS_Y_PRISMA.md).
- */
-export const PAYMENT_CONCEPTS = ['VISITA', 'ANTICIPO', 'SALDO'] as const;
-export type PaymentConcept = (typeof PAYMENT_CONCEPTS)[number];
+import {
+  PaymentConcept as PaymentConceptEnum,
+  PaymentDeclarer as PaymentDeclarerEnum,
+  PaymentMethod as PaymentMethodEnum,
+} from '../../generated/prisma/enums.js';
 
-/** RN-01: efectivo o QR acordado entre las partes. */
-export const PAYMENT_METHODS = ['EFECTIVO', 'QR'] as const;
-export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
-
+export type PaymentConcept = PaymentConceptEnum;
+export type PaymentMethod = PaymentMethodEnum;
 /** Quien hace la declaracion (RF-40 trabajador, RF-42 cliente). */
-export const PAYMENT_DECLARERS = ['CLIENTE', 'TRABAJADOR'] as const;
-export type PaymentDeclarer = (typeof PAYMENT_DECLARERS)[number];
+export type PaymentDeclarer = PaymentDeclarerEnum;
+
+export const PAYMENT_CONCEPTS: readonly PaymentConcept[] =
+  Object.values(PaymentConceptEnum);
+/** RN-01: efectivo o QR acordado entre las partes. */
+export const PAYMENT_METHODS: readonly PaymentMethod[] =
+  Object.values(PaymentMethodEnum);
+export const PAYMENT_DECLARERS: readonly PaymentDeclarer[] =
+  Object.values(PaymentDeclarerEnum);
 
 /** RN-02: el anticipo es el 25% del monto acordado del trabajo. */
 export const ADVANCE_RATE = new Prisma.Decimal('0.25');

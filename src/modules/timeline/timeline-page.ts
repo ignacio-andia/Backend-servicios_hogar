@@ -43,7 +43,9 @@ function decodeCursor(cursor: string): CursorKey {
     }
     return key as CursorKey;
   } catch {
-    throw new BadRequestException('El cursor de la línea de tiempo no es válido.');
+    throw new BadRequestException(
+      'El cursor de la línea de tiempo no es válido.',
+    );
   }
 }
 
