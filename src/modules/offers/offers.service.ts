@@ -93,6 +93,17 @@ async function dbNow(db: Db): Promise<Date> {
  * el orden de bloqueos del proyecto: trabajador, pedido y catalogos. Esta
  * etapa no cambia el estado del pedido.
  */
+/** Condiciones de la oferta aceptada que otros modulos pueden consultar. */
+export interface AcceptedOfferTerms {
+  offerId: string;
+  workerId: string;
+  amount: Prisma.Decimal;
+  requiresVisit: boolean;
+  visitCost: Prisma.Decimal | null;
+  proposedStartAt: Date;
+  estimatedDurationMinutes: number;
+}
+
 @Injectable()
 export class OffersService {
   constructor(
@@ -420,6 +431,34 @@ export class OffersService {
   // ---------------------------------------------------------------------
   // T6.5.1: vencimiento de ofertas (lo usa OfferExpirationService)
   // ---------------------------------------------------------------------
+
+  /**
+   * Consulta publica de solo lectura para ServiceWorkflowModule (RF-25, RF-26,
+   * RF-36): condiciones de la oferta ACEPTADA del pedido, o null si no hay.
+   * No bloquea ni escribe. Usa el cliente `db` del llamador.
+   */
+  async getAcceptedOfferTerms(
+    db: Prisma.TransactionClient,
+    orderId: string,
+  ): Promise<AcceptedOfferTerms | null> {
+    const offer = await db.offer.findFirst({
+      where: { orderId, status: OfferStatus.ACEPTADA },
+      select: {
+        id: true,
+        workerId: true,
+        amount: true,
+        requiresVisit: true,
+        visitCost: true,
+        proposedStartAt: true,
+        estimatedDurationMinutes: true,
+      },
+    });
+    if (!offer) {
+      return null;
+    }
+    const { id, ...terms } = offer;
+    return { offerId: id, ...terms };
+  }
 
   /**
    * Cierra como VENCIDA, con su evento del sistema, cada oferta VIGENTE del
