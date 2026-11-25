@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module.js';
 import { NotificationsModule } from '../notifications/notifications.module.js';
 import { OrdersModule } from '../orders/orders.module.js';
+import { ServiceWorkflowModule } from '../service-workflow/service-workflow.module.js';
 import { WorkerProfileModule } from '../worker-profile/worker-profile.module.js';
 import { ReviewsConfig } from './reviews.config.js';
 import { ReviewsController } from './reviews.controller.js';
@@ -18,6 +19,7 @@ import { ReviewsService } from './reviews.service.js';
   imports: [
     PrismaModule,
     OrdersModule,
+    ServiceWorkflowModule,
     WorkerProfileModule,
     NotificationsModule,
   ],

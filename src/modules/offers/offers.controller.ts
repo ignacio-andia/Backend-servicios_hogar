@@ -103,7 +103,8 @@ export class OffersController {
   }
 
   // T6.6: enlace de WhatsApp al cliente del pedido (canal externo; no cambia
-  // la oferta). Solo para el trabajador dueno de la oferta.
+  // la oferta). Solo para el dueno de la oferta (404), con el perfil aprobado
+  // (403) y mientras la negociacion o el acuerdo sigan vigentes (409).
   @Auth(RoleName.TRABAJADOR)
   @Get('me/:offerId/whatsapp')
   workerContact(

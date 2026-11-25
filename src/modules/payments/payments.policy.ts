@@ -22,7 +22,8 @@ const AFTER_ADVANCE: readonly OrderStatus[] = [
  * - VISITA: despues de realizada la visita (CU-25: evalua y cobra).
  * - SALDO: con el trabajo terminado (RF-40: "un trabajo no terminado no
  *   permite confirmar el pago final").
- * Un pedido CANCELADO no admite declaraciones: el tratamiento del anticipo al
+ * Un pedido CANCELADO solo admite la VISITA ya realizada (se exige ademas su
+ * registro y un costo): ni anticipo ni saldo; el tratamiento del anticipo al
  * cancelar esta pendiente del docente y aqui no se decide.
  */
 export const DECLARABLE_STATUSES: Readonly<
@@ -36,43 +37,36 @@ export const DECLARABLE_STATUSES: Readonly<
     OrderStatus.TERMINADO,
     OrderStatus.EN_RECLAMO,
     OrderStatus.CERRADO,
+    OrderStatus.CANCELADO,
   ],
   SALDO: [OrderStatus.TERMINADO, OrderStatus.EN_RECLAMO, OrderStatus.CERRADO],
 };
 
 /**
- * Confirmacion que cada concepto exige (RN-03, RN-04). La del cliente
- * ("Ya pagué", RF-42) es siempre complementaria y opcional. Para el anticipo
- * la definicion esta pendiente del docente.
+ * Confirmacion que cada concepto exige (RN-03, RN-04 y la decision funcional
+ * del anticipo): siempre la del trabajador asignado. La del cliente ("Ya
+ * pagué", RF-42) es complementaria y opcional.
  */
-export type RequiredConfirmation = 'TRABAJADOR' | 'PENDIENTE_DEFINICION';
+export type RequiredConfirmation = 'TRABAJADOR';
 
 export function requiredConfirmationFor(
   concept: PaymentConcept,
-  advanceConfirmedBy: AdvanceConfirmation | null,
-): RequiredConfirmation | 'CLIENTE' | 'AMBOS' {
-  if (concept === 'ANTICIPO') {
-    return advanceConfirmedBy ?? 'PENDIENTE_DEFINICION';
-  }
-  return 'TRABAJADOR';
+  advanceConfirmedBy: AdvanceConfirmation,
+): RequiredConfirmation {
+  return concept === 'ANTICIPO' ? advanceConfirmedBy : 'TRABAJADOR';
 }
 
 /**
- * true si, con las declaraciones existentes, la politica configurada considera
- * recibido el anticipo. Sin politica (null) nunca: la transicion automatica
- * esta desactivada hasta que el docente defina quien confirma.
+ * true si esta declaracion es la confirmacion de recepcion del anticipo por el
+ * trabajador asignado. Una confirmacion debe coincidir con el monto esperado y
+ * repetirla es idempotente.
  */
-export function advanceConfirmationSatisfied(
-  policy: AdvanceConfirmation | null,
-  declaredBy: readonly PaymentDeclarer[],
+export function isAdvanceReceiptConfirmation(
+  concept: PaymentConcept,
+  declaredBy: PaymentDeclarer,
+  policy: AdvanceConfirmation,
 ): boolean {
-  if (policy === null) {
-    return false;
-  }
-  if (policy === 'AMBOS') {
-    return declaredBy.includes('CLIENTE') && declaredBy.includes('TRABAJADOR');
-  }
-  return declaredBy.includes(policy);
+  return concept === 'ANTICIPO' && declaredBy === policy;
 }
 
 /** RN-04: la visita se paga en efectivo; el anticipo y el saldo, efectivo o QR. */

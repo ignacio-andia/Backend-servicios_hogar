@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -15,6 +16,9 @@ import { FileDeletionService } from '../../storage/file-deletion.service.js';
 import { CatalogKind, CatalogsService } from '../catalogs/catalogs.service.js';
 import { WorkerActiveWorkRegistry } from '../worker-profile/active-work.registry.js';
 import { WorkerProfileService } from '../worker-profile/worker-profile.service.js';
+import { AcceptedOfferRegistry } from './accepted-offer.registry.js';
+import { AdvanceConfirmationRegistry } from './advance-confirmation.registry.js';
+import { OpenNegotiationRegistry } from './open-negotiation.registry.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { DuplicateCheckDto } from './dto/duplicate-check.dto.js';
 import { ListOwnOrdersQueryDto } from './dto/list-orders-query.dto.js';
@@ -109,6 +113,9 @@ export class OrdersService {
     private readonly workerProfiles: WorkerProfileService,
     private readonly activeWork: WorkerActiveWorkRegistry,
     private readonly retention: OrderRetentionService,
+    private readonly advanceConfirmations: AdvanceConfirmationRegistry,
+    private readonly openNegotiations: OpenNegotiationRegistry,
+    private readonly acceptedOffers: AcceptedOfferRegistry,
   ) {}
 
   // ---------------------------------------------------------------------
@@ -258,6 +265,8 @@ export class OrdersService {
     if (!order) {
       throw orderNotFound();
     }
+    // Una asignacion anterior no da acceso a un perfil que ya no esta aprobado.
+    await this.workerProfiles.assertWorkerApproved(workerUserId);
     const [refs, now] = await Promise.all([
       catalogRefs(this.catalogs, [order]),
       dbNow(this.prisma),
@@ -279,6 +288,7 @@ export class OrdersService {
     if (!order) {
       throw orderNotFound();
     }
+    await this.workerProfiles.assertWorkerApproved(workerUserId);
     return this.images.open(orderId, imageId, variant);
   }
 
@@ -928,8 +938,16 @@ export class OrdersService {
 
     // 1. Trabajador (antes que el pedido).
     let releasedWorkerId: string | null = null;
+    let assigneeProfileId: string | null = null;
     if (request.assignWorkerId !== undefined) {
-      await this.workerProfiles.lockApprovedWorker(tx, request.assignWorkerId);
+      // Aprobado, cuenta activa y rol. El cambio de zona pendiente (RF-13) se
+      // revisa abajo, con el pedido ya bloqueado.
+      const assignee =
+        await this.workerProfiles.lockApprovedWorkerForAgreedWork(
+          tx,
+          request.assignWorkerId,
+        );
+      assigneeProfileId = assignee.profileId;
     } else if (request.releaseWorker) {
       const current = await tx.order.findUnique({
         where: { id: request.orderId },
@@ -946,6 +964,25 @@ export class OrdersService {
     if (!locked) {
       throw orderNotFound();
     }
+    // RF-13: asignar sin una negociacion abierta es una oportunidad nueva y un
+    // cambio de zona pendiente la impide; continuar una abierta, no.
+    if (
+      request.assignWorkerId !== undefined &&
+      assigneeProfileId !== null &&
+      !(await this.openNegotiations.has(tx, {
+        orderId: request.orderId,
+        workerId: request.assignWorkerId,
+      })) &&
+      !(await this.acceptedOffers.has(tx, {
+        orderId: request.orderId,
+        workerId: request.assignWorkerId,
+      }))
+    ) {
+      await this.workerProfiles.assertNoPendingZoneChange(
+        tx,
+        assigneeProfileId,
+      );
+    }
     if (request.from !== undefined && request.from !== locked.status) {
       throw new ConflictException(
         `El pedido cambió de estado (ahora ${locked.effectiveStatus}). Vuelva a consultarlo.`,
@@ -958,6 +995,17 @@ export class OrdersService {
     if (!isAllowedTransition(locked.status, request.to)) {
       throw new ConflictException(
         `No se permite pasar un pedido de ${locked.status} a ${request.to}`,
+      );
+    }
+
+    // Regla funcional: solo la confirmacion del trabajador asignado registra
+    // el anticipo. Se exige aqui, para cualquier llamador.
+    if (request.to === OrderStatus.ANTICIPO_REGISTRADO) {
+      await this.assertAdvanceConfirmed(
+        tx,
+        request.orderId,
+        locked.assignedWorkerId,
+        request.actor,
       );
     }
 
@@ -986,6 +1034,18 @@ export class OrdersService {
       ) {
         throw new ConflictException(
           'El pedido ya tiene otro trabajador asignado',
+        );
+      }
+      // Solo una oferta aceptada de este trabajador asigna el pedido: se
+      // exige aqui, para cualquier llamador.
+      if (
+        !(await this.acceptedOffers.has(tx, {
+          orderId: request.orderId,
+          workerId: request.assignWorkerId,
+        }))
+      ) {
+        throw new ConflictException(
+          'No se puede asignar el pedido sin una oferta aceptada de ese trabajador.',
         );
       }
       assignedWorkerId = request.assignWorkerId;
@@ -1020,11 +1080,47 @@ export class OrdersService {
   }
 
   /**
+   * ACORDADO -> ANTICIPO_REGISTRADO (RF-39). Exige, con el pedido ya
+   * bloqueado y en la transaccion del llamador:
+   * 1. un usuario (no un proceso del sistema) actuando como TRABAJADOR;
+   * 2. que sea el trabajador asignado al pedido;
+   * 3. una confirmacion valida de ese trabajador para ese pedido, que
+   *    verifica PaymentsModule (AdvanceConfirmationRegistry). Sin
+   *    verificador registrado se rechaza.
+   * La autenticacion del usuario la hace el controller del llamador (guards).
+   */
+  private async assertAdvanceConfirmed(
+    tx: Db,
+    orderId: string,
+    assignedWorkerId: string | null,
+    actor: OrderActor,
+  ): Promise<void> {
+    if (
+      actor.type !== 'USUARIO' ||
+      actor.role !== RoleName.TRABAJADOR ||
+      assignedWorkerId === null ||
+      actor.userId !== assignedWorkerId
+    ) {
+      throw new ForbiddenException(
+        'Solo el trabajador asignado puede confirmar la recepción del anticipo.',
+      );
+    }
+    const confirmed = await this.advanceConfirmations
+      .get()
+      ?.hasValidConfirmation(tx, { orderId, workerId: assignedWorkerId });
+    if (confirmed !== true) {
+      throw new ConflictException(
+        'No existe una confirmación válida de la recepción del anticipo de este pedido.',
+      );
+    }
+  }
+
+  /**
    * T6.4.2 (para ofertas y agenda, RF-30): ids de los pedidos asignados al
    * trabajador que cuentan como trabajo activo segun ACTIVE_ORDER_STATUSES
    * (la definicion oficial de OrdersModule). Solo lectura, con `tx`, la
    * transaccion del llamador: si este ya bloqueo al trabajador
-   * (lockApprovedWorker), ninguna asignacion nueva a ese trabajador puede
+   * (lockApprovedWorker o lockApprovedWorkerForAgreedWork), ninguna asignacion nueva a ese trabajador puede
    * confirmarse mientras tanto, porque transition() tambien lo bloquea.
    */
   async findActiveAssignedOrderIds(
@@ -1039,6 +1135,44 @@ export class OrdersService {
       select: { id: true },
     });
     return orders.map((order) => order.id);
+  }
+
+  /** Registros para los reportes (RF-52): pedidos publicados en el rango. Sin datos personales. */
+  async listForReport({
+    start,
+    end,
+  }: {
+    start: Date;
+    end: Date;
+  }): Promise<{ categoryId: string; zoneId: string; status: OrderStatus }[]> {
+    return this.prisma.order.findMany({
+      where: { publishedAt: { gte: start, lt: end } },
+      select: { categoryId: true, zoneId: true, status: true },
+    });
+  }
+
+  /** Registros para los reportes (RF-52): cancelaciones ocurridas en el rango. Sin datos personales. */
+  async listCancellationsForReport({
+    start,
+    end,
+  }: {
+    start: Date;
+    end: Date;
+  }): Promise<{ categoryId: string; zoneId: string; fromStatus: string }[]> {
+    const entries = await this.prisma.orderStatusHistory.findMany({
+      where: {
+        toStatus: OrderStatus.CANCELADO,
+        createdAt: { gte: start, lt: end },
+      },
+      select: {
+        fromStatus: true,
+        order: { select: { categoryId: true, zoneId: true } },
+      },
+    });
+    return entries.map(({ fromStatus, order }) => ({
+      ...order,
+      fromStatus: fromStatus ?? '',
+    }));
   }
 
   /**

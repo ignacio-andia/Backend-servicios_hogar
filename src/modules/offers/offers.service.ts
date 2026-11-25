@@ -26,7 +26,13 @@ import { WorkerActiveWorkRegistry } from '../worker-profile/active-work.registry
 import { WorkerProfileService } from '../worker-profile/worker-profile.service.js';
 import type { CounterOfferDto } from './dto/counter-offer.dto.js';
 import type { CreateOfferDto } from './dto/create-offer.dto.js';
-import { buildWhatsAppContact, type WhatsAppContact } from './offer-contact.js';
+import {
+  buildWhatsAppContact,
+  CLIENT_CONTACT_UNAVAILABLE_MESSAGE,
+  isContactOpen,
+  WORKER_CONTACT_UNAVAILABLE_MESSAGE,
+  type WhatsAppContact,
+} from './offer-contact.js';
 import {
   OfferEventRegistry,
   type OfferNegotiationEvent,
@@ -86,6 +92,19 @@ const REOFFER_BLOCKED_MESSAGE: Readonly<Record<string, string>> = {
 };
 
 /** Hora de la BD: la vigencia se calcula siempre con el reloj de PostgreSQL. */
+/**
+ * Hora real de la BD, ya con los bloqueos tomados (now() es la del inicio de la
+ * transaccion). Con ella se decide si una negociacion sigue abierta: asi no se
+ * continua una que, mientras se esperaba al trabajador, vencio para una
+ * solicitud de cambio de zona que ya no la conto (RF-13).
+ */
+async function dbClock(db: Db): Promise<Date> {
+  const [{ now }] = await db.$queryRaw<
+    { now: Date }[]
+  >`SELECT clock_timestamp() AS now`;
+  return now;
+}
+
 async function dbNow(db: Db): Promise<Date> {
   const [{ now }] = await db.$queryRaw<{ now: Date }[]>`SELECT now() AS "now"`;
   return now;
@@ -120,6 +139,8 @@ export interface NegotiationEventRecord {
   changedById: string | null;
   actorRole: RoleName | null;
   systemProcess: string | null;
+  /** Motivo del cierre por un cambio externo (OfferClosureReason). */
+  reason: string | null;
   createdAt: Date;
   workerId: string;
   clientId: string;
@@ -164,7 +185,8 @@ export class OffersService {
    * 3), pasa el turno a la otra parte y reinicia la vigencia de 24 horas.
    *
    * Orden de bloqueos (el del proyecto, extendido a la oferta): cuenta del
-   * cliente (FOR SHARE), trabajador (lockApprovedWorker), pedido (lockOrder),
+   * cliente (FOR SHARE), trabajador (lockApprovedWorkerForAgreedWork), pedido
+   * (lockOrder),
    * fila de la oferta (FOR UPDATE) y catalogos (FOR SHARE). Dos respuestas
    * simultaneas se ejecutan de a una: la segunda ve el turno ya cambiado
    * (409) y, como respaldo, la BD impide dos eventos de la misma ronda.
@@ -203,9 +225,10 @@ export class OffersService {
             'La cuenta del cliente no está activa: la oferta ya no es válida.',
           );
         }
-        // Perfil aprobado, cuenta activa y sin cambio de zona pendiente. No
-        // exige la especialidad de la categoria actual (decision 12).
-        await this.workerProfiles.lockApprovedWorker(tx, workerId);
+        // Perfil aprobado y cuenta activa. Continuar una negociacion abierta
+        // no lo impide un cambio de zona pendiente (RF-13). No exige la
+        // especialidad de la categoria actual (decision 12).
+        await this.workerProfiles.lockApprovedWorkerForAgreedWork(tx, workerId);
         const order = await lockOrder(tx, orderId);
         if (!order) {
           throw offerNotFound();
@@ -220,8 +243,9 @@ export class OffersService {
           throw offerNotFound();
         }
         const now = await dbNow(tx);
-        assertCanCounter(offer, party, now);
-        await this.assertOrderCatalogsActive(tx, orderId);
+        const decisionTime = await dbClock(tx);
+        assertCanCounter(offer, party, decisionTime);
+        await this.assertOrderNegotiable(tx, orderId, decisionTime);
 
         const round = offer.round + 1;
         await tx.offer.update({
@@ -284,15 +308,16 @@ export class OffersService {
   /**
    * El cliente dueno del pedido acepta la oferta en su turno. En una sola
    * transaccion:
-   * 1. valida cliente y trabajador (cuentas activas, perfil aprobado, sin
-   *    cambio de zona pendiente), pedido EN_NEGOCIACION y sin vencer, oferta
+   * 1. valida cliente y trabajador (cuentas activas y perfil aprobado; un
+   *    cambio de zona pendiente no impide continuar, RF-13), pedido EN_NEGOCIACION y sin vencer, oferta
    *    VIGENTE en el turno del cliente, zona y categoria activas. No exige
    *    la especialidad de la categoria actual (decision 12);
    * 2. RF-30: el horario de la oferta no se cruza con otro trabajo activo
    *    del trabajador (OrdersService.findActiveAssignedOrderIds);
-   * 3. asigna al trabajador con OrdersService.transition (EN_NEGOCIACION ->
-   *    ACORDADO, assignWorkerId);
-   * 4. cierra la oferta como ACEPTADA y las demas VIGENTES del pedido como
+   * 3. cierra la oferta como ACEPTADA y asigna al trabajador con
+   *    OrdersService.transition (EN_NEGOCIACION -> ACORDADO, assignWorkerId),
+   *    que exige esa oferta aceptada;
+   * 4. cierra las demas VIGENTES del pedido como
    *    SIN_EFECTO, cada una con su evento.
    *
    * Orden de bloqueos: cuenta del cliente (FOR SHARE), trabajador, pedido,
@@ -333,7 +358,8 @@ export class OffersService {
             'La cuenta del cliente no está activa: la oferta ya no es válida.',
           );
         }
-        await this.workerProfiles.lockApprovedWorker(tx, workerId);
+        // RF-13: aceptar una oferta existente continua su negociacion.
+        await this.workerProfiles.lockApprovedWorkerForAgreedWork(tx, workerId);
         const order = await lockOrder(tx, orderId);
         if (!order) {
           throw offerNotFound();
@@ -353,21 +379,23 @@ export class OffersService {
           throw offerNotFound();
         }
         const now = await dbNow(tx);
-        assertCanClose(offer, OfferParty.CLIENTE, now, 'aceptar');
-        await this.assertOrderCatalogsActive(tx, orderId);
+        const decisionTime = await dbClock(tx);
+        assertCanClose(offer, OfferParty.CLIENTE, decisionTime, 'aceptar');
+        await this.assertOrderNegotiable(tx, orderId, decisionTime);
         await this.assertNoScheduleConflict(tx, offerId, workerId);
 
+        // La oferta se marca ACEPTADA antes de asignar: transition() lo exige.
+        // Si la asignacion falla, la transaccion revierte ambas.
+        await tx.offer.update({
+          where: { id: offerId },
+          data: { status: OfferStatus.ACEPTADA, closedAt: now },
+        });
         await this.orders.transition(tx, {
           orderId,
           from: OrderStatus.EN_NEGOCIACION,
           to: OrderStatus.ACORDADO,
           assignWorkerId: workerId,
           actor: clientActor(clientId),
-        });
-
-        await tx.offer.update({
-          where: { id: offerId },
-          data: { status: OfferStatus.ACEPTADA, closedAt: now },
         });
         await tx.offerEvent.create({
           data: {
@@ -541,6 +569,7 @@ export class OffersService {
         changedById: true,
         actorRole: true,
         systemProcess: true,
+        reason: true,
         createdAt: true,
         offer: { select: { workerId: true } },
         order: { select: { clientId: true } },
@@ -983,14 +1012,20 @@ export class OffersService {
    * confirmar. Con el pedido bloqueado no cambian. Orden fijo: zona y
    * categoria, como OrderVisibilityService. 409 si alguna esta inactiva.
    */
-  private async assertOrderCatalogsActive(
+  private async assertOrderNegotiable(
     tx: Prisma.TransactionClient,
     orderId: string,
+    decisionTime: Date,
   ): Promise<void> {
-    const { zoneId, categoryId } = await tx.order.findUniqueOrThrow({
+    const { zoneId, categoryId, expiresAt } = await tx.order.findUniqueOrThrow({
       where: { id: orderId },
-      select: { zoneId: true, categoryId: true },
+      select: { zoneId: true, categoryId: true, expiresAt: true },
     });
+    if (expiresAt <= decisionTime) {
+      throw new ConflictException(
+        'El pedido ya no admite negociación (estado VENCIDO).',
+      );
+    }
     const [zone] = await this.catalogs.findByIdsForShare(tx, CatalogKind.ZONE, [
       zoneId,
     ]);
@@ -1265,10 +1300,27 @@ export class OffersService {
   ): Promise<WhatsAppContact> {
     const offer = await this.prisma.offer.findFirst({
       where: { id: offerId, workerId: workerUserId },
-      select: { orderId: true, order: { select: { clientId: true } } },
+      select: {
+        orderId: true,
+        workerId: true,
+        status: true,
+        expiresAt: true,
+        order: {
+          select: {
+            clientId: true,
+            status: true,
+            expiresAt: true,
+            assignedWorkerId: true,
+          },
+        },
+      },
     });
     if (!offer) {
       throw offerNotFound();
+    }
+    await this.workerProfiles.assertWorkerApproved(workerUserId);
+    if (!isContactOpen(offer, await dbNow(this.prisma))) {
+      throw new ConflictException(CLIENT_CONTACT_UNAVAILABLE_MESSAGE);
     }
     const client = await this.users.findById(offer.order.clientId);
     return buildWhatsAppContact(client.phone, 'CLIENTE', offer.orderId);
@@ -1284,10 +1336,21 @@ export class OffersService {
   ): Promise<WhatsAppContact> {
     const offer = await this.prisma.offer.findFirst({
       where: { AND: [{ id: offerId }, clientOffersWhere(clientId)] },
-      select: { orderId: true, workerId: true },
+      select: {
+        orderId: true,
+        workerId: true,
+        status: true,
+        expiresAt: true,
+        order: {
+          select: { status: true, expiresAt: true, assignedWorkerId: true },
+        },
+      },
     });
     if (!offer) {
       throw offerNotFound();
+    }
+    if (!isContactOpen(offer, await dbNow(this.prisma))) {
+      throw new ConflictException(WORKER_CONTACT_UNAVAILABLE_MESSAGE);
     }
     const worker = await this.users.findById(offer.workerId);
     return buildWhatsAppContact(worker.phone, 'TRABAJADOR', offer.orderId);

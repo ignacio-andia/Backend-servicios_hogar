@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client.js';
 import type { PrismaService } from '../../prisma/prisma.service.js';
 import type { CatalogsService } from '../catalogs/catalogs.service.js';
@@ -14,8 +14,10 @@ describe('OrdersService: pedido del trabajador asignado (G2)', () => {
   };
   let images: { open: ReturnType<typeof vi.fn> };
   let service: OrdersService;
+  let workerProfiles: { assertWorkerApproved: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
+    workerProfiles = { assertWorkerApproved: vi.fn() };
     prisma = {
       order: { findFirst: vi.fn() },
       $queryRaw: vi.fn().mockResolvedValue([{ now: NOW }]),
@@ -31,6 +33,9 @@ describe('OrdersService: pedido del trabajador asignado (G2)', () => {
       catalogs as unknown as CatalogsService,
       images as unknown as OrderImagesService,
       {} as never,
+      {} as never,
+      {} as never,
+      workerProfiles as never,
       {} as never,
       {} as never,
       {} as never,
@@ -97,6 +102,24 @@ describe('OrdersService: pedido del trabajador asignado (G2)', () => {
     await expect(
       service.openAssignedImage('otro', 'pedido-1', 'foto-1', 'full'),
     ).rejects.toBeInstanceOf(NotFoundException);
+    expect(images.open).not.toHaveBeenCalled();
+  });
+
+  it('un asignado sin el perfil aprobado recibe 403 y no se abre la foto', async () => {
+    prisma.order.findFirst.mockResolvedValue({ id: 'pedido-1' });
+    workerProfiles.assertWorkerApproved.mockRejectedValue(
+      new ForbiddenException('suspendido'),
+    );
+
+    await expect(
+      service.getAssigned('trabajador-1', 'pedido-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      service.openAssignedImage('trabajador-1', 'pedido-1', 'foto-1', 'full'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(workerProfiles.assertWorkerApproved).toHaveBeenCalledWith(
+      'trabajador-1',
+    );
     expect(images.open).not.toHaveBeenCalled();
   });
 

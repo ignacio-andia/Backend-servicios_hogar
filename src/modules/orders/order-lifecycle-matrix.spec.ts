@@ -17,6 +17,8 @@ describe('matriz de transiciones del ciclo de vida del trabajo', () => {
     [S.VISITA_REALIZADA, S.PRESUPUESTO_ADICIONAL_PENDIENTE],
     [S.EN_EJECUCION, S.PRESUPUESTO_ADICIONAL_PENDIENTE],
     [S.PRESUPUESTO_ADICIONAL_PENDIENTE, S.EN_EJECUCION],
+    // RF-27: rechazo del adicional.
+    [S.PRESUPUESTO_ADICIONAL_PENDIENTE, S.CERRADO],
     [S.EN_EJECUCION, S.TERMINADO],
     [S.TERMINADO, S.CERRADO],
     [S.TERMINADO, S.EN_RECLAMO],
@@ -27,7 +29,6 @@ describe('matriz de transiciones del ciclo de vida del trabajo', () => {
 
   it.each([
     // RF-27 pendiente del docente: el rechazo del adicional NO tiene salida.
-    [S.PRESUPUESTO_ADICIONAL_PENDIENTE, S.CERRADO],
     [S.PRESUPUESTO_ADICIONAL_PENDIENTE, S.TERMINADO],
     [S.PRESUPUESTO_ADICIONAL_PENDIENTE, S.VISITA_REALIZADA],
     // No se saltan pasos.

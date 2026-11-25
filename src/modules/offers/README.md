@@ -9,10 +9,10 @@ Guía de mantenimiento e integración del módulo de ofertas (primera entrega, T
 
 | Implementado                                                  | Pendiente conocido (no existe)                              |
 | ------------------------------------------------------------- | ----------------------------------------------------------- |
-| Crear y consultar ofertas (trabajador y cliente)              | Notificaciones de ofertas (RF-33)                           |
-| Contraofertas por turnos, hasta 3 rondas                      | Historial de negociación para el administrador              |
+| Crear y consultar ofertas (trabajador y cliente)              | —                                                           |
+| Contraofertas por turnos, hasta 3 rondas                      | Endpoint propio de ofertas para el administrador            |
 | Rechazo (cliente), retiro (trabajador) y aceptación (cliente) | Parámetros de vigencia y rondas configurables (RF-23)       |
-| Asignación del trabajador al aceptar (`ACORDADO`)             | Fuente `OFERTAS` del registro de trabajo activo             |
+| Asignación del trabajador al aceptar (`ACORDADO`)             | —                                                           |
 | Vencimiento automático a las 24 horas                         | `SIN_ACUERDO` como estado del pedido (decisión: no se usa)  |
 | Cierre por pedido cancelado o vencido y por suspensiones      | Cierre de ofertas al **desactivar** (`INACTIVO`) una cuenta |
 | Control de cruces con trabajos ya acordados (RF-30)           | Qué pasa con un acuerdo si se suspende una parte (RF-34)    |
@@ -50,7 +50,7 @@ Offers nunca escribe el estado ni el trabajador asignado del pedido: usa `Orders
 
 ### Crear una oferta (RF-19, RF-22, RF-24, RF-31)
 
-- Solo un trabajador **aprobado**, con la cuenta activa y **sin** solicitud de cambio de zona pendiente.
+- Solo un trabajador **aprobado**, con la cuenta activa y **sin** solicitud de cambio de zona pendiente (es una oportunidad nueva, RF-13).
 - El pedido debe ser **visible** para él: su zona, una categoría que esté entre sus especialidades **actuales**, zona y categoría activas, cliente activo, pedido `PUBLICADO` o `EN_NEGOCIACION` sin vencer y **no propio** (RN-14). Si no, **404** (igual que un pedido inexistente).
 - Datos: `amount` > 0; `requiresVisit` con `visitCost` (≥ 0, `"0"` = gratis) solo si requiere visita; `materialsIncluded`; `proposedStartAt` futuro; `estimatedDurationMinutes` ≥ 1.
 - **El horario de atención no limita las ofertas** (aclaración del docente): el trabajador oferta a cualquier hora y negocia el horario con el cliente.
@@ -67,7 +67,7 @@ Offers nunca escribe el estado ni el trabajador asignado del pedido: usa `Orders
 - **Solo cambia el monto.** Visita, materiales, horario y duración son los de la oferta original (la BD lo impone).
 - Cada contraoferta **reinicia la vigencia de 24 horas**.
 - En la ronda 3 ya no hay contraofertas: quien tiene el turno solo puede aceptar o rechazar (o el trabajador retirar).
-- Además exige: oferta `VIGENTE` sin vencer, pedido `PUBLICADO` o `EN_NEGOCIACION` sin vencer, zona y categoría activas, cliente activo y trabajador aprobado. **No** exige la especialidad de la categoría actual (si el cliente cambió la categoría, la negociación existente continúa).
+- Además exige: oferta `VIGENTE` sin vencer, pedido `PUBLICADO` o `EN_NEGOCIACION` sin vencer, zona y categoría activas, cliente activo y trabajador aprobado (un cambio de zona pendiente no lo impide). **No** exige la especialidad de la categoría actual (si el cliente cambió la categoría, la negociación existente continúa).
 
 ### Rechazo y retiro
 
@@ -83,12 +83,13 @@ Offers nunca escribe el estado ni el trabajador asignado del pedido: usa `Orders
   - pedido `EN_NEGOCIACION`, sin vencer y sin trabajador asignado;
   - zona y categoría activas;
   - cuentas del cliente y del trabajador activas;
-  - trabajador aprobado y sin cambio de zona pendiente.
+  - trabajador aprobado (un cambio de zona pendiente no lo impide).
 - **No** exige la especialidad de la categoría actual: una oferta creada antes de un cambio de categoría se puede aceptar.
 - **Cruces de agenda (RF-30, RF-31):** el horario de la oferta, `[proposedStartAt, proposedStartAt + estimatedDurationMinutes)`, no puede superponerse con otro trabajo activo del trabajador. Cuentan como activos los pedidos asignados en los estados que define OrdersModule (`ACTIVE_ORDER_STATUSES`), con el horario de su oferta aceptada. Un trabajo que empieza justo cuando termina otro no es un cruce. Si hay cruce: 409 con el pedido en conflicto.
 - En una sola transacción:
-  1. el pedido pasa a `ACORDADO` con el trabajador asignado;
-  2. la oferta pasa a `ACEPTADA` (evento `ACEPTADA`);
+  1. la oferta pasa a `ACEPTADA` (evento `ACEPTADA`);
+  2. el pedido pasa a `ACORDADO` con el trabajador asignado (OrdersModule exige
+     esa oferta aceptada: `OffersAcceptedOfferSource`);
   3. **todas las demás ofertas `VIGENTE` del pedido** pasan a `SIN_EFECTO`, con un evento del sistema (`ACEPTACION_OFERTA`) y el motivo `"El cliente aceptó otra oferta para este pedido."`.
 - Las ofertas de otros pedidos no se tocan.
 
@@ -118,6 +119,22 @@ Reactivar una cuenta o un perfil **no** reabre las ofertas.
 - La BD impide modificarlo o borrarlo, y admite una sola propuesta o contraoferta por ronda y un solo cierre por oferta.
 - El detalle de la oferta lo devuelve en `history`, del más antiguo al más reciente.
 
+### Cambio de zona del trabajador (RF-13)
+
+| Situación                                                      | Con una solicitud pendiente |
+| -------------------------------------------------------------- | --------------------------- |
+| Nueva oportunidad: crear una oferta                            | **409**                     |
+| Negociación abierta: contraofertar, aceptar, rechazar, retirar | Permitido                   |
+
+- `OffersActiveWorkSource` registra la fuente `OFERTAS`: con una oferta
+  `VIGENTE` sin vencer en un pedido abierto y sin vencer no se puede **solicitar**
+  el cambio. Las `ACEPTADA` y las cerradas no cuentan.
+- `OffersOpenNegotiationSource` confirma a OrdersModule que aceptar continúa una
+  negociación abierta, para que la asignación no se trate como trabajo nuevo.
+- Contraofertar y aceptar deciden el vencimiento de la oferta y del pedido con
+  `clock_timestamp()`, ya con los bloqueos: una oferta que la solicitud ya no
+  contó no puede continuarse.
+
 ## 4. Contacto por WhatsApp (T6.6)
 
 WhatsApp es **solo un canal externo**. Abrir el enlace no envía nada, no acepta ni modifica la oferta y no registra acuerdos: los montos y condiciones oficiales son los de la plataforma. El backend no sabe si el mensaje se envió.
@@ -127,7 +144,16 @@ WhatsApp es **solo un canal externo**. Abrir el enlace no envía nada, no acepta
 | `GET /api/offers/received/:offerId/whatsapp` | Cliente dueño del pedido      | Trabajador de la oferta |
 | `GET /api/offers/me/:offerId/whatsapp`       | Trabajador dueño de la oferta | Cliente del pedido      |
 
-**Acceso:** mismas reglas que el detalle de la oferta. Una oferta ajena o de otro pedido responde 404, un rol incorrecto 403 y un visitante 401. También funciona con ofertas cerradas, igual que el detalle; la negociación sigue bloqueada.
+**Acceso:** una oferta ajena o de otro pedido responde 404, un rol incorrecto
+403 y un visitante 401.
+
+- **Cliente** (teléfono del trabajador) y **trabajador** (teléfono del cliente):
+  solo con la oferta `VIGENTE` sin vencer en un pedido abierto, o `ACEPTADA` con
+  el trabajador todavía asignado y el acuerdo vigente (`ACORDADO` a
+  `EN_RECLAMO`). En cualquier otro caso, **409** sin ningún dato. El trabajador
+  necesita además el perfil aprobado (403).
+
+La negociación de una oferta cerrada sigue bloqueada.
 
 **Teléfono:** se usa `users.phone`. No hay un campo específico de WhatsApp. Al registrarse se acepta con o sin `+` (`/^\+?[1-9]\d{6,14}$/`).
 
@@ -283,16 +309,16 @@ Después de aceptar, el pedido queda `ACORDADO`:
 
 ### Qué debe manejar el frontend
 
-| Situación                                                                                                                                        | Respuesta                                                                                                  | Qué hacer                                                                                                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Mostrar acciones                                                                                                                                 | `status`, `turn`, `round`, `expiresAt`                                                                     | Solo con `status: "VIGENTE"`. Cliente: aceptar y rechazar con `turn: "CLIENTE"`; contraofertar si además `round < 3`. Trabajador: contraofertar con `turn: "TRABAJADOR"` y `round < 3`; retirar siempre que esté `VIGENTE` |
-| Resumen antes de aceptar (RF-22)                                                                                                                 | `amount`, `requiresVisit`, `visitCost`, `materialsIncluded`, `proposedStartAt`, `estimatedDurationMinutes` | Mostrar todos los datos; `visitCost: "0.00"` = visita gratis                                                                                                                                                               |
-| Datos inválidos                                                                                                                                  | 400 (`message`: texto o arreglo de textos)                                                                 | Mostrar los mensajes en el formulario                                                                                                                                                                                      |
-| Sin sesión                                                                                                                                       | 401                                                                                                        | Ir al inicio de sesión                                                                                                                                                                                                     |
-| Rol incorrecto, trabajador no aprobado o suspendido, o acción de la otra parte                                                                   | 403                                                                                                        | Mostrar el mensaje; no reintentar                                                                                                                                                                                          |
-| Pedido u oferta que no le corresponde                                                                                                            | 404                                                                                                        | Tratar como inexistente                                                                                                                                                                                                    |
-| Turno ajeno, oferta cerrada o vencida, pedido no negociable, catálogo inactivo, cruce de agenda, cambio de zona pendiente u operación simultánea | 409                                                                                                        | Mostrar `message` y **volver a consultar** la oferta (y el pedido)                                                                                                                                                         |
-| Contacto sin teléfono válido                                                                                                                     | 200 con `available: false`                                                                                 | Ocultar o deshabilitar el botón de WhatsApp                                                                                                                                                                                |
+| Situación                                                                                                                                                        | Respuesta                                                                                                  | Qué hacer                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Mostrar acciones                                                                                                                                                 | `status`, `turn`, `round`, `expiresAt`                                                                     | Solo con `status: "VIGENTE"`. Cliente: aceptar y rechazar con `turn: "CLIENTE"`; contraofertar si además `round < 3`. Trabajador: contraofertar con `turn: "TRABAJADOR"` y `round < 3`; retirar siempre que esté `VIGENTE` |
+| Resumen antes de aceptar (RF-22)                                                                                                                                 | `amount`, `requiresVisit`, `visitCost`, `materialsIncluded`, `proposedStartAt`, `estimatedDurationMinutes` | Mostrar todos los datos; `visitCost: "0.00"` = visita gratis                                                                                                                                                               |
+| Datos inválidos                                                                                                                                                  | 400 (`message`: texto o arreglo de textos)                                                                 | Mostrar los mensajes en el formulario                                                                                                                                                                                      |
+| Sin sesión                                                                                                                                                       | 401                                                                                                        | Ir al inicio de sesión                                                                                                                                                                                                     |
+| Rol incorrecto, trabajador no aprobado o suspendido, o acción de la otra parte                                                                                   | 403                                                                                                        | Mostrar el mensaje; no reintentar                                                                                                                                                                                          |
+| Pedido u oferta que no le corresponde                                                                                                                            | 404                                                                                                        | Tratar como inexistente                                                                                                                                                                                                    |
+| Turno ajeno, oferta cerrada o vencida, pedido no negociable, catálogo inactivo, cruce de agenda, cambio de zona pendiente (solo al crear) u operación simultánea | 409                                                                                                        | Mostrar `message` y **volver a consultar** la oferta (y el pedido)                                                                                                                                                         |
+| Contacto sin teléfono válido                                                                                                                                     | 200 con `available: false`                                                                                 | Ocultar o deshabilitar el botón de WhatsApp                                                                                                                                                                                |
 
 El estado puede cambiar sin intervención del usuario (vencimiento automático, aceptación de otra oferta, cancelación o suspensión): ante un 409, la vista debe refrescarse desde el backend.
 
@@ -314,12 +340,12 @@ El estado puede cambiar sin intervención del usuario (vencimiento automático, 
 
 ### Dependencias (sin ciclos: ninguno de estos módulos importa OffersModule)
 
-| Módulo              | Qué usa Offers                                                                                                                                                                                                        |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OrdersModule        | `OrderVisibilityService.assertOpenForOffers`, `OrdersService.transition`, `OrdersService.getOwn`, `OrdersService.findActiveAssignedOrderIds`, `lockOrder`, `ORDER_OPEN_FOR_OFFERS_STATUSES`, `OrderLifecycleRegistry` |
-| WorkerProfileModule | `ApprovedWorkerGuard`, `WorkerProfileService.lockApprovedWorker`, `WorkerActiveWorkRegistry.lockWorker`, `WorkerProfileStatusRegistry`                                                                                |
-| UsersModule         | `UsersService.findByIdForShare` y `findById`, `AccountStatusRegistry`                                                                                                                                                 |
-| CatalogsModule      | `CatalogsService.findByIdsForShare`                                                                                                                                                                                   |
+| Módulo              | Qué usa Offers                                                                                                                                                                                                                                   |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| OrdersModule        | `OrderVisibilityService.assertOpenForOffers`, `OrdersService.transition`, `OrdersService.getOwn`, `OrdersService.findActiveAssignedOrderIds`, `lockOrder`, `ORDER_OPEN_FOR_OFFERS_STATUSES`, `OrderLifecycleRegistry`, `OpenNegotiationRegistry` |
+| WorkerProfileModule | `ApprovedWorkerGuard`, `WorkerProfileService.lockApprovedWorkerForAgreedWork`, `WorkerActiveWorkRegistry` (`lockWorker` y fuente `OFERTAS`), `WorkerProfileStatusRegistry`                                                                       |
+| UsersModule         | `UsersService.findByIdForShare` y `findById`, `AccountStatusRegistry`                                                                                                                                                                            |
+| CatalogsModule      | `CatalogsService.findByIdsForShare`                                                                                                                                                                                                              |
 
 ### Orden de bloqueos
 

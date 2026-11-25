@@ -18,22 +18,16 @@ import {
   RoleName,
   WorkerProfileStatus,
 } from '../src/generated/prisma/client.js';
-import { AgendaModule } from '../src/modules/agenda/agenda.module.js';
 import {
   CatalogItem,
   CatalogKind,
   CatalogsService,
 } from '../src/modules/catalogs/catalogs.service.js';
-import { ClaimsModule } from '../src/modules/claims/claims.module.js';
-import { OrderNotificationsModule } from '../src/modules/order-notifications/order-notifications.module.js';
+import { OrderExpirationService } from '../src/modules/orders/order-expiration.service.js';
+import type { OrderActor } from '../src/modules/orders/order-history.js';
 import { OrdersService } from '../src/modules/orders/orders.service.js';
-import { PaymentsConfig } from '../src/modules/payments/payments.config.js';
-import { PaymentsModule } from '../src/modules/payments/payments.module.js';
 import { statusEligibilityPolicy } from '../src/modules/reviews/review-eligibility.policy.js';
 import { ReviewsConfig } from '../src/modules/reviews/reviews.config.js';
-import { ReviewsModule } from '../src/modules/reviews/reviews.module.js';
-import { ServiceWorkflowModule } from '../src/modules/service-workflow/service-workflow.module.js';
-import { TimelineModule } from '../src/modules/timeline/timeline.module.js';
 import {
   PublicUser,
   UsersService,
@@ -46,8 +40,8 @@ import {
 } from './utils/isolated-schema.js';
 
 // Corre sobre un esquema temporal con TODAS las migraciones: no toca los datos
-// del esquema public. Los modulos nuevos se importan aqui porque
-// app.module.ts los registrara al integrar.
+// del esquema public. La aplicacion se arranca con AppModule, que registra
+// todos los modulos.
 const RUN_ID = randomUUID().slice(0, 8);
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -84,9 +78,6 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
   let category: CatalogItem;
 
   // Configuracion mutable para probar cada modo sin reiniciar la app.
-  const paymentsConfig: { advanceConfirmedBy: string | null } = {
-    advanceConfirmedBy: null,
-  };
   const reviewsConfig = { policy: statusEligibilityPolicy([]) };
 
   const http = () => request(app.getHttpServer());
@@ -155,16 +146,16 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
     return { orderId, offerId: offer.body.id as string };
   };
 
-  /** Lo que hara el flujo cuando se defina quien confirma el anticipo. */
+  /** Registra el anticipo como en la aplicacion: lo confirma el trabajador asignado. */
   const registerAdvance = async (orderId: string) => {
-    await prisma.$transaction((tx) =>
-      orders.transition(tx, {
-        orderId,
-        from: OrderStatus.ACORDADO,
-        to: OrderStatus.ANTICIPO_REGISTRADO,
-        actor: { type: 'SISTEMA', process: 'PRUEBA_PAGOS' },
-      }),
-    );
+    const { assignedWorkerId } = await prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+    });
+    const assigned = [worker, worker2].find((u) => u.id === assignedWorkerId)!;
+    await post(assigned, `/orders/${orderId}/payments/ANTICIPO/declarations`, {
+      amount: '30.13',
+      method: 'EFECTIVO',
+    }).expect(201);
   };
 
   const statusOf = async (orderId: string) =>
@@ -207,21 +198,10 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
     });
     await scoped.$connect();
     const moduleRef = await Test.createTestingModule({
-      imports: [
-        AppModule,
-        ServiceWorkflowModule,
-        ClaimsModule,
-        PaymentsModule,
-        ReviewsModule,
-        TimelineModule,
-        OrderNotificationsModule,
-        AgendaModule,
-      ],
+      imports: [AppModule],
     })
       .overrideProvider(PrismaService)
       .useValue(scoped)
-      .overrideProvider(PaymentsConfig)
-      .useValue(paymentsConfig)
       .overrideProvider(ReviewsConfig)
       .useValue(reviewsConfig)
       .compile();
@@ -287,7 +267,6 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
   });
 
   beforeEach(() => {
-    paymentsConfig.advanceConfirmedBy = null;
     reviewsConfig.policy = statusEligibilityPolicy([]);
   });
 
@@ -307,15 +286,13 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
         (p: { concept: string }) => p.concept === 'ANTICIPO',
       );
       expect(advance.expectedAmount).toBe('30.13');
-      expect(advance.requiredConfirmation).toBe('PENDIENTE_DEFINICION');
+      expect(advance.requiredConfirmation).toBe('TRABAJADOR');
       expect(res.body.balance).toMatchObject({
         status: 'CALCULADO',
         amount: '90.37',
         advanceAmount: '30.13',
       });
-      expect(res.body.advanceTransition).toBe(
-        'DESACTIVADA_PENDIENTE_DEFINICION',
-      );
+      expect(res.body.advanceTransition).toBe('ACTIVA');
       // Oferta sin visita: no hay concepto VISITA.
       expect(
         res.body.payments.some(
@@ -370,10 +347,10 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
 
   // ---------------------------------------------------------------------
   describe('Pagos: declaraciones y anticipo (RF-39, RF-42)', () => {
-    it('registra la declaracion del cliente sin cambiar el pedido mientras no se defina quien confirma el anticipo', async () => {
+    it('registra la declaracion del cliente sin cambiar el pedido', async () => {
       const { orderId } = await agreedOrder();
       const res = await declare(client, orderId, 'ANTICIPO').expect(201);
-      expect(res.body.orderTransition).toBe('DESACTIVADA_PENDIENTE_DEFINICION');
+      expect(res.body.orderTransition).toBe('NO_APLICA');
       expect(res.body.payment).toMatchObject({
         concept: 'ANTICIPO',
         comparison: 'SOLO_CLIENTE',
@@ -385,14 +362,6 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
         method: 'EFECTIVO',
         amount: '30.13',
       });
-      expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
-
-      // El trabajador declara aparte: tampoco avanza el pedido.
-      const worked = await declare(worker, orderId, 'ANTICIPO').expect(201);
-      expect(worked.body.orderTransition).toBe(
-        'DESACTIVADA_PENDIENTE_DEFINICION',
-      );
-      expect(worked.body.payment.comparison).toBe('MONTOS_COINCIDEN');
       expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
     });
 
@@ -433,16 +402,16 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
     it('montos distintos: informa la diferencia, avisa a ambos y a los administradores y la lista el administrador', async () => {
       const { orderId } = await agreedOrder();
       await declare(client, orderId, 'ANTICIPO', {
-        amount: '30.13',
+        amount: '20.00',
         method: 'EFECTIVO',
       }).expect(201);
       const res = await declare(worker, orderId, 'ANTICIPO', {
-        amount: '20.00',
+        amount: '30.13',
         method: 'QR',
       }).expect(201);
       expect(res.body.payment).toMatchObject({
         comparison: 'MONTOS_DIFERENTES',
-        difference: '-10.13',
+        difference: '10.13',
         methodsMatch: false,
       });
       for (const user of [client, worker, admin]) {
@@ -510,41 +479,11 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
       await declare(client, open, 'ANTICIPO').expect(409);
     });
 
-    it('con PAYMENTS_ADVANCE_CONFIRMED_BY=TRABAJADOR su declaracion registra el anticipo; la del cliente no', async () => {
-      paymentsConfig.advanceConfirmedBy = 'TRABAJADOR';
-      const { orderId } = await agreedOrder();
-      const byClient = await declare(client, orderId, 'ANTICIPO').expect(201);
-      expect(byClient.body.orderTransition).toBe('NO_APLICA');
-      expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
-
-      const byWorker = await declare(worker, orderId, 'ANTICIPO').expect(201);
-      expect(byWorker.body.orderTransition).toBe('ANTICIPO_REGISTRADO');
-      expect(await statusOf(orderId)).toBe(OrderStatus.ANTICIPO_REGISTRADO);
-      const history = await prisma.orderStatusHistory.findFirstOrThrow({
-        where: { orderId, toStatus: OrderStatus.ANTICIPO_REGISTRADO },
-      });
-      expect(history).toMatchObject({
-        changedById: worker.id,
-        actorRole: RoleName.TRABAJADOR,
-      });
-    });
-
-    it('con AMBOS exige las dos declaraciones antes de avanzar', async () => {
-      paymentsConfig.advanceConfirmedBy = 'AMBOS';
+    it('no debilita los invariantes: tras el anticipo, una declaracion posterior no vuelve a transicionar', async () => {
       const { orderId } = await agreedOrder();
       await declare(worker, orderId, 'ANTICIPO').expect(201);
-      expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
-      const res = await declare(client, orderId, 'ANTICIPO').expect(201);
-      expect(res.body.orderTransition).toBe('ANTICIPO_REGISTRADO');
       expect(await statusOf(orderId)).toBe(OrderStatus.ANTICIPO_REGISTRADO);
-    });
-
-    it('no debilita los invariantes: tras el anticipo, una declaracion posterior no vuelve a transicionar', async () => {
-      paymentsConfig.advanceConfirmedBy = 'CLIENTE';
-      const { orderId } = await agreedOrder();
-      await declare(client, orderId, 'ANTICIPO').expect(201);
-      expect(await statusOf(orderId)).toBe(OrderStatus.ANTICIPO_REGISTRADO);
-      const again = await declare(worker, orderId, 'ANTICIPO').expect(201);
+      const again = await declare(client, orderId, 'ANTICIPO').expect(201);
       expect(again.body.orderTransition).toBe('NO_APLICA');
       // Saltarse el flujo sigue prohibido: del anticipo no se pasa a TERMINADO.
       await expect(
@@ -558,15 +497,351 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
         ),
       ).rejects.toThrow();
     });
+  });
 
-    it('la configuracion invalida detiene el arranque', async () => {
-      const { parseAdvanceConfirmation } =
-        await import('../src/modules/payments/payments.config.js');
-      expect(parseAdvanceConfirmation(undefined)).toBeNull();
-      expect(parseAdvanceConfirmation(' trabajador ')).toBe('TRABAJADOR');
-      expect(() => parseAdvanceConfirmation('TODOS')).toThrow(
-        /PAYMENTS_ADVANCE_CONFIRMED_BY/,
+  // ---------------------------------------------------------------------
+  describe('Anticipo confirmado por el trabajador asignado (decision confirmada)', () => {
+    const advanceRows = (orderId: string) =>
+      prisma.paymentDeclaration.findMany({
+        where: { payment: { orderId, concept: 'ANTICIPO' } },
+        orderBy: { createdAt: 'asc' },
+      });
+    const advanceHistory = (orderId: string) =>
+      prisma.orderStatusHistory.findMany({
+        where: { orderId, toStatus: OrderStatus.ANTICIPO_REGISTRADO },
+      });
+
+    it('el trabajador confirma: conserva monto, fecha, participantes e historial', async () => {
+      const { orderId } = await agreedOrder();
+      await declare(client, orderId, 'ANTICIPO').expect(201);
+      const res = await declare(worker, orderId, 'ANTICIPO').expect(201);
+
+      expect(res.body.orderTransition).toBe('ANTICIPO_REGISTRADO');
+      expect(res.body.payment).toMatchObject({
+        expectedAmount: '30.13',
+        requiredConfirmation: 'TRABAJADOR',
+        comparison: 'MONTOS_COINCIDEN',
+      });
+      expect(await statusOf(orderId)).toBe(OrderStatus.ANTICIPO_REGISTRADO);
+
+      const rows = await advanceRows(orderId);
+      expect(rows.map((r) => [r.declaredBy, r.userId])).toEqual([
+        ['CLIENTE', client.id],
+        ['TRABAJADOR', worker.id],
+      ]);
+      expect(rows[1].amount.toFixed(2)).toBe('30.13');
+      expect(rows[1].createdAt).toBeInstanceOf(Date);
+      const receipt = await prisma.serviceReceipt.findUniqueOrThrow({
+        where: { orderId },
+      });
+      expect(receipt).toMatchObject({
+        clientId: client.id,
+        workerId: worker.id,
+      });
+      const history = await advanceHistory(orderId);
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        fromStatus: OrderStatus.ACORDADO,
+        changedById: worker.id,
+        actorRole: RoleName.TRABAJADOR,
+      });
+    });
+
+    it('el cliente no puede confirmar la recepcion por el trabajador', async () => {
+      const { orderId } = await agreedOrder();
+      // No puede elegir la parte en el cuerpo.
+      await declare(client, orderId, 'ANTICIPO', {
+        amount: '30.13',
+        method: 'EFECTIVO',
+        declaredBy: 'TRABAJADOR',
+      }).expect(400);
+      const res = await declare(client, orderId, 'ANTICIPO').expect(201);
+      expect(res.body.orderTransition).toBe('NO_APLICA');
+      await declare(client, orderId, 'ANTICIPO').expect(409);
+
+      const rows = await advanceRows(orderId);
+      expect(rows.map((r) => r.declaredBy)).toEqual(['CLIENTE']);
+      expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
+      expect(await advanceHistory(orderId)).toHaveLength(0);
+    });
+
+    it('un tercero, el administrador o un anonimo no confirman ni registran nada', async () => {
+      const { orderId } = await agreedOrder();
+      await declare(worker2, orderId, 'ANTICIPO').expect(404);
+      await declare(client2, orderId, 'ANTICIPO').expect(404);
+      await declare(admin, orderId, 'ANTICIPO').expect(404);
+      await http()
+        .post(`/api/orders/${orderId}/payments/ANTICIPO/declarations`)
+        .send({ amount: '30.13', method: 'EFECTIVO' })
+        .expect(401);
+      expect(await prisma.payment.count({ where: { orderId } })).toBe(0);
+      expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
+    });
+
+    it('repetir la confirmacion es idempotente, tambien con el trabajo ya avanzado', async () => {
+      const { orderId } = await agreedOrder();
+      const first = await declare(worker, orderId, 'ANTICIPO').expect(201);
+      const notified = (await notificationsOf(client.id, 'PAGO_DECLARADO'))
+        .length;
+
+      const again = await declare(worker, orderId, 'ANTICIPO').expect(201);
+      expect(again.body.orderTransition).toBe('ANTICIPO_REGISTRADO');
+      expect(again.body.payment).toEqual(first.body.payment);
+
+      await post(worker, `/orders/${orderId}/start`).expect(200);
+      await declare(worker, orderId, 'ANTICIPO').expect(201);
+      expect(await statusOf(orderId)).toBe(OrderStatus.EN_EJECUCION);
+
+      // Con otros datos no se edita la declaracion.
+      await declare(worker, orderId, 'ANTICIPO', {
+        amount: '30.13',
+        method: 'QR',
+      }).expect(409);
+      await declare(worker, orderId, 'ANTICIPO', {
+        amount: '31.00',
+        method: 'EFECTIVO',
+      }).expect(409);
+
+      expect(await advanceRows(orderId)).toHaveLength(1);
+      expect(await advanceHistory(orderId)).toHaveLength(1);
+      expect((await notificationsOf(client.id, 'PAGO_DECLARADO')).length).toBe(
+        notified,
       );
+    });
+
+    it('confirmaciones simultaneas: un solo registro y una sola transicion', async () => {
+      const { orderId } = await agreedOrder();
+      const results = await Promise.all([
+        declare(worker, orderId, 'ANTICIPO'),
+        declare(worker, orderId, 'ANTICIPO'),
+        declare(worker, orderId, 'ANTICIPO'),
+      ]);
+      expect(results.map((r) => r.status)).toEqual([201, 201, 201]);
+      expect(await advanceRows(orderId)).toHaveLength(1);
+      expect(await advanceHistory(orderId)).toHaveLength(1);
+      expect(await prisma.payment.count({ where: { orderId } })).toBe(1);
+    });
+
+    it('rechaza un monto distinto del 25 % sin registrar nada', async () => {
+      const { orderId } = await agreedOrder();
+      for (const amount of ['30.12', '30.14', '120.50']) {
+        const res = await declare(worker, orderId, 'ANTICIPO', {
+          amount,
+          method: 'EFECTIVO',
+        }).expect(409);
+        expect(res.body.message).toMatch(/Bs 30\.13/);
+      }
+      expect(await prisma.payment.count({ where: { orderId } })).toBe(0);
+      expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
+    });
+
+    it('rechaza la confirmacion si el estado no corresponde', async () => {
+      const open = await createOrder();
+      // Sin acuerdo no hay trabajador asignado: para el, el pedido no existe.
+      await declare(worker, open, 'ANTICIPO').expect(404);
+
+      const { orderId } = await agreedOrder();
+      await post(client, `/orders/${orderId}/cancel-work`, {
+        reason: 'Cambio de planes',
+      }).expect(200);
+      await declare(worker, orderId, 'ANTICIPO').expect(409);
+      expect(await prisma.payment.count({ where: { orderId } })).toBe(0);
+      expect(await statusOf(orderId)).toBe(OrderStatus.CANCELADO);
+    });
+
+    const declaredNotices = (orderId: string) =>
+      prisma.notification.findMany({
+        where: { type: 'PAGO_DECLARADO', resourceId: orderId },
+        select: { userId: true },
+      });
+
+    it('cliente y trabajador a la vez: una sola transicion, del trabajador, y un aviso a cada uno', async () => {
+      for (let i = 0; i < 3; i += 1) {
+        const { orderId } = await agreedOrder();
+        const [byClient, byWorker] = await Promise.all([
+          declare(client, orderId, 'ANTICIPO'),
+          declare(worker, orderId, 'ANTICIPO'),
+        ]);
+        expect([byClient.status, byWorker.status]).toEqual([201, 201]);
+        expect(byClient.body.orderTransition).toBe('NO_APLICA');
+        expect(byWorker.body.orderTransition).toBe('ANTICIPO_REGISTRADO');
+        const history = await advanceHistory(orderId);
+        expect(history).toHaveLength(1);
+        expect(history[0].changedById).toBe(worker.id);
+        expect(await advanceRows(orderId)).toHaveLength(2);
+        expect(
+          (await declaredNotices(orderId)).map((n) => n.userId).sort(),
+        ).toEqual([client.id, worker.id].sort());
+      }
+    });
+
+    it('confirmaciones repetidas y simultaneas avisan al cliente una sola vez', async () => {
+      const { orderId } = await agreedOrder();
+      await Promise.all(
+        Array.from({ length: 5 }, () => declare(worker, orderId, 'ANTICIPO')),
+      );
+      await declare(worker, orderId, 'ANTICIPO').expect(201);
+      expect(await declaredNotices(orderId)).toEqual([{ userId: client.id }]);
+      expect(
+        await prisma.notification.count({
+          where: { type: 'PAGO_CON_DIFERENCIA', resourceId: orderId },
+        }),
+      ).toBe(0);
+      expect(await advanceRows(orderId)).toHaveLength(1);
+      expect(await advanceHistory(orderId)).toHaveLength(1);
+    });
+
+    it('una declaracion del trabajador sin avance previo: el cliente no lo avanza, el trabajador si', async () => {
+      const { orderId } = await agreedOrder();
+      // Dato anterior a la regla: declaracion guardada con el pedido ACORDADO.
+      const payment = await prisma.payment.create({
+        data: { orderId, concept: 'ANTICIPO', expectedAmount: '30.13' },
+      });
+      await prisma.paymentDeclaration.create({
+        data: {
+          paymentId: payment.id,
+          declaredBy: 'TRABAJADOR',
+          userId: worker.id,
+          method: 'EFECTIVO',
+          amount: '30.13',
+        },
+      });
+      const byClient = await declare(client, orderId, 'ANTICIPO').expect(201);
+      expect(byClient.body.orderTransition).toBe('NO_APLICA');
+      expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
+
+      const byWorker = await declare(worker, orderId, 'ANTICIPO').expect(201);
+      expect(byWorker.body.orderTransition).toBe('ANTICIPO_REGISTRADO');
+      expect(await advanceRows(orderId)).toHaveLength(2);
+      expect((await advanceHistory(orderId))[0].changedById).toBe(worker.id);
+    });
+
+    it('un trabajador suspendido no puede confirmar', async () => {
+      const { orderId } = await agreedOrder({ by: worker2 });
+      const profile = await prisma.workerProfile.findUniqueOrThrow({
+        where: { userId: worker2.id },
+      });
+      const profiles = app.get(WorkerProfileService);
+      await profiles.changeStatusByAdmin(admin.id, profile.id, {
+        status: WorkerProfileStatus.SUSPENDIDO,
+        reason: 'Prueba',
+      });
+      try {
+        await declare(worker2, orderId, 'ANTICIPO').expect(403);
+        expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
+        expect(await advanceRows(orderId)).toHaveLength(0);
+      } finally {
+        await profiles.changeStatusByAdmin(admin.id, profile.id, {
+          status: WorkerProfileStatus.APROBADO,
+        });
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  describe('Guarda del anticipo en OrdersService.transition()', () => {
+    // Simula a otro modulo que intenta pedir la transicion por su cuenta: son
+    // intentos que DEBEN fallar. El camino permitido se prueba por la API.
+    const attempt = (orderId: string, actor: OrderActor) =>
+      prisma.$transaction((tx) =>
+        orders.transition(tx, {
+          orderId,
+          to: OrderStatus.ANTICIPO_REGISTRADO,
+          actor,
+        } as Parameters<OrdersService['transition']>[1]),
+      );
+    const as = (u: PublicUser, role: RoleName): OrderActor => ({
+      type: 'USUARIO',
+      userId: u.id,
+      role,
+    });
+    const untouched = async (orderId: string) => {
+      expect(await statusOf(orderId)).toBe(OrderStatus.ACORDADO);
+      expect(
+        await prisma.orderStatusHistory.count({
+          where: { orderId, toStatus: OrderStatus.ANTICIPO_REGISTRADO },
+        }),
+      ).toBe(0);
+    };
+    /** Declaracion guardada sin avanzar el pedido (dato anterior a la regla). */
+    const storedDeclaration = async (
+      orderId: string,
+      userId: string,
+      amount = '30.13',
+    ) => {
+      const payment = await prisma.payment.create({
+        data: { orderId, concept: 'ANTICIPO', expectedAmount: '30.13' },
+      });
+      await prisma.paymentDeclaration.create({
+        data: {
+          paymentId: payment.id,
+          declaredBy: 'TRABAJADOR',
+          userId,
+          method: 'EFECTIVO',
+          amount,
+        },
+      });
+    };
+
+    it('el trabajador asignado avanza el pedido al confirmar por la API', async () => {
+      const { orderId } = await agreedOrder();
+      await declare(worker, orderId, 'ANTICIPO').expect(201);
+      expect(await statusOf(orderId)).toBe(OrderStatus.ANTICIPO_REGISTRADO);
+    });
+
+    it('rechaza al trabajador asignado sin confirmacion, tambien si solo declaro el cliente', async () => {
+      const { orderId } = await agreedOrder();
+      const actor = as(worker, RoleName.TRABAJADOR);
+      await expect(attempt(orderId, actor)).rejects.toThrow(
+        /confirmación válida/,
+      );
+      await declare(client, orderId, 'ANTICIPO').expect(201);
+      await expect(attempt(orderId, actor)).rejects.toThrow(
+        /confirmación válida/,
+      );
+      await untouched(orderId);
+    });
+
+    it('rechaza a cliente, administrador, sistema y otro trabajador aunque exista la confirmacion', async () => {
+      const { orderId } = await agreedOrder();
+      await storedDeclaration(orderId, worker.id);
+      for (const actor of [
+        as(client, RoleName.CLIENTE),
+        as(client, RoleName.TRABAJADOR),
+        as(admin, RoleName.ADMINISTRADOR),
+        as(admin, RoleName.TRABAJADOR),
+        as(worker2, RoleName.TRABAJADOR),
+        as(worker, RoleName.CLIENTE),
+        { type: 'SISTEMA', process: 'OTRO_MODULO' } satisfies OrderActor,
+      ]) {
+        await expect(attempt(orderId, actor)).rejects.toThrow(
+          /Solo el trabajador asignado/,
+        );
+      }
+      await untouched(orderId);
+    });
+
+    it('rechaza la confirmacion de otro pedido del mismo trabajador', async () => {
+      const confirmed = await agreedOrder();
+      const pending = await agreedOrder();
+      await declare(worker, confirmed.orderId, 'ANTICIPO').expect(201);
+      await expect(
+        attempt(pending.orderId, as(worker, RoleName.TRABAJADOR)),
+      ).rejects.toThrow(/confirmación válida/);
+      await untouched(pending.orderId);
+    });
+
+    it('rechaza una confirmacion de otro monto o de otro usuario', async () => {
+      const wrongAmount = await agreedOrder();
+      await storedDeclaration(wrongAmount.orderId, worker.id, '1.00');
+      const wrongUser = await agreedOrder();
+      await storedDeclaration(wrongUser.orderId, worker2.id);
+      for (const { orderId } of [wrongAmount, wrongUser]) {
+        await expect(
+          attempt(orderId, as(worker, RoleName.TRABAJADOR)),
+        ).rejects.toThrow(/confirmación válida/);
+        await untouched(orderId);
+      }
     });
   });
 
@@ -1178,6 +1453,78 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
 
   // ---------------------------------------------------------------------
   describe('Avisos internos de eventos reales (RF-33)', () => {
+    it('al cancelar el trabajo no avisa a quien perdio la oferta al aceptarse otra', async () => {
+      const orderId = await createOrder();
+      const winner = await post(
+        worker,
+        `/offers/orders/${orderId}`,
+        offerBody(nextSlot()),
+      ).expect(201);
+      await post(
+        worker2,
+        `/offers/orders/${orderId}`,
+        offerBody(nextSlot()),
+      ).expect(201);
+      await post(client, `/offers/${winner.body.id as string}/accept`).expect(
+        200,
+      );
+      await post(client, `/orders/${orderId}/cancel-work`, {
+        reason: 'Cambio de planes',
+      }).expect(200);
+
+      const received = await prisma.notification.findMany({
+        where: { type: 'PEDIDO_CANCELADO', resourceId: orderId },
+        select: { userId: true },
+      });
+      expect(received.map((row) => row.userId)).toEqual([worker.id]);
+    });
+
+    it('al cancelar un pedido en negociacion avisa a quienes tenian oferta abierta', async () => {
+      const orderId = await createOrder();
+      await post(
+        worker,
+        `/offers/orders/${orderId}`,
+        offerBody(nextSlot()),
+      ).expect(201);
+      await post(client, `/orders/me/${orderId}/cancel`, {}).expect(200);
+
+      const received = await prisma.notification.findMany({
+        where: { type: 'PEDIDO_CANCELADO', resourceId: orderId },
+        select: { userId: true },
+      });
+      expect(received.map((row) => row.userId)).toEqual([worker.id]);
+    });
+
+    it('al vencer un pedido avisa al cliente y a los trabajadores con oferta abierta', async () => {
+      const orderId = await createOrder();
+      await post(
+        worker,
+        `/offers/orders/${orderId}`,
+        offerBody(nextSlot()),
+      ).expect(201);
+      // Una oferta retirada antes del vencimiento no recibe el aviso.
+      const withdrawn = await post(
+        worker2,
+        `/offers/orders/${orderId}`,
+        offerBody(nextSlot()),
+      ).expect(201);
+      await post(
+        worker2,
+        `/offers/${withdrawn.body.id as string}/withdraw`,
+      ).expect(200);
+
+      await prisma.$executeRaw`UPDATE "orders" SET "expires_at" = now() - interval '1 minute' WHERE "id" = ${orderId}::uuid`;
+      await app.get(OrderExpirationService).expireDue();
+
+      const received = await prisma.notification.findMany({
+        where: { type: 'PEDIDO_VENCIDO', resourceId: orderId },
+        select: { userId: true },
+      });
+      expect(received.map((row) => row.userId).sort()).toEqual(
+        [client.id, worker.id].sort(),
+      );
+    });
+
     it('avisa la nueva oferta, la aceptacion, el trabajo terminado y la cancelacion', async () => {
       const orderId = await createOrder();
       const offer = await post(

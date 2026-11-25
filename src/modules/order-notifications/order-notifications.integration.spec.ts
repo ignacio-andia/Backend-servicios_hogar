@@ -197,7 +197,21 @@ describe('OrderNotificationsIntegration (RF-33)', () => {
         { offerId: 'b', workerId: 'w-withdrawn', type: 'PROPUESTA' },
         { offerId: 'b', workerId: 'w-withdrawn', type: 'RETIRADA' },
         { offerId: 'c', workerId: 'w-superseded', type: 'PROPUESTA' },
-        { offerId: 'c', workerId: 'w-superseded', type: 'SIN_EFECTO' },
+        // El cierre que provoca esta misma cancelacion (OffersClosureHooks).
+        {
+          offerId: 'c',
+          workerId: 'w-superseded',
+          type: 'SIN_EFECTO',
+          reason: 'PEDIDO_CANCELADO',
+        },
+        // Una oferta que ya habia quedado sin efecto antes: no se avisa.
+        { offerId: 'd', workerId: 'w-lost', type: 'PROPUESTA' },
+        {
+          offerId: 'd',
+          workerId: 'w-lost',
+          type: 'SIN_EFECTO',
+          reason: 'OTRA_OFERTA_ACEPTADA',
+        },
       ]);
       await integration.onOrderEvent(
         {

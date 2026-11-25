@@ -7,8 +7,15 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { isUUID } from 'class-validator';
-import { Prisma, RoleName, UserStatus } from '../../generated/prisma/client.js';
+import {
+  AuditAction,
+  AuditEntityType,
+  Prisma,
+  RoleName,
+  UserStatus,
+} from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import { AccountStatusRegistry } from './account-status.registry.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
@@ -74,6 +81,7 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountStatus: AccountStatusRegistry,
+    private readonly audit: AuditService,
   ) {}
 
   /** Crea la cuenta con el rol inicial CLIENTE. Lo invoca AuthModule en el registro. */
@@ -353,6 +361,20 @@ export class UsersService {
           userId: id,
           actorId: actor.id,
         });
+      }
+      // RF-53: la bitacora recoge las acciones de un administrador (no la baja
+      // que un usuario hace de su propia cuenta). En la misma transaccion.
+      if (isAdmin(actor)) {
+        await this.audit.record(
+          {
+            actorId: actor.id,
+            action: AuditAction.CAMBIO_ESTADO,
+            entityType: AuditEntityType.USUARIO,
+            entityId: id,
+            details: { fromStatus: user.status, toStatus: status },
+          },
+          tx,
+        );
       }
       return row;
     });

@@ -265,6 +265,19 @@ export class WorkflowTimelineSource implements TimelineSource {
           details: { budgetId: budget.id, amount: budget.amount },
         });
       }
+      if (
+        budget.status === AdditionalBudgetStatus.RECHAZADO &&
+        budget.respondedAt
+      ) {
+        add({
+          id: `budget:${budget.id}:rejected`,
+          type: 'ADICIONAL_RECHAZADO',
+          at: budget.respondedAt,
+          actor: client,
+          summary: `Presupuesto adicional rechazado: Bs ${budget.amount}`,
+          details: { budgetId: budget.id, amount: budget.amount },
+        });
+      }
     }
     if (execution?.finishedAt && execution.conformityDeadline) {
       add({

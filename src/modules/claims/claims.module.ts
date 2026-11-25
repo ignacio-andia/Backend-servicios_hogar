@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MulterModule } from '@nestjs/platform-express';
 import { PrismaModule } from '../../prisma/prisma.module.js';
+import { AuditModule } from '../audit/audit.module.js';
 import { StorageModule } from '../../storage/storage.module.js';
 import { OrdersConfig } from '../orders/orders.config.js';
 import { OrdersModule } from '../orders/orders.module.js';
@@ -24,6 +25,7 @@ import { ClaimsService } from './claims.service.js';
 @Module({
   imports: [
     PrismaModule,
+    AuditModule,
     StorageModule,
     OrdersModule,
     ServiceWorkflowModule,
@@ -48,5 +50,7 @@ import { ClaimsService } from './claims.service.js';
     ClaimImagesService,
     ClaimsInvariantHooks,
   ],
+  // Lectura para los reportes (RF-52).
+  exports: [ClaimsService],
 })
 export class ClaimsModule {}

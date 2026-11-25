@@ -12,8 +12,10 @@ import {
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { OrdersService, lockOrder } from '../orders/orders.service.js';
+import { WorkflowQueryService } from '../service-workflow/workflow-query.service.js';
 import { WorkerProfileService } from '../worker-profile/worker-profile.service.js';
 import { CreateReviewDto } from './dto/create-review.dto.js';
+import type { SearchWorkersQueryDto } from './dto/search-workers-query.dto.js';
 import { resolveReviewTarget, summarizeRatings } from './review-rules.js';
 import {
   type AdminReviewView,
@@ -22,6 +24,7 @@ import {
   type PublicOpinionView,
   type PublicWorkerProfileView,
   type ReviewView,
+  type WorkerSearchPage,
   authorLabel,
 } from './review-views.js';
 import { ReviewsConfig } from './reviews.config.js';
@@ -30,6 +33,11 @@ type Db = Prisma.TransactionClient;
 
 const PRISMA_UNIQUE_VIOLATION = 'P2002';
 const RECENT_OPINIONS = 5;
+// RF-16: sin prometer disponibilidad (RNF-08).
+export const NO_WORKERS_MESSAGE =
+  'No encontramos trabajadores para esa categoría y zona. Puede publicar su pedido igualmente.';
+const UNFINISHED_WORK_MESSAGE =
+  'El trabajo se cerró sin terminarse (presupuesto adicional rechazado): no se puede calificar.';
 
 const REVIEW_SELECT = {
   id: true,
@@ -72,6 +80,7 @@ export class ReviewsService {
     private readonly workerProfiles: WorkerProfileService,
     private readonly notifications: NotificationsService,
     private readonly config: ReviewsConfig,
+    private readonly workflow: WorkflowQueryService,
   ) {}
 
   /** Califica a la otra parte del pedido (RF-44, RF-45). */
@@ -98,6 +107,10 @@ export class ReviewsService {
           alreadyReviewed,
           policy: this.config.policy,
         });
+        // RF-45: un trabajo detenido por rechazar un adicional no se termino.
+        if (await this.workflow.hasRejectedBudget(orderId, tx)) {
+          throw new ConflictException(UNFINISHED_WORK_MESSAGE);
+        }
         const review = await tx.review.create({
           data: {
             orderId,
@@ -153,7 +166,11 @@ export class ReviewsService {
       if (order.assignedWorkerId === null) {
         reason = 'El pedido no tiene otra parte a la que calificar.';
       } else {
-        reason = this.config.policy.denialReason(order);
+        reason =
+          this.config.policy.denialReason(order) ??
+          ((await this.workflow.hasRejectedBudget(orderId))
+            ? UNFINISHED_WORK_MESSAGE
+            : null);
       }
     }
     return {
@@ -188,6 +205,59 @@ export class ReviewsService {
   // ---------------------------------------------------------------------
   // Perfil publico del trabajador (RF-46)
   // ---------------------------------------------------------------------
+
+  /** Registros para los reportes (RF-52): calificaciones creadas en el rango. Sin datos personales. */
+  async listForReport({
+    start,
+    end,
+  }: {
+    start: Date;
+    end: Date;
+  }): Promise<{ authorRole: RoleName; rating: number; hidden: boolean }[]> {
+    const reviews = await this.prisma.review.findMany({
+      where: { createdAt: { gte: start, lt: end } },
+      select: { authorRole: true, rating: true, hiddenAt: true },
+    });
+    return reviews.map(({ hiddenAt, ...review }) => ({
+      ...review,
+      hidden: hiddenAt !== null,
+    }));
+  }
+
+  /**
+   * Busqueda de trabajadores por categoria y zona (RF-16): perfil publico,
+   * horarios y promedio de las opiniones de clientes visibles.
+   */
+  async searchWorkers(
+    clientId: string,
+    { categoryId, zoneId, page, limit }: SearchWorkersQueryDto,
+  ): Promise<WorkerSearchPage> {
+    const { data, total } = await this.workerProfiles.searchApprovedWorkers(
+      { categoryId, zoneId },
+      clientId,
+      { page, limit },
+    );
+    const reviews = await this.prisma.review.findMany({
+      where: {
+        targetId: { in: data.map((worker) => worker.workerId) },
+        authorRole: RoleName.CLIENTE,
+        hiddenAt: null,
+      },
+      select: { targetId: true, rating: true },
+    });
+    const results = data.map((worker) => ({
+      ...worker,
+      rating: summarizeRatings(
+        reviews
+          .filter((review) => review.targetId === worker.workerId)
+          .map((review) => ({ rating: review.rating, hidden: false })),
+      ),
+    }));
+    return {
+      ...paginated(results, page, limit, total),
+      message: total === 0 ? NO_WORKERS_MESSAGE : null,
+    };
+  }
 
   /** Perfil publico, promedio y opiniones recientes de un trabajador aprobado. */
   async getPublicProfile(workerId: string): Promise<PublicWorkerProfileView> {

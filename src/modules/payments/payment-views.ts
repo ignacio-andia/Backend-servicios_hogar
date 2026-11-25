@@ -28,7 +28,7 @@ export interface PaymentView {
   /** Monto esperado (anticipo y visita, congelado al crearse); null en el saldo. */
   expectedAmount: string | null;
   /** Que confirmacion exige el concepto; la del cliente es siempre opcional. */
-  requiredConfirmation: RequiredConfirmation | 'CLIENTE' | 'AMBOS';
+  requiredConfirmation: RequiredConfirmation;
   declarations: DeclarationView[];
   /** Comparacion INFORMATIVA entre las declaraciones; no es una conciliacion. */
   comparison: DeclarationComparison;
@@ -38,7 +38,8 @@ export interface PaymentView {
 }
 
 export interface BalanceView {
-  status: ExpectedBalance['status'];
+  /** NO_APLICA: cerrado por rechazo de un adicional (RF-27). */
+  status: ExpectedBalance['status'] | 'NO_APLICA';
   /** Saldo esperado = monto acordado + adicionales aceptados - anticipo. */
   amount: string | null;
   advanceAmount: string | null;
@@ -56,7 +57,8 @@ export interface PaymentsOverview {
     acceptedAdditional: string;
     totalAmount: string;
   } | null;
-  advanceTransition: 'DESACTIVADA_PENDIENTE_DEFINICION' | 'ACTIVA';
+  /** La confirmacion del anticipo por el trabajador avanza el pedido. */
+  advanceTransition: 'ACTIVA';
   payments: PaymentView[];
   balance: BalanceView;
 }
@@ -79,15 +81,14 @@ export interface ReceiptsView {
   }[];
 }
 
-export type OrderTransitionOutcome =
-  'ANTICIPO_REGISTRADO' | 'DESACTIVADA_PENDIENTE_DEFINICION' | 'NO_APLICA';
+export type OrderTransitionOutcome = 'ANTICIPO_REGISTRADO' | 'NO_APLICA';
 
 export interface DeclarationResult {
   notice: string;
   payment: PaymentView;
   /**
-   * Efecto sobre el pedido. Sin PAYMENTS_ADVANCE_CONFIRMED_BY la transicion
-   * automatica del anticipo esta desactivada y el pedido no avanza.
+   * Efecto sobre el pedido. Solo la confirmacion del anticipo por el
+   * trabajador asignado responde ANTICIPO_REGISTRADO.
    */
   orderTransition: OrderTransitionOutcome;
 }

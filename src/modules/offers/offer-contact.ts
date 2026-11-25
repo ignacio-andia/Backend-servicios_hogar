@@ -1,3 +1,9 @@
+import { OfferStatus, OrderStatus } from '../../generated/prisma/enums.js';
+import {
+  ORDER_AGREED_STATUSES,
+  ORDER_OPEN_FOR_OFFERS_STATUSES,
+} from '../orders/orders.rules.js';
+
 // T6.6: enlace de WhatsApp entre cliente y trabajador. WhatsApp es solo un
 // canal externo: abrir el enlace no envia nada ni cambia la oferta.
 
@@ -36,6 +42,48 @@ export type WhatsAppContact =
       url: null;
       reason: ContactUnavailableReason;
     };
+
+export const CLIENT_CONTACT_UNAVAILABLE_MESSAGE =
+  'El contacto del cliente solo está disponible mientras su oferta sigue en negociación o el acuerdo sigue vigente.';
+export const WORKER_CONTACT_UNAVAILABLE_MESSAGE =
+  'El contacto del trabajador solo está disponible mientras la oferta sigue en negociación o el acuerdo sigue vigente.';
+
+/**
+ * Privacidad: cada parte obtiene el telefono de la otra solo mientras tiene
+ * motivo para escribirle:
+ * - negociacion: oferta VIGENTE sin vencer de un pedido abierto y sin vencer;
+ * - acuerdo: la oferta ACEPTADA, su trabajador sigue asignado y el pedido tiene el acuerdo
+ *   vigente (el mismo criterio que la direccion exacta: no CERRADO ni
+ *   CANCELADO).
+ * Una oferta rechazada, retirada, vencida o sin efecto no da acceso.
+ */
+export function isContactOpen(
+  offer: {
+    status: OfferStatus;
+    expiresAt: Date;
+    workerId: string;
+    order: {
+      status: OrderStatus;
+      expiresAt: Date;
+      assignedWorkerId: string | null;
+    };
+  },
+  now: Date,
+): boolean {
+  const { order } = offer;
+  if (offer.status === OfferStatus.VIGENTE) {
+    return (
+      offer.expiresAt > now &&
+      order.expiresAt > now &&
+      ORDER_OPEN_FOR_OFFERS_STATUSES.includes(order.status)
+    );
+  }
+  return (
+    offer.status === OfferStatus.ACEPTADA &&
+    order.assignedWorkerId === offer.workerId &&
+    ORDER_AGREED_STATUSES.includes(order.status)
+  );
+}
 
 /**
  * Numero para wa.me: solo digitos y con codigo de pais, sin "+", espacios,

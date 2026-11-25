@@ -3,12 +3,19 @@ import {
   AdditionalBudgetStatus,
   Prisma,
 } from '../../generated/prisma/client.js';
-import { OrderStatus } from '../../generated/prisma/enums.js';
+import {
+  OrderActorType,
+  OrderStatus,
+  RoleName,
+} from '../../generated/prisma/enums.js';
 import { OffersService } from '../offers/offers.service.js';
 import {
   OrderLifecycleRegistry,
   type OrderTransitionAttempt,
 } from '../orders/order-lifecycle.registry.js';
+import { OrdersService } from '../orders/orders.service.js';
+import { CONFORMITY_CLOSURE_PROCESS, dbClock } from './workflow-support.js';
+import { isConformityWindowOver } from './workflow.rules.js';
 
 type Db = Prisma.TransactionClient;
 
@@ -23,13 +30,17 @@ type Db = Prisma.TransactionClient;
  *   visita; desde VISITA_REALIZADA exige la visita registrada; desde
  *   PRESUPUESTO_ADICIONAL_PENDIENTE exige que el adicional ya este respondido.
  * - PRESUPUESTO_ADICIONAL_PENDIENTE exige exactamente un adicional PENDIENTE.
- * - TERMINADO exige el registro de ejecucion con su fecha de fin y plazo, y
- *   ningun adicional pendiente.
- * - CERRADO desde TERMINADO exige que el trabajo haya terminado (registro de
- *   ejecucion con fin).
+ * - TERMINADO exige el registro de ejecucion con su fecha de fin y plazo,
+ *   ningun adicional pendiente y que lo declare el trabajador asignado.
+ * - CERRADO desde PRESUPUESTO_ADICIONAL_PENDIENTE (RF-27) exige un adicional
+ *   RECHAZADO, ninguno pendiente y que lo declare el cliente del pedido.
+ * - CERRADO desde TERMINADO exige que el trabajo haya terminado y una de dos
+ *   (RF-28): la conformidad registrada y declarada por el cliente del pedido, o
+ *   el cierre automatico del sistema con el plazo vencido y sin conformidad.
  *
  * Las transiciones que cumplen sus invariantes (las de este modulo) escriben
- * su registro ANTES de llamar a transition(); las de otros modulos (por
+ * su registro ANTES de llamar a transition(). La confirmacion del anticipo la
+ * exige OrdersService. Las de otros modulos (por
  * ejemplo ACORDADO -> ANTICIPO_REGISTRADO de pagos) no tienen restriccion
  * adicional.
  */
@@ -38,6 +49,7 @@ export class WorkflowInvariantHooks implements OnModuleInit {
   constructor(
     private readonly lifecycle: OrderLifecycleRegistry,
     private readonly offers: OffersService,
+    private readonly orders: OrdersService,
   ) {}
 
   onModuleInit(): void {
@@ -61,7 +73,7 @@ export class WorkflowInvariantHooks implements OnModuleInit {
   }
 
   private async check(
-    { orderId, fromStatus, toStatus }: OrderTransitionAttempt,
+    { orderId, fromStatus, toStatus, actor }: OrderTransitionAttempt,
     tx: Db,
   ): Promise<void> {
     switch (toStatus) {
@@ -121,19 +133,70 @@ export class WorkflowInvariantHooks implements OnModuleInit {
             (await this.pendingBudgets(tx, orderId)) === 0,
           'falta el registro de ejecucion con su fecha de fin y plazo, o hay un adicional pendiente',
         );
+        const order = await this.orders.findOrderSummary(tx, orderId);
+        this.assert(
+          orderId,
+          toStatus,
+          actor.type === OrderActorType.USUARIO &&
+            actor.role === RoleName.TRABAJADOR &&
+            actor.userId === order?.assignedWorkerId,
+          'solo el trabajador asignado declara el trabajo terminado',
+        );
         return;
       }
       case OrderStatus.CERRADO: {
-        if (fromStatus === OrderStatus.TERMINADO) {
+        if (fromStatus === OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE) {
+          const order = await this.orders.findOrderSummary(tx, orderId);
+          const rejected = await tx.additionalBudget.count({
+            where: { orderId, status: AdditionalBudgetStatus.RECHAZADO },
+          });
+          this.assert(
+            orderId,
+            toStatus,
+            actor.type === OrderActorType.USUARIO &&
+              actor.role === RoleName.CLIENTE &&
+              actor.userId === order?.clientId &&
+              rejected > 0 &&
+              (await this.pendingBudgets(tx, orderId)) === 0,
+            'falta el rechazo del presupuesto adicional por el cliente',
+          );
+        } else if (fromStatus === OrderStatus.TERMINADO) {
           const execution = await tx.orderExecution.findUnique({
             where: { orderId },
-            select: { finishedAt: true },
+            select: {
+              finishedAt: true,
+              conformityDeadline: true,
+              conformedAt: true,
+            },
           });
           this.assert(
             orderId,
             toStatus,
             execution?.finishedAt != null,
             'el trabajo no tiene registro de ejecucion terminada',
+          );
+          let closable = false;
+          if (actor.type === OrderActorType.USUARIO) {
+            const order = await this.orders.findOrderSummary(tx, orderId);
+            closable =
+              execution?.conformedAt != null &&
+              actor.role === RoleName.CLIENTE &&
+              actor.userId === order?.clientId;
+          } else if (
+            actor.process === CONFORMITY_CLOSURE_PROCESS &&
+            execution?.conformedAt == null &&
+            execution?.conformityDeadline != null
+          ) {
+            closable = isConformityWindowOver(
+              await dbClock(tx),
+              execution.conformityDeadline,
+            );
+          }
+          this.assert(
+            orderId,
+            toStatus,
+            closable,
+            'falta la conformidad del cliente o el cierre automatico con el plazo vencido',
           );
         }
         return;

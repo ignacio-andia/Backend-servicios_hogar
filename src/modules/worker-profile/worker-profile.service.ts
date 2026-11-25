@@ -134,6 +134,12 @@ export interface PublicWorkerProfile {
   specialties: CatalogRef[];
 }
 
+/** Resultado de la busqueda de trabajadores (RF-16, CU-16 paso 4). */
+export interface SearchableWorker extends PublicWorkerProfile {
+  /** Horarios de atencion activos. No son reservas. */
+  schedules: { dayOfWeek: WeekDay; startTime: string; endTime: string }[];
+}
+
 export interface PendingRequirement {
   field: 'phone' | 'specialties' | 'zone' | 'schedules';
   message: string;
@@ -195,8 +201,9 @@ export interface WorkerEligibility {
   pendingZoneChangeRequest: PendingZoneChangeSummary | null;
   /**
    * T4-F4: si puede asumir trabajos nuevos (ofertar, recibir asignaciones):
-   * `eligible` y sin solicitud de cambio de zona pendiente. `eligible` sigue
-   * indicando solo el acceso a las funciones de trabajador (ver pedidos).
+   * `eligible` y sin solicitud de cambio de zona pendiente (con ella tampoco se
+   * le muestran pedidos nuevos). `eligible` sigue indicando solo el acceso a las
+   * funciones de trabajador.
    */
   canTakeNewWork: boolean;
 }
@@ -612,13 +619,30 @@ export class WorkerProfileService {
    * Orden de bloqueos del proyecto: primero el trabajador (este metodo),
    * despues el pedido. Lanza 403 con el mismo mensaje que assertWorkerApproved.
    *
-   * T4.3: con una solicitud de cambio de zona PENDIENTE lanza 409: no puede
-   * ofertar ni recibir trabajos nuevos. Se lee con el bloqueo tomado, asi que
-   * una solicitud, un retiro o una decision simultanea esperan su turno. Solo
-   * lo usan operaciones que crean trabajo nuevo (asignar un pedido, ofertar):
-   * los trabajos que ya tiene no pasan por aqui y no se ven afectados.
+   * RF-13 (T4.3): con una solicitud de cambio de zona PENDIENTE lanza 409.
+   * Es la validacion de las NUEVAS OPORTUNIDADES (ofertar por un pedido). Se lee con
+   * el bloqueo tomado, asi que una solicitud, un retiro o una decision
+   * simultanea esperan su turno. Las negociaciones ya abiertas y los trabajos
+   * acordados usan lockApprovedWorkerForAgreedWork.
    */
   async lockApprovedWorker(
+    tx: Prisma.TransactionClient,
+    userId: string,
+  ): Promise<ApprovedWorker> {
+    const worker = await this.lockApprovedWorkerForAgreedWork(tx, userId);
+    await this.assertNoPendingZoneChange(tx, worker.profileId);
+    return worker;
+  }
+
+  /**
+   * RF-13: validacion para continuar compromisos que ya existen: negociaciones
+   * abiertas (contraofertar y aceptar) y trabajos acordados (visita, cobro,
+   * ejecucion, finalizacion y declaracion de pagos).
+   * Mismo bloqueo de la fila y mismas comprobaciones que lockApprovedWorker
+   * (perfil APROBADO, cuenta activa y rol de trabajador; 403 si no), pero SIN
+   * mirar solicitudes de cambio de zona. No usar para trabajo nuevo.
+   */
+  async lockApprovedWorkerForAgreedWork(
     tx: Prisma.TransactionClient,
     userId: string,
   ): Promise<ApprovedWorker> {
@@ -646,16 +670,32 @@ export class WorkerProfileService {
           : eligibility,
       );
     }
+    return toApprovedWorker(profile);
+  }
+
+  /**
+   * RF-13: si el perfil tiene una solicitud de cambio de zona PENDIENTE. Solo
+   * lectura, para consultas (que pedidos se le ofrecen); las operaciones que
+   * escriben usan assertNoPendingZoneChange con el trabajador bloqueado.
+   */
+  async hasPendingZoneChange(profileId: string): Promise<boolean> {
+    return (await this.findPendingZoneChange(profileId)) !== null;
+  }
+
+  /**
+   * 409 si el perfil tiene una solicitud PENDIENTE. El llamador ya bloqueo al
+   * trabajador (lockApprovedWorkerForAgreedWork).
+   */
+  async assertNoPendingZoneChange(
+    tx: Prisma.TransactionClient,
+    profileId: string,
+  ): Promise<void> {
     const pendingZoneChange = await tx.zoneChangeRequest.count({
-      where: {
-        profileId: profile.id,
-        status: ZoneChangeRequestStatus.PENDIENTE,
-      },
+      where: { profileId, status: ZoneChangeRequestStatus.PENDIENTE },
     });
     if (pendingZoneChange > 0) {
       throw new ConflictException(PENDING_ZONE_CHANGE_BLOCKS_NEW_WORK_MESSAGE);
     }
-    return toApprovedWorker(profile);
   }
 
   /**
@@ -708,22 +748,96 @@ export class WorkerProfileService {
       return [];
     }
     const profiles = await this.prisma.workerProfile.findMany({
-      where: {
-        status: WorkerProfileStatus.APROBADO,
-        zoneId: zone.id,
-        specialties: { some: { categoryId: category.id } },
-        zoneChangeRequests: {
-          none: { status: ZoneChangeRequestStatus.PENDIENTE },
-        },
-        user: {
-          status: UserStatus.ACTIVO,
-          roles: { some: { role: RoleName.TRABAJADOR } },
-        },
-      },
+      where: candidateWhere(category.id, zone.id),
       select: PROFILE_SELECT,
       orderBy: { createdAt: 'asc' },
     });
     return profiles.map(toApprovedWorker);
+  }
+
+  /** Registros para los reportes (RF-52): perfiles creados en el rango, con su estado actual. Sin datos personales. */
+  async listForReport({
+    start,
+    end,
+  }: {
+    start: Date;
+    end: Date;
+  }): Promise<{ zoneId: string; status: WorkerProfileStatus }[]> {
+    return this.prisma.workerProfile.findMany({
+      where: { createdAt: { gte: start, lt: end } },
+      select: { zoneId: true, status: true },
+    });
+  }
+
+  /**
+   * Busqueda de trabajadores para un cliente (RF-16): los mismos candidatos que
+   * findApprovedWorkers (APROBADO, cuenta activa, rol, sin cambio de zona
+   * pendiente, zona y categoria activas), sin el propio cliente (RN-14). Solo
+   * datos publicos y horarios: nunca correo, telefono, documentos ni estado. Una
+   * categoria o zona inexistente responde 404.
+   */
+  async searchApprovedWorkers(
+    filter: { categoryId: string; zoneId: string },
+    excludeUserId: string,
+    { page, limit }: { page: number; limit: number },
+  ): Promise<{ data: SearchableWorker[]; total: number }> {
+    const [category, zone] = await Promise.all([
+      this.catalogs.findById(CatalogKind.CATEGORY, filter.categoryId),
+      this.catalogs.findById(CatalogKind.ZONE, filter.zoneId),
+    ]);
+    if (!category.isActive || !zone.isActive) {
+      return { data: [], total: 0 };
+    }
+    const where: Prisma.WorkerProfileWhereInput = {
+      ...candidateWhere(category.id, zone.id),
+      userId: { not: excludeUserId },
+    };
+    const [profiles, total] = await Promise.all([
+      this.prisma.workerProfile.findMany({
+        where,
+        select: {
+          userId: true,
+          yearsOfExperience: true,
+          description: true,
+          specialties: { select: { categoryId: true } },
+          schedules: {
+            where: { isActive: true },
+            select: { dayOfWeek: true, startMinutes: true, endMinutes: true },
+            orderBy: [{ dayOfWeek: 'asc' }, { startMinutes: 'asc' }],
+          },
+          user: { select: { firstName: true, lastName: true } },
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.workerProfile.count({ where }),
+    ]);
+    const categories = await this.catalogs.findByIds(CatalogKind.CATEGORY, [
+      ...new Set(
+        profiles.flatMap((p) => p.specialties.map((item) => item.categoryId)),
+      ),
+    ]);
+    const refs = new Map(categories.map((item) => [item.id, toRef(item)]));
+    return {
+      data: profiles.map((profile) => ({
+        workerId: profile.userId,
+        firstName: profile.user.firstName,
+        lastName: profile.user.lastName,
+        yearsOfExperience: profile.yearsOfExperience,
+        description: profile.description,
+        zone: toRef(zone),
+        specialties: profile.specialties.flatMap(
+          (item) => refs.get(item.categoryId) ?? [],
+        ),
+        schedules: profile.schedules.map((row) => ({
+          dayOfWeek: row.dayOfWeek,
+          startTime: toTime(row.startMinutes),
+          endTime: toTime(row.endMinutes),
+        })),
+      })),
+      total,
+    };
   }
 
   /**
@@ -1379,6 +1493,25 @@ function toAccountSummary(user: {
 }): AdminAccountSummary {
   const { firstName, lastName, email, phone, status } = user;
   return { firstName, lastName, email, phone, status };
+}
+
+/** Candidatos a trabajo nuevo en una categoria y zona (RF-09, RF-13, RF-16). */
+function candidateWhere(
+  categoryId: string,
+  zoneId: string,
+): Prisma.WorkerProfileWhereInput {
+  return {
+    status: WorkerProfileStatus.APROBADO,
+    zoneId,
+    specialties: { some: { categoryId } },
+    zoneChangeRequests: {
+      none: { status: ZoneChangeRequestStatus.PENDIENTE },
+    },
+    user: {
+      status: UserStatus.ACTIVO,
+      roles: { some: { role: RoleName.TRABAJADOR } },
+    },
+  };
 }
 
 function notApprovedError(eligibility: WorkerEligibility): ForbiddenException {

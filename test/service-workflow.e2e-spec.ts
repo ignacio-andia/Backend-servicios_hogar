@@ -23,12 +23,9 @@ import {
   CatalogsService,
 } from '../src/modules/catalogs/catalogs.service.js';
 import { ClaimsConfig } from '../src/modules/claims/claims.config.js';
-import { ClaimsModule } from '../src/modules/claims/claims.module.js';
 import { OrderRetentionService } from '../src/modules/orders/order-retention.service.js';
 import { OrdersService } from '../src/modules/orders/orders.service.js';
 import { ConformityClosureService } from '../src/modules/service-workflow/conformity-closure.service.js';
-import { ServiceWorkflowModule } from '../src/modules/service-workflow/service-workflow.module.js';
-import { VisitPaymentRegistry } from '../src/modules/service-workflow/visit-payment.port.js';
 import {
   WorkflowEvent,
   WorkflowEventRegistry,
@@ -46,9 +43,8 @@ import {
 } from './utils/isolated-schema.js';
 
 // Corre sobre un esquema temporal con TODAS las migraciones (incluida la del
-// ciclo de vida del trabajo): no toca los datos del esquema public. Los
-// modulos ServiceWorkflowModule y ClaimsModule se importan aqui porque
-// app.module.ts los registrara al integrar.
+// ciclo de vida del trabajo): no toca los datos del esquema public.
+// La aplicacion se arranca con AppModule, que registra todos los modulos.
 const RUN_ID = randomUUID().slice(0, 8);
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -74,7 +70,6 @@ describe('ServiceWorkflowModule y ClaimsModule (RF-25 a RF-28, RF-34, RF-36 a RF
   let orders: OrdersService;
   let queries: WorkflowQueryService;
   let closure: ConformityClosureService;
-  let visitPayments: VisitPaymentRegistry;
   let storageDir: string;
   let jpeg: Buffer;
 
@@ -139,16 +134,16 @@ describe('ServiceWorkflowModule y ClaimsModule (RF-25 a RF-28, RF-34, RF-36 a RF
     return { orderId };
   };
 
-  /** Lo que hara PaymentsModule (RF-39): registrar el anticipo con transition(). */
+  /** Registra el anticipo como en la aplicacion: lo confirma el trabajador asignado. */
   const registerAdvance = async (orderId: string) => {
-    await prisma.$transaction((tx) =>
-      orders.transition(tx, {
-        orderId,
-        from: OrderStatus.ACORDADO,
-        to: OrderStatus.ANTICIPO_REGISTRADO,
-        actor: { type: 'SISTEMA', process: 'PRUEBA_PAGOS' },
-      }),
-    );
+    const { assignedWorkerId } = await prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+    });
+    const assigned = [worker, worker2].find((u) => u.id === assignedWorkerId)!;
+    await post(assigned, `/orders/${orderId}/payments/ANTICIPO/declarations`, {
+      amount: '30.13',
+      method: 'EFECTIVO',
+    }).expect(201);
   };
 
   const statusOf = async (orderId: string) =>
@@ -205,7 +200,7 @@ describe('ServiceWorkflowModule y ClaimsModule (RF-25 a RF-28, RF-34, RF-36 a RF
     });
     await scoped.$connect();
     const moduleRef = await Test.createTestingModule({
-      imports: [AppModule, ServiceWorkflowModule, ClaimsModule],
+      imports: [AppModule],
     })
       .overrideProvider(PrismaService)
       .useValue(scoped)
@@ -219,7 +214,6 @@ describe('ServiceWorkflowModule y ClaimsModule (RF-25 a RF-28, RF-34, RF-36 a RF
     orders = app.get(OrdersService);
     queries = app.get(WorkflowQueryService);
     closure = app.get(ConformityClosureService);
-    visitPayments = app.get(VisitPaymentRegistry);
     const catalogs = app.get(CatalogsService);
     const users = app.get(UsersService);
     const profiles = app.get(WorkerProfileService);
@@ -319,30 +313,51 @@ describe('ServiceWorkflowModule y ClaimsModule (RF-25 a RF-28, RF-34, RF-36 a RF
       await post(worker, `/orders/${orderId}/visit`).expect(409);
     });
 
-    it('el cobro de la visita responde 501 sin pagos integrados y delega en el puerto despues', async () => {
+    it('el cobro de la visita queda registrado en pagos, una sola vez y con su constancia', async () => {
       const { orderId } = await agreedOrder({ requiresVisit: true });
       await registerAdvance(orderId);
+      const url = `/orders/${orderId}/visit/payment-confirmation`;
+      // Sin visita registrada todavia no hay cobro que confirmar.
+      await post(worker, url).expect(409);
+      // El anticipo ya se registro: aun no hay pago de la visita.
+      const visitPayment = { orderId, concept: 'VISITA' as const };
+      expect(await prisma.payment.count({ where: visitPayment })).toBe(0);
+      const noticesToClient = () =>
+        prisma.notification.count({
+          where: {
+            userId: client.id,
+            type: 'PAGO_DECLARADO',
+            resourceId: orderId,
+          },
+        });
+      const noticesBefore = await noticesToClient();
       await post(worker, `/orders/${orderId}/visit`).expect(201);
-      await post(
-        worker,
-        `/orders/${orderId}/visit/payment-confirmation`,
-      ).expect(501);
 
-      const recordVisitPayment = vi.fn(() => Promise.resolve());
-      visitPayments.register({ recordVisitPayment });
-      await post(
-        client,
-        `/orders/${orderId}/visit/payment-confirmation`,
-      ).expect(403);
-      await post(
-        worker,
-        `/orders/${orderId}/visit/payment-confirmation`,
-      ).expect(200);
-      expect(recordVisitPayment).toHaveBeenCalledWith(expect.anything(), {
-        orderId,
-        amount: '30.00',
-        confirmedByUserId: worker.id,
+      await post(client, url).expect(403);
+      await post(worker2, url).expect(404);
+      // Doble confirmacion simultanea y un reintento: idempotente.
+      const results = await Promise.all([post(worker, url), post(worker, url)]);
+      expect(results.map((r) => r.status)).toEqual([200, 200]);
+      await post(worker, url).expect(200);
+
+      const payments = await prisma.payment.findMany({
+        where: visitPayment,
+        include: { declarations: true },
       });
+      expect(payments).toHaveLength(1);
+      expect(payments[0].concept).toBe('VISITA');
+      expect(payments[0].declarations).toHaveLength(1);
+      expect(payments[0].declarations[0]).toMatchObject({
+        declaredBy: 'TRABAJADOR',
+        userId: worker.id,
+        method: 'EFECTIVO',
+      });
+      expect(payments[0].declarations[0].amount.toFixed(2)).toBe('30.00');
+      expect(await prisma.serviceReceipt.count({ where: { orderId } })).toBe(1);
+      // El cliente recibe un solo aviso del cobro.
+      expect(await noticesToClient()).toBe(noticesBefore + 1);
+      // Confirmar el cobro no cambia el estado del pedido.
+      expect(await statusOf(orderId)).toBe(OrderStatus.VISITA_REALIZADA);
     });
 
     it('una visita sin costo no pide confirmacion de cobro', async () => {
@@ -450,11 +465,8 @@ describe('ServiceWorkflowModule y ClaimsModule (RF-25 a RF-28, RF-34, RF-36 a RF
         body,
       ).expect(201);
       const budgetId = created.body.budget.id as string;
-      await post(
-        client,
-        `/orders/${orderId}/additional-budgets/${budgetId}/reject`,
-      ).expect(404);
-      // La matriz no tiene salida hacia CERRADO desde el adicional pendiente.
+      // RF-27: solo el rechazo del cliente cierra el pedido.
+      expect(budgetId).toBeDefined();
       await expect(
         prisma.$transaction((tx) =>
           orders.transition(tx, {
@@ -463,7 +475,7 @@ describe('ServiceWorkflowModule y ClaimsModule (RF-25 a RF-28, RF-34, RF-36 a RF
             actor: { type: 'SISTEMA', process: 'PRUEBA' },
           }),
         ),
-      ).rejects.toThrow(/No se permite pasar/);
+      ).rejects.toThrow(/falta el rechazo del presupuesto adicional/);
       expect(await statusOf(orderId)).toBe(
         OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE,
       );
@@ -863,7 +875,7 @@ describe('ServiceWorkflowModule y ClaimsModule (RF-25 a RF-28, RF-34, RF-36 a RF
       );
     });
 
-    it('sigue permitiendo el contrato de pagos: ACORDADO -> ANTICIPO_REGISTRADO', async () => {
+    it('el anticipo avanza el pedido con la confirmacion del trabajador por la API', async () => {
       const { orderId } = await agreedOrder();
       await registerAdvance(orderId);
       expect(await statusOf(orderId)).toBe(OrderStatus.ANTICIPO_REGISTRADO);

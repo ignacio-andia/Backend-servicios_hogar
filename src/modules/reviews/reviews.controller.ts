@@ -16,6 +16,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import type { PublicUser } from '../users/users.service.js';
 import { CreateReviewDto } from './dto/create-review.dto.js';
 import { ListReviewsQueryDto } from './dto/review-queries.dto.js';
+import { SearchWorkersQueryDto } from './dto/search-workers-query.dto.js';
 import type {
   AdminReviewView,
   MyReviewStatus,
@@ -23,6 +24,7 @@ import type {
   PublicOpinionView,
   PublicWorkerProfileView,
   ReviewView,
+  WorkerSearchPage,
 } from './review-views.js';
 import { ReviewsService } from './reviews.service.js';
 
@@ -56,6 +58,16 @@ export class ReviewsController {
     @Param('orderId', ParseUUIDPipe) orderId: string,
   ): Promise<MyReviewStatus> {
     return this.reviews.getMine(user.id, orderId);
+  }
+
+  /** RF-16: el cliente busca trabajadores de una categoria y zona. */
+  @Auth(RoleName.CLIENTE)
+  @Get('workers/search')
+  searchWorkers(
+    @CurrentUser() user: PublicUser,
+    @Query() query: SearchWorkersQueryDto,
+  ): Promise<WorkerSearchPage> {
+    return this.reviews.searchWorkers(user.id, query);
   }
 
   /** Calificaciones recibidas por el usuario (visibles). */

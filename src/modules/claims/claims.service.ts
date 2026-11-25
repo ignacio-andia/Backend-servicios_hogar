@@ -9,8 +9,11 @@ import {
   OrderStatus,
   Prisma,
   RoleName,
+  AuditAction,
+  AuditEntityType,
 } from '../../generated/prisma/client.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import type { UploadedImageFile } from '../orders/images/order-image.processor.js';
 import { clientActor } from '../orders/order-history.js';
 import {
@@ -78,7 +81,32 @@ export class ClaimsService {
     private readonly events: WorkflowEventRegistry,
     private readonly images: ClaimImagesService,
     private readonly settings: ClaimsConfig,
+    private readonly audit: AuditService,
   ) {}
+
+  /**
+   * RF-53: decision administrativa sobre un reclamo, en la bitacora y dentro de
+   * su transaccion. Solo estados e identificadores: ni la descripcion del
+   * reclamo ni el texto de la decision (quedan en el propio reclamo).
+   */
+  private recordClaimDecision(
+    tx: Db,
+    adminId: string,
+    claim: { id: string; orderId: string },
+    fromStatus: ClaimStatus,
+    toStatus: ClaimStatus,
+  ): Promise<void> {
+    return this.audit.record(
+      {
+        actorId: adminId,
+        action: AuditAction.CAMBIO_ESTADO,
+        entityType: AuditEntityType.RECLAMO,
+        entityId: claim.id,
+        details: { orderId: claim.orderId, fromStatus, toStatus },
+      },
+      tx,
+    );
+  }
 
   // ---------------------------------------------------------------------
   // RF-37: presentar el reclamo
@@ -271,6 +299,24 @@ export class ClaimsService {
     };
   }
 
+  /** Registros para los reportes (RF-52): reclamos presentados en el rango, con su estado actual. Sin datos personales. */
+  async listForReport({
+    start,
+    end,
+  }: {
+    start: Date;
+    end: Date;
+  }): Promise<{ categoryId: string; zoneId: string; status: ClaimStatus }[]> {
+    const claims = await this.prisma.claim.findMany({
+      where: { createdAt: { gte: start, lt: end } },
+      select: {
+        status: true,
+        order: { select: { categoryId: true, zoneId: true } },
+      },
+    });
+    return claims.map(({ status, order }) => ({ ...order, status }));
+  }
+
   /**
    * Detalle para el administrador: reclamo y fotos. El historial del pedido
    * lo da el detalle administrativo del pedido (GET /orders/admin/:id); las
@@ -289,7 +335,6 @@ export class ClaimsService {
 
   /** ABIERTO -> EN_REVISION (CU-38 A1: se requiere mas evidencia). */
   async markInReview(adminId: string, claimId: string): Promise<ClaimView> {
-    void adminId;
     const events: WorkflowEvent[] = [];
     await this.withLockedClaim(claimId, async (tx, claim, orderId) => {
       if (claim.status !== ClaimStatus.ABIERTO) {
@@ -301,6 +346,13 @@ export class ClaimsService {
         where: { id: claimId },
         data: { status: ClaimStatus.EN_REVISION },
       });
+      await this.recordClaimDecision(
+        tx,
+        adminId,
+        { id: claimId, orderId },
+        claim.status,
+        ClaimStatus.EN_REVISION,
+      );
       events.push({ type: 'RECLAMO_EN_REVISION', orderId, claimId });
       await this.events.runInTransaction(events, tx);
     });
@@ -341,6 +393,13 @@ export class ClaimsService {
         actor: adminActor(adminId),
         reason: 'Reclamo resuelto por el administrador',
       });
+      await this.recordClaimDecision(
+        tx,
+        adminId,
+        { id: claimId, orderId },
+        claim.status,
+        ClaimStatus.RESUELTO,
+      );
       events.push({
         type: 'RECLAMO_RESUELTO',
         orderId,

@@ -125,7 +125,9 @@ export class ServiceWorkflowService {
    * "Pago confirmado" (RF-25, RN-04): el trabajador confirma el cobro de la
    * visita en efectivo. A valida actor, estado y que haya un costo; el
    * registro del cobro y su constancia son de PaymentsModule (puerto
-   * VisitPaymentRecorder). Sin ese modulo integrado responde 501.
+   * VisitPaymentRecorder). Sin ese modulo integrado responde 501. Tambien se
+   * confirma con el pedido CANCELADO despues de la visita: la visita se realizo
+   * y su cobro sigue pendiente (RN-04).
    */
   async confirmVisitPayment(
     workerId: string,
@@ -138,10 +140,7 @@ export class ServiceWorkflowService {
       );
     }
     return this.run(async (tx) => {
-      const order = await this.lockForWorker(tx, workerId, orderId);
-      if (order.status === OrderStatus.CANCELADO) {
-        throw new ConflictException('El pedido fue cancelado.');
-      }
+      await this.lockForWorker(tx, workerId, orderId);
       const visit = await tx.orderVisit.findUnique({ where: { orderId } });
       if (!visit) {
         throw new ConflictException('Todavía no se registró la visita.');
@@ -320,6 +319,57 @@ export class ServiceWorkflowService {
    * TERMINADO): registra la fecha y hora y fija el plazo de 7 dias para la
    * conformidad o el reclamo (RN-10).
    */
+  /**
+   * RF-27 (CU-27): el cliente rechaza el presupuesto adicional; el trabajo se
+   * detiene y el pedido se cierra, con el motivo en el historial. Solo queda
+   * pendiente el cobro de la visita (Pagos no admite el saldo). La
+   * contraoferta del adicional (CU-27 A1) no esta definida.
+   */
+  async rejectAdditionalBudget(
+    clientId: string,
+    orderId: string,
+    budgetId: string,
+    reason?: string,
+  ): Promise<{ status: OrderStatus; budget: AdditionalBudgetView }> {
+    return this.run(async (tx, events) => {
+      const order = await this.lockForClient(tx, clientId, orderId);
+      this.assertStatus(
+        order,
+        [OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE],
+        'rechazar el presupuesto adicional',
+      );
+      const budget = await tx.additionalBudget.findFirst({
+        where: { id: budgetId, orderId },
+      });
+      if (!budget) {
+        throw new NotFoundException('El presupuesto adicional no existe');
+      }
+      if (budget.status !== AdditionalBudgetStatus.PENDIENTE) {
+        throw new ConflictException(
+          'El presupuesto adicional ya fue respondido.',
+        );
+      }
+      const rejected = await tx.additionalBudget.update({
+        where: { id: budgetId },
+        data: {
+          status: AdditionalBudgetStatus.RECHAZADO,
+          respondedAt: await dbClock(tx),
+        },
+      });
+      await this.orders.transition(tx, {
+        orderId,
+        from: OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE,
+        to: OrderStatus.CERRADO,
+        actor: clientActor(clientId),
+        reason: reason
+          ? `Presupuesto adicional rechazado: ${reason}`
+          : 'Presupuesto adicional rechazado',
+      });
+      events.push({ type: 'ADICIONAL_RECHAZADO', orderId, budgetId });
+      return { status: OrderStatus.CERRADO, budget: toBudgetView(rejected) };
+    });
+  }
+
   async finishWork(
     workerId: string,
     orderId: string,
@@ -500,13 +550,17 @@ export class ServiceWorkflowService {
     }
   }
 
-  /** Accion del trabajador: perfil aprobado bloqueado (1.o) y pedido asignado a el (2.o). */
+  /**
+   * Accion del trabajador: perfil aprobado bloqueado (1.o) y pedido asignado a
+   * el (2.o). Es trabajo ya acordado: una solicitud de cambio de zona pendiente
+   * no lo detiene (RF-13).
+   */
   private async lockForWorker(
     tx: Db,
     workerId: string,
     orderId: string,
   ): Promise<LockedOrder> {
-    await this.workerProfiles.lockApprovedWorker(tx, workerId);
+    await this.workerProfiles.lockApprovedWorkerForAgreedWork(tx, workerId);
     const order = await lockOrder(tx, orderId);
     if (!order || order.assignedWorkerId !== workerId) {
       throw orderNotFound();

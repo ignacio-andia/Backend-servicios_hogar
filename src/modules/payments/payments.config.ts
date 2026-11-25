@@ -2,28 +2,28 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { PaymentDeclarer } from './payments.rules.js';
 
-/** Quien debe declarar el anticipo para que el pedido pase a ANTICIPO_REGISTRADO. */
-export type AdvanceConfirmation = PaymentDeclarer | 'AMBOS';
+/**
+ * Quien confirma la recepcion del anticipo para que el pedido pase a
+ * ANTICIPO_REGISTRADO. DECISION FUNCIONAL DEFINITIVA: exclusivamente el
+ * trabajador asignado.
+ */
+export type AdvanceConfirmation = Extract<PaymentDeclarer, 'TRABAJADOR'>;
+export const DEFAULT_ADVANCE_CONFIRMATION: AdvanceConfirmation = 'TRABAJADOR';
 export const ADVANCE_CONFIRMATION_VALUES: readonly AdvanceConfirmation[] = [
-  'TRABAJADOR',
-  'CLIENTE',
-  'AMBOS',
+  DEFAULT_ADVANCE_CONFIRMATION,
 ];
 
 /**
  * Configuracion de PaymentsModule.
  *
- * PAYMENTS_ADVANCE_CONFIRMED_BY (TRABAJADOR | CLIENTE | AMBOS): quien confirma
- * la recepcion del anticipo. PENDIENTE DE CONFIRMAR CON EL DOCENTE: CU-39 dice
- * "se registra el anticipo en el sistema quien lo confirma" sin completar la
- * frase y RN-03 solo regula el saldo, asi que NO se asume. Sin valor, la
- * transicion automatica ACORDADO -> ANTICIPO_REGISTRADO queda DESACTIVADA: el
- * anticipo se registra igual, pero el pedido no avanza. Un valor invalido
- * detiene el arranque.
+ * PAYMENTS_ADVANCE_CONFIRMED_BY: opcional; el unico valor permitido es
+ * TRABAJADOR, que tambien es el predeterminado si no se define (o se deja
+ * vacio). CLIENTE, AMBOS o cualquier otro valor contradicen la decision
+ * funcional y detienen el arranque.
  */
 @Injectable()
 export class PaymentsConfig {
-  readonly advanceConfirmedBy: AdvanceConfirmation | null;
+  readonly advanceConfirmedBy: AdvanceConfirmation;
 
   constructor(config: ConfigService) {
     this.advanceConfirmedBy = parseAdvanceConfirmation(
@@ -34,14 +34,14 @@ export class PaymentsConfig {
 
 export function parseAdvanceConfirmation(
   raw: string | undefined,
-): AdvanceConfirmation | null {
+): AdvanceConfirmation {
   const value = raw?.trim().toUpperCase();
   if (value === undefined || value === '') {
-    return null;
+    return DEFAULT_ADVANCE_CONFIRMATION;
   }
   if (!ADVANCE_CONFIRMATION_VALUES.includes(value as AdvanceConfirmation)) {
     throw new Error(
-      `PAYMENTS_ADVANCE_CONFIRMED_BY debe ser ${ADVANCE_CONFIRMATION_VALUES.join(', ')} (o no definirse)`,
+      `PAYMENTS_ADVANCE_CONFIRMED_BY solo admite ${ADVANCE_CONFIRMATION_VALUES.join(', ')} (o no definirse): el anticipo lo confirma exclusivamente el trabajador asignado`,
     );
   }
   return value as AdvanceConfirmation;

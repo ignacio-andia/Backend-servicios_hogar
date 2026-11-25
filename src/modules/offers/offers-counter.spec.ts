@@ -68,7 +68,7 @@ describe('OffersService.counter (T6.3)', () => {
     offer: { findUnique: Fn; findFirst: Fn };
   };
   let users: { findByIdForShare: Fn };
-  let workerProfiles: { lockApprovedWorker: Fn };
+  let workerProfiles: { lockApprovedWorkerForAgreedWork: Fn };
   let catalogs: { findByIdsForShare: Fn };
   let service: OffersService;
 
@@ -155,7 +155,7 @@ describe('OffersService.counter (T6.3)', () => {
       }),
     };
     workerProfiles = {
-      lockApprovedWorker: vi.fn(() => {
+      lockApprovedWorkerForAgreedWork: vi.fn(() => {
         calls.push('trabajador');
         return Promise.resolve({});
       }),
@@ -175,6 +175,41 @@ describe('OffersService.counter (T6.3)', () => {
       catalogs as unknown as CatalogsService,
       {} as never,
     );
+  });
+
+  describe('vencimiento con el reloj real, ya con los bloqueos (RF-13)', () => {
+    /** La BD responde otra hora a clock_timestamp() que a now(). */
+    const clockAt = (clock: Date) => {
+      const base = tx.$queryRaw.getMockImplementation()!;
+      tx.$queryRaw.mockImplementation((strings: TemplateStringsArray) =>
+        strings.join('?').includes('clock_timestamp')
+          ? Promise.resolve([{ now: clock }])
+          : base(strings),
+      );
+    };
+
+    it('rechaza una oferta que vencio mientras se esperaban los bloqueos', async () => {
+      clockAt(new Date(NOW.getTime() + 48 * HOUR));
+
+      await expect(
+        service.counter('cliente-1', 'oferta-1', { amount: '90.00' }),
+      ).rejects.toThrow(/venci/);
+      expect(tx.offer.update).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un pedido que vencio mientras se esperaban los bloqueos', async () => {
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        zoneId: 'zona-1',
+        categoryId: 'cat-1',
+        expiresAt: new Date(NOW.getTime() + 1000),
+      });
+      clockAt(new Date(NOW.getTime() + 2000));
+
+      await expect(
+        service.counter('cliente-1', 'oferta-1', { amount: '90.00' }),
+      ).rejects.toThrow('estado VENCIDO');
+      expect(tx.offer.update).not.toHaveBeenCalled();
+    });
   });
 
   it('el cliente contraoferta: ronda 2, turno al trabajador, 24 horas y evento CONTRAOFERTA', async () => {
@@ -287,7 +322,7 @@ describe('OffersService.counter (T6.3)', () => {
   });
 
   it('un trabajador que ya no esta aprobado invalida la oferta', async () => {
-    workerProfiles.lockApprovedWorker.mockRejectedValue(
+    workerProfiles.lockApprovedWorkerForAgreedWork.mockRejectedValue(
       new ConflictException('no aprobado'),
     );
 

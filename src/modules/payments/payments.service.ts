@@ -42,8 +42,8 @@ import { PaymentsConfig } from './payments.config.js';
 import {
   CONCEPT_LABELS,
   DECLARABLE_STATUSES,
-  advanceConfirmationSatisfied,
   allowedMethods,
+  isAdvanceReceiptConfirmation,
   requiredConfirmationFor,
 } from './payments.policy.js';
 import {
@@ -72,6 +72,16 @@ const DECLARATION_SELECT = {
   amount: true,
   createdAt: true,
 } satisfies Prisma.PaymentDeclarationSelect;
+
+const NO_BALANCE_MESSAGE =
+  'El trabajo se cerró por el rechazo de un presupuesto adicional: solo queda pendiente el cobro de la visita.';
+const NO_BALANCE_AFTER_REJECTION: BalanceView = {
+  status: 'NO_APLICA',
+  amount: null,
+  advanceAmount: null,
+  additionalBudgetsTotal: null,
+  note: NO_BALANCE_MESSAGE,
+};
 
 /**
  * Pagos y constancias (RF-39 a RF-43). La plataforma NO procesa, recibe,
@@ -145,12 +155,11 @@ export class PaymentsService {
         orderStatus: order.status,
         notice: DIRECT_PAYMENT_NOTICE,
         agreement,
-        advanceTransition:
-          this.config.advanceConfirmedBy === null
-            ? 'DESACTIVADA_PENDIENTE_DEFINICION'
-            : 'ACTIVA',
+        advanceTransition: 'ACTIVA',
         payments: views,
-        balance: this.balanceView(agreement),
+        balance: (await this.workflow.hasRejectedBudget(orderId, tx))
+          ? NO_BALANCE_AFTER_REJECTION
+          : this.balanceView(agreement),
       };
     });
   }
@@ -326,7 +335,9 @@ export class PaymentsService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         if (declaredBy === 'TRABAJADOR') {
-          await this.workerProfiles.lockApprovedWorker(tx, userId);
+          // Pago de un trabajo ya acordado: una solicitud de cambio de zona
+          // pendiente no lo detiene (RF-13).
+          await this.workerProfiles.lockApprovedWorkerForAgreedWork(tx, userId);
         }
         const order = await lockOrder(tx, orderId);
         if (!order || roleIn(order, userId) !== declaredBy) {
@@ -336,6 +347,13 @@ export class PaymentsService {
           throw new ConflictException(
             `No se puede declarar el ${CONCEPT_LABELS[concept]} con el pedido en estado ${order.status}.`,
           );
+        }
+        // RF-27: cerrado por rechazar un adicional, no hay saldo.
+        if (
+          concept === 'SALDO' &&
+          (await this.workflow.hasRejectedBudget(orderId, tx))
+        ) {
+          throw new ConflictException(NO_BALANCE_MESSAGE);
         }
         const terms = await this.offers.getAcceptedOfferTerms(tx, orderId);
         if (!terms || !this.conceptsOf(terms).includes(concept)) {
@@ -359,13 +377,39 @@ export class PaymentsService {
           concept,
           this.expectedFor(concept, terms),
         );
+        // Confirmacion del anticipo por el trabajador asignado: solo vale por
+        // el monto esperado (RN-02). Un monto distinto no se registra.
+        const confirmsAdvance = isAdvanceReceiptConfirmation(
+          concept,
+          declaredBy,
+          this.config.advanceConfirmedBy,
+        );
+        if (confirmsAdvance && !payment.expectedAmount?.equals(amount)) {
+          throw new ConflictException(
+            `El monto no corresponde al anticipo esperado (Bs ${money(payment.expectedAmount)}).`,
+          );
+        }
         const duplicate = await tx.paymentDeclaration.findUnique({
           where: {
             paymentId_declaredBy: { paymentId: payment.id, declaredBy },
           },
-          select: { id: true },
+          select: { amount: true, method: true },
         });
         if (duplicate) {
+          // Repetir la misma confirmacion es idempotente: no crea registros ni
+          // avisos. Con otros datos, una declaracion no se edita.
+          if (
+            confirmsAdvance &&
+            duplicate.amount.equals(amount) &&
+            duplicate.method === dto.method
+          ) {
+            return this.replayAdvanceConfirmation(tx, {
+              orderId,
+              userId,
+              status: order.status,
+              payment,
+            });
+          }
           throw new ConflictException(
             'Ya declaró este pago. Una declaración no se edita ni se repite.',
           );
@@ -406,7 +450,6 @@ export class PaymentsService {
           declaredBy,
           concept,
           status: order.status,
-          declared: declarations.map((d) => d.declaredBy),
         });
         return {
           notice: DIRECT_PAYMENT_NOTICE,
@@ -425,6 +468,48 @@ export class PaymentsService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Respuesta a una confirmacion de anticipo repetida: devuelve lo ya
+   * registrado. Si el pedido sigue ACORDADO (declaraciones guardadas antes de
+   * esta regla) la confirmacion repetida lo avanza; si ya avanzo, no
+   * transiciona de nuevo.
+   */
+  private async replayAdvanceConfirmation(
+    tx: Db,
+    input: {
+      orderId: string;
+      userId: string;
+      status: OrderStatus;
+      payment: { id: string; expectedAmount: Prisma.Decimal | null };
+    },
+  ): Promise<DeclarationResult> {
+    const declarations = await tx.paymentDeclaration.findMany({
+      where: { paymentId: input.payment.id },
+      select: DECLARATION_SELECT,
+      orderBy: { createdAt: 'asc' },
+    });
+    const orderTransition =
+      input.status === OrderStatus.ACORDADO
+        ? await this.maybeRegisterAdvance(tx, {
+            orderId: input.orderId,
+            userId: input.userId,
+            declaredBy: 'TRABAJADOR',
+            concept: 'ANTICIPO',
+            status: input.status,
+          })
+        : 'ANTICIPO_REGISTRADO';
+    return {
+      notice: DIRECT_PAYMENT_NOTICE,
+      payment: this.toPaymentView(
+        'ANTICIPO',
+        input.payment.id,
+        input.payment.expectedAmount,
+        declarations,
+      ),
+      orderTransition,
+    };
   }
 
   /**
@@ -497,6 +582,34 @@ export class PaymentsService {
         declarations,
       ),
     });
+  }
+
+  /**
+   * Puerto de OrdersModule (AdvanceConfirmationVerifier): true solo si el
+   * trabajador de la oferta aceptada declaro, para ESTE pedido, la recepcion
+   * del anticipo por el 25 % exacto. Solo lectura, con la transaccion de
+   * OrdersService.transition().
+   */
+  async hasValidAdvanceConfirmation(
+    tx: Db,
+    { orderId, workerId }: { orderId: string; workerId: string },
+  ): Promise<boolean> {
+    const terms = await this.offers.getAcceptedOfferTerms(tx, orderId);
+    if (!terms || terms.workerId !== workerId) {
+      return false;
+    }
+    const confirmation = await tx.paymentDeclaration.findFirst({
+      where: {
+        declaredBy: 'TRABAJADOR',
+        userId: workerId,
+        payment: { orderId, concept: 'ANTICIPO' },
+      },
+      select: { amount: true },
+    });
+    return (
+      confirmation !== null &&
+      confirmation.amount.equals(computeAdvanceAmount(terms.amount))
+    );
   }
 
   /**
@@ -718,11 +831,11 @@ export class PaymentsService {
   }
 
   /**
-   * ACORDADO -> ANTICIPO_REGISTRADO (RF-39), SOLO si PAYMENTS_ADVANCE_CONFIRMED_BY
-   * esta configurado y la declaracion lo satisface. Sin configuracion no hay
-   * transicion automatica (quien confirma el anticipo esta pendiente del
-   * docente). Pasa por OrdersService.transition(), asi que los invariantes
-   * beforeTransition de ServiceWorkflowModule y ClaimsModule siguen vigentes.
+   * ACORDADO -> ANTICIPO_REGISTRADO (RF-39). Decision funcional definitiva:
+   * SOLO la confirmacion de recepcion del trabajador asignado la produce; una
+   * declaracion del cliente nunca, aunque ya exista una del trabajador. Pasa
+   * por OrdersService.transition(), asi que los invariantes beforeTransition
+   * de ServiceWorkflowModule y ClaimsModule siguen vigentes.
    */
   private async maybeRegisterAdvance(
     tx: Db,
@@ -732,17 +845,14 @@ export class PaymentsService {
       declaredBy: PaymentDeclarer;
       concept: PaymentConcept;
       status: OrderStatus;
-      declared: PaymentDeclarer[];
     },
   ): Promise<OrderTransitionOutcome> {
-    if (input.concept !== 'ANTICIPO' || input.status !== OrderStatus.ACORDADO) {
-      return 'NO_APLICA';
-    }
-    const policy = this.config.advanceConfirmedBy;
-    if (policy === null) {
-      return 'DESACTIVADA_PENDIENTE_DEFINICION';
-    }
-    if (!advanceConfirmationSatisfied(policy, input.declared)) {
+    const confirms = isAdvanceReceiptConfirmation(
+      input.concept,
+      input.declaredBy,
+      this.config.advanceConfirmedBy,
+    );
+    if (!confirms || input.status !== OrderStatus.ACORDADO) {
       return 'NO_APLICA';
     }
     await this.orders.transition(tx, {
@@ -752,10 +862,7 @@ export class PaymentsService {
       actor: {
         type: 'USUARIO',
         userId: input.userId,
-        role:
-          input.declaredBy === 'CLIENTE'
-            ? RoleName.CLIENTE
-            : RoleName.TRABAJADOR,
+        role: RoleName.TRABAJADOR,
       },
       reason: 'Anticipo declarado',
     });

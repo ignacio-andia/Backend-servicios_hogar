@@ -17,6 +17,7 @@ import type { PublicUser } from '../users/users.service.js';
 import { ApprovedWorkerGuard } from '../worker-profile/approved-worker.guard.js';
 import { CancelWorkDto } from './dto/cancel-work.dto.js';
 import { CreateAdditionalBudgetDto } from './dto/create-additional-budget.dto.js';
+import { RejectAdditionalBudgetDto } from './dto/reject-additional-budget.dto.js';
 import { ReportNoShowDto } from './dto/report-no-show.dto.js';
 import { ServiceWorkflowService } from './service-workflow.service.js';
 import {
@@ -113,6 +114,24 @@ export class ServiceWorkflowController {
     @Param('budgetId', ParseUUIDPipe) budgetId: string,
   ) {
     return this.workflow.acceptAdditionalBudget(user.id, orderId, budgetId);
+  }
+
+  // RF-27: rechazar detiene el trabajo y cierra el pedido.
+  @Auth(RoleName.CLIENTE)
+  @Post('additional-budgets/:budgetId/reject')
+  @HttpCode(HttpStatus.OK)
+  rejectAdditionalBudget(
+    @CurrentUser() user: PublicUser,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Param('budgetId', ParseUUIDPipe) budgetId: string,
+    @Body() dto: RejectAdditionalBudgetDto,
+  ) {
+    return this.workflow.rejectAdditionalBudget(
+      user.id,
+      orderId,
+      budgetId,
+      dto.reason,
+    );
   }
 
   @Auth(RoleName.CLIENTE)

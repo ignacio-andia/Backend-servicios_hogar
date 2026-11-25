@@ -17,6 +17,7 @@ import {
   UsersService,
 } from '../src/modules/users/users.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { deleteAuditLogs } from './utils/audit-maintenance.js';
 
 const RUN_ID = randomUUID().slice(0, 8);
 const EMAIL_DOMAIN = '@users-e2e.test';
@@ -67,6 +68,10 @@ describe('UsersModule (e2e)', () => {
   });
 
   afterAll(async () => {
+    // Los cambios de estado hechos por el administrador quedan en la bitacora.
+    await deleteAuditLogs(prisma, {
+      actor: { email: { endsWith: `-${RUN_ID}${EMAIL_DOMAIN}` } },
+    });
     await prisma.user.deleteMany({
       where: { email: { endsWith: `-${RUN_ID}${EMAIL_DOMAIN}` } },
     });

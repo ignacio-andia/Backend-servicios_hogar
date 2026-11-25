@@ -99,6 +99,21 @@ export class WorkflowQueryService {
     return budgets.map(toBudgetView);
   }
 
+  /**
+   * RF-27: el pedido se cerro porque el cliente rechazo un presupuesto
+   * adicional (el trabajo no se termino).
+   */
+  async hasRejectedBudget(
+    orderId: string,
+    db: Db = this.prisma,
+  ): Promise<boolean> {
+    return (
+      (await db.additionalBudget.count({
+        where: { orderId, status: AdditionalBudgetStatus.RECHAZADO },
+      })) > 0
+    );
+  }
+
   async getExecution(
     orderId: string,
     db: Db = this.prisma,

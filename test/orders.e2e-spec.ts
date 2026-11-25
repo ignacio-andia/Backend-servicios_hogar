@@ -127,6 +127,22 @@ describe('OrdersModule (e2e)', () => {
     }
     return req;
   };
+  /** La oferta ACEPTADA que deja OffersService.accept antes de asignar. */
+  const acceptedOffer = (orderId: string, workerId: string) =>
+    prisma.offer.create({
+      data: {
+        orderId,
+        workerId,
+        amount: '100',
+        requiresVisit: false,
+        materialsIncluded: false,
+        proposedStartAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        estimatedDurationMinutes: 30,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        status: 'ACEPTADA',
+        closedAt: new Date(),
+      },
+    });
   const filesOnDisk = async () =>
     readdir(path.join(storageDir, NAMESPACE)).catch(() => [] as string[]);
 
@@ -1210,6 +1226,7 @@ describe('OrdersModule (e2e)', () => {
       it('edición y cambio de estado a la vez: el resultado es uno u otro, nunca una mezcla', async () => {
         const order = await newOrder('Reparar el tomacorriente del garaje');
         await toNegotiation(order.id);
+        await acceptedOffer(order.id, workerOtherCategory.id);
 
         const [edit, agreement] = await Promise.allSettled([
           patch(client2, order.id, { categoryId: catB.id }),
@@ -1665,6 +1682,7 @@ describe('OrdersModule (e2e)', () => {
     it('estado, asignacion e historial son atomicos con la transaccion del llamador', async () => {
       const id = await newOrder('Instalar luminarias en el pasillo');
       await toNegotiation(id);
+      await acceptedOffer(id, workerOtherCategory.id);
       const historyCount = () =>
         prisma.orderStatusHistory.count({ where: { orderId: id } });
       const before = await historyCount();
@@ -1762,6 +1780,7 @@ describe('OrdersModule (e2e)', () => {
     it('bloquea primero al trabajador y despues el pedido', async () => {
       const id = await newOrder('Colocar un interruptor doble');
       await toNegotiation(id);
+      await acceptedOffer(id, workerOtherCategory.id);
 
       // Otra transaccion retiene la fila del trabajador.
       let release!: () => void;
@@ -1832,14 +1851,14 @@ describe('OrdersModule (e2e)', () => {
       // Trabajo acordado antes de la solicitud, y un pedido en negociacion.
       const agreedId = await newOrder('Instalar un calefón a gas nuevo');
       await toNegotiation(agreedId);
+      await acceptedOffer(agreedId, workerOtherCategory.id);
       await assign(agreedId);
       const newId = await newOrder('Reparar la ducha eléctrica del baño');
       await toNegotiation(newId);
       const openId = await newOrder('Cambiar la grifería del lavamanos');
 
-      // Solicitud pendiente como dato de prueba: este archivo no registra la
-      // fuente OFERTAS y, con un trabajo acordado, la solicitud por HTTP se
-      // bloquearia por TRABAJO_ACTIVO.
+      // Solicitud pendiente como dato de prueba: con un trabajo acordado, la
+      // solicitud por HTTP se bloquearia por TRABAJO_ACTIVO.
       const profile = await prisma.workerProfile.findUniqueOrThrow({
         where: { userId: workerOtherCategory.id },
       });
@@ -1874,6 +1893,7 @@ describe('OrdersModule (e2e)', () => {
       await expect(offer(openId)).resolves.toMatchObject({
         order: { status: OrderStatus.PUBLICADO },
       });
+      await acceptedOffer(newId, workerOtherCategory.id);
       await assign(newId);
       expect(await stored(newId)).toMatchObject({
         status: OrderStatus.ACORDADO,

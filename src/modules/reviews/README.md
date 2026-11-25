@@ -32,6 +32,16 @@ editar nada salvo ocultarla.
 - _No implementado:_ marcado automático de lenguaje ofensivo (RF-44 A1); solo
   la ocultación manual.
 
+- Un pedido cerrado porque el cliente rechazó un presupuesto adicional
+  (RF-27) no se puede calificar: el trabajo no se terminó (RF-45).
+
+## Búsqueda de trabajadores (RF-16)
+
+`GET /workers/search?categoryId&zoneId&page&limit` (cliente): aprobados
+disponibles de esa categoría y zona, con especialidades, horarios y promedio de
+las opiniones de clientes visibles. Sin contacto ni datos privados. Sin
+resultados responde un aviso que no promete disponibilidad.
+
 ## Endpoints
 
 | Método y ruta                               | Acceso                              | Respuesta                                                                            |

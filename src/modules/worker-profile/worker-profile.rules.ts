@@ -108,11 +108,11 @@ export const ADMIN_TARGET_STATUSES = [
 ] as const;
 
 /**
- * Mientras el trabajador tenga una solicitud de cambio de zona PENDIENTE no
- * puede participar en trabajos nuevos (especificacion v1.0 §4, T4.3): ni
- * ofertar ni recibir asignaciones. No afecta a los trabajos que ya tiene.
- * Lo aplica WorkerProfileService.lockApprovedWorker, que usan la asignacion
- * de pedidos y el futuro modulo de ofertas (OrderVisibilityService.assertOpenForOffers).
+ * RF-13 (especificacion v1.0 §4, T4.3): mientras el trabajador tenga una
+ * solicitud de cambio de zona PENDIENTE no recibe oportunidades nuevas: no ve
+ * pedidos que no este negociando, no crea ofertas, no es candidato y no se le asigna un pedido sin una
+ * negociacion abierta. Las negociaciones ya abiertas (contraofertar y aceptar)
+ * y los trabajos acordados continuan con normalidad.
  */
 export const PENDING_ZONE_CHANGE_BLOCKS_NEW_WORK_MESSAGE =
   'Tiene una solicitud de cambio de zona pendiente: no puede ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire.';

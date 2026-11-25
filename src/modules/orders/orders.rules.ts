@@ -141,13 +141,14 @@ export const ORDER_TRANSITIONS: Readonly<
   ],
   // Ciclo de vida del trabajo (RF-25 a RF-28, RF-34, RF-37, RF-38). Los
   // destinos que dependen de otro modulo se anotan con su dueno:
-  // - ACORDADO -> ANTICIPO_REGISTRADO: lo ejecuta PaymentsModule (RF-39) con
+  // - ACORDADO -> ANTICIPO_REGISTRADO: solo con la confirmacion del
+  //   trabajador asignado (transition() la exige); lo ejecuta PaymentsModule (RF-39) con
   //   OrdersService.transition(); aqui solo se habilita.
   // - CANCELADO: solo por OrdersService.cancelAgreedWork() (RF-34).
-  // PENDIENTE DE CONFIRMAR CON EL DOCENTE (no se agrega): salida de
-  // PRESUPUESTO_ADICIONAL_PENDIENTE cuando el cliente RECHAZA el adicional
-  // (RF-27 / CU-27 A1). Hasta decidirla, solo se sale por aceptacion o por
-  // cancelacion del trabajo.
+  // - PRESUPUESTO_ADICIONAL_PENDIENTE -> CERRADO: solo por el rechazo del
+  //   cliente (RF-27), que los invariantes del flujo exigen.
+  // PENDIENTE DE CONFIRMAR CON EL DOCENTE: contraoferta del adicional
+  // (CU-27 A1).
   [OrderStatus.ACORDADO]: [
     OrderStatus.ANTICIPO_REGISTRADO,
     OrderStatus.CANCELADO,
@@ -164,6 +165,8 @@ export const ORDER_TRANSITIONS: Readonly<
   ],
   [OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE]: [
     OrderStatus.EN_EJECUCION,
+    // RF-27: el cliente rechaza el adicional y el trabajo se cierra.
+    OrderStatus.CERRADO,
     OrderStatus.CANCELADO,
   ],
   [OrderStatus.EN_EJECUCION]: [

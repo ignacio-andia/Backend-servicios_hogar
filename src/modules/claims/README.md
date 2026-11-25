@@ -20,6 +20,10 @@ Errores: 400 datos inválidos; 404 reclamo/pedido ajeno; 409 fuera de plazo,
 pedido no TERMINADO, reclamo duplicado o ya resuelto; 413 foto demasiado
 pesada (peso máximo = `ORDER_IMAGE_MAX_MB`).
 
+**Bitácora (RF-53):** la revisión y la decisión se registran en la misma
+transacción (`RECLAMO` / `CAMBIO_ESTADO`, con el pedido y los estados, sin el
+texto del reclamo ni de la decisión).
+
 ## Plazo y concurrencia
 
 El reclamo bloquea el pedido (FOR UPDATE) y, dentro del bloqueo, exige estado

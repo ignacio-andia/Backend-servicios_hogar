@@ -1,5 +1,8 @@
 import type { RoleName } from '../../generated/prisma/enums.js';
-import type { PublicWorkerProfile } from '../worker-profile/worker-profile.service.js';
+import type {
+  PublicWorkerProfile,
+  SearchableWorker,
+} from '../worker-profile/worker-profile.service.js';
 import type { RatingSummary } from './review-rules.js';
 
 // Vistas HTTP de calificaciones. Las publicas nunca incluyen ids de usuario o
@@ -39,6 +42,16 @@ export interface PublicWorkerProfileView {
   };
   /** Las opiniones mas recientes; el resto se pide paginado. */
   recentOpinions: PublicOpinionView[];
+}
+
+/** Trabajador encontrado en la busqueda (RF-16), con su calificacion. */
+export interface WorkerSearchResult extends SearchableWorker {
+  rating: RatingSummary;
+}
+
+export interface WorkerSearchPage extends Paginated<WorkerSearchResult> {
+  /** Aviso cuando no hay resultados (CU-16 A1); null si hay. */
+  message: string | null;
 }
 
 export interface MyReviewStatus {

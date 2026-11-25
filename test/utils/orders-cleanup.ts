@@ -20,6 +20,24 @@ export async function deleteOrderData(
       where: { orderId: { in: orderIds } },
       select: { storageKey: true, thumbnailKey: true },
     });
+    // Integracion: constancias, pagos, calificaciones, flujo de trabajo y
+    // reclamos (con AppModule completo se crean, por ejemplo, al aceptar una
+    // oferta) referencian al pedido y van antes que el.
+    const byOrder = { orderId: { in: orderIds } };
+    await tx.paymentDeclaration.deleteMany({ where: { payment: byOrder } });
+    await tx.payment.deleteMany({ where: byOrder });
+    await tx.serviceReceipt.deleteMany({ where: byOrder });
+    await tx.review.deleteMany({ where: byOrder });
+    await tx.claimImage.deleteMany({ where: { claim: byOrder } });
+    await tx.claim.deleteMany({ where: byOrder });
+    await tx.noShowReport.deleteMany({ where: byOrder });
+    await tx.additionalBudget.deleteMany({ where: byOrder });
+    await tx.orderExecution.deleteMany({ where: byOrder });
+    await tx.orderVisit.deleteMany({ where: byOrder });
+    // Avisos a otros administradores sobre estos pedidos.
+    await tx.notification.deleteMany({
+      where: { resourceId: { in: orderIds } },
+    });
     // T6.2: las ofertas y su historial (solo insercion) van antes que el pedido.
     await tx.offerEvent.deleteMany({ where: { orderId: { in: orderIds } } });
     await tx.offer.deleteMany({ where: { orderId: { in: orderIds } } });

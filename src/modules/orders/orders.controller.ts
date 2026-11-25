@@ -203,8 +203,9 @@ export class OrdersController {
   }
 
   // G2 (T6.7): el trabajador asignado consulta el pedido con acuerdo, con la
-  // direccion exacta. Sin ApprovedWorkerGuard: la regla es ser el asignado y
-  // que el acuerdo siga vigente. Otro trabajador recibe 404.
+  // direccion exacta. Sin ApprovedWorkerGuard: quien no es el asignado recibe
+  // 404; al asignado se le exige ademas el perfil APROBADO (403, lo comprueba
+  // el servicio): uno suspendido no conserva el acceso.
   @Auth(RoleName.TRABAJADOR)
   @Get('assigned/:orderId')
   getAssigned(

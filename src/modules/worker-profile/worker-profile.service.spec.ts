@@ -912,6 +912,69 @@ describe('WorkerProfileService', () => {
       });
     });
 
+    describe('lockApprovedWorkerForAgreedWork (RF-13)', () => {
+      const locked = (
+        status: WorkerProfileStatus,
+        accountStatus: UserStatus = UserStatus.ACTIVO,
+        roles: RoleName[] = [RoleName.TRABAJADOR],
+      ) => ({
+        ...profile({ status }),
+        user: {
+          status: accountStatus,
+          roles: roles.map((role) => ({ role })),
+        },
+      });
+
+      it('con una solicitud pendiente continua, sin consultarla y con la fila bloqueada', async () => {
+        prisma.workerProfile.findUnique.mockResolvedValue(
+          locked(WorkerProfileStatus.APROBADO),
+        );
+        prisma.zoneChangeRequest.count.mockResolvedValue(1);
+
+        await expect(
+          service.lockApprovedWorkerForAgreedWork(prisma as never, USER_ID),
+        ).resolves.toMatchObject({ profileId: PROFILE_ID, userId: USER_ID });
+        expect(prisma.zoneChangeRequest.count).not.toHaveBeenCalled();
+        // El bloqueo va antes de releer el perfil.
+        expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+          prisma.workerProfile.findUnique.mock.invocationCallOrder[0],
+        );
+      });
+
+      it.each([
+        ['perfil suspendido', locked(WorkerProfileStatus.SUSPENDIDO)],
+        ['perfil sin aprobar', locked(WorkerProfileStatus.PENDIENTE)],
+        [
+          'cuenta inactiva',
+          locked(WorkerProfileStatus.APROBADO, UserStatus.INACTIVO),
+        ],
+        [
+          'cuenta suspendida',
+          locked(WorkerProfileStatus.APROBADO, UserStatus.SUSPENDIDO),
+        ],
+        [
+          'sin rol de trabajador',
+          locked(WorkerProfileStatus.APROBADO, UserStatus.ACTIVO, [
+            RoleName.CLIENTE,
+          ]),
+        ],
+        ['sin perfil', null],
+      ])('%s: 403', async (_case, row) => {
+        // La relectura para armar el mensaje ve el mismo estado.
+        prisma.workerProfile.findUnique.mockResolvedValue(row);
+        prisma.workerProfileStatusHistory.findFirst.mockResolvedValue(null);
+        users.findById.mockResolvedValue({
+          ...user(),
+          status: row?.user.status ?? UserStatus.ACTIVO,
+          roles: row?.user.roles.map((item) => item.role) ?? [],
+        });
+
+        await expect(
+          service.lockApprovedWorkerForAgreedWork(prisma as never, USER_ID),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+      });
+    });
+
     it('no hay elegibles si la categoria o la zona estan inactivas', async () => {
       catalogs.findById.mockResolvedValueOnce(
         catalogItem(CATEGORY, { isActive: false }),

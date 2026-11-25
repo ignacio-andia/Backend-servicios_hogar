@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { OfferEventRegistry } from '../offers/offer-events.registry.js';
 import { OffersService } from '../offers/offers.service.js';
+import { AdvanceConfirmationRegistry } from '../orders/advance-confirmation.registry.js';
 import { OrdersService } from '../orders/orders.service.js';
 import { VisitPaymentRegistry } from '../service-workflow/visit-payment.port.js';
 import { PaymentsService } from './payments.service.js';
@@ -14,6 +15,8 @@ import { PaymentsService } from './payments.service.js';
  *    registro; aqui se guarda el cobro y su constancia (RF-25, RF-41).
  * 2. OfferEventRegistry (OffersModule): al aceptarse una oferta, emite la
  *    constancia del servicio (RF-41) en la misma transaccion del acuerdo.
+ * 3. AdvanceConfirmationRegistry (OrdersModule): responde si el trabajador
+ *    asignado confirmo el anticipo; sin eso Orders no registra el anticipo.
  */
 @Injectable()
 export class PaymentsIntegration implements OnModuleInit {
@@ -23,9 +26,14 @@ export class PaymentsIntegration implements OnModuleInit {
     private readonly orders: OrdersService,
     private readonly visitPayments: VisitPaymentRegistry,
     private readonly offerEvents: OfferEventRegistry,
+    private readonly advanceConfirmations: AdvanceConfirmationRegistry,
   ) {}
 
   onModuleInit(): void {
+    this.advanceConfirmations.register({
+      hasValidConfirmation: (tx, input) =>
+        this.payments.hasValidAdvanceConfirmation(tx, input),
+    });
     this.visitPayments.register({
       recordVisitPayment: (tx, payment) =>
         this.payments.recordVisitPayment(tx, payment),

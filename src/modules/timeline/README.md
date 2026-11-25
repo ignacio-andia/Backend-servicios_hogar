@@ -35,7 +35,7 @@ interface TimelineEvent {
 | `orders`   | `OrdersService.listStatusHistory`                                    | publicado, negociación, acuerdo, anticipo, visita, ejecución, terminado, cierre, cancelación, vencimiento                 |
 | `claims`   | `OrdersService.listStatusHistory` (entrada y salida de `EN_RECLAMO`) | reclamo presentado / resuelto (sin texto, fotos ni decisión)                                                              |
 | `offers`   | `OffersService.listNegotiationEvents`, `getAcceptedOfferTerms`       | oferta, contraoferta y cierres con monto, **quién ofertó y a quién**; al acordar, monto acordado y **costo de la visita** |
-| `workflow` | `WorkflowQueryService`                                               | costo de la visita, presupuestos adicionales (propuesto/aceptado), plazo de conformidad, conformidad, inasistencia        |
+| `workflow` | `WorkflowQueryService`                                               | costo de la visita, presupuestos adicionales (propuesto/aceptado/rechazado), plazo de conformidad, conformidad, inasistencia        |
 | `payments` | `PaymentsService.listTimelineFacts`                                  | constancia del servicio y cada declaración de pago                                                                        |
 
 ## Privacidad

@@ -18,9 +18,10 @@ export interface DeclarationFact {
 
 /**
  * Comparacion INFORMATIVA de las declaraciones. No es una regla de
- * conciliacion ni habilita ningun cambio de estado: las reglas definitivas
- * (pagos parciales, quien confirma el anticipo, diferencias) estan pendientes
- * de definicion. Los nombres evitan "conciliado" a proposito.
+ * conciliacion ni habilita por si misma ningun cambio de estado: las reglas de
+ * pagos parciales y diferencias estan pendientes de definicion (la
+ * confirmacion del anticipo la decide payments.policy.ts). Los nombres evitan
+ * "conciliado" a proposito.
  */
 export type DeclarationComparison =
   | 'SIN_DECLARACIONES'

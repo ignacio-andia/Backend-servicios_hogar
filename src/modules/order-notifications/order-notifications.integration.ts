@@ -15,6 +15,7 @@ import {
   type OfferNegotiationEvent,
 } from '../offers/offer-events.registry.js';
 import { OffersService } from '../offers/offers.service.js';
+import { OfferClosureReason } from '../offers/offers.rules.js';
 import {
   OrderLifecycleRegistry,
   type OrderLifecycleEvent,
@@ -32,6 +33,16 @@ const CLOSING_OFFER_EVENTS: readonly OfferEventType[] = [
   OfferEventType.RECHAZADA,
   OfferEventType.RETIRADA,
   OfferEventType.VENCIDA,
+  // Por ejemplo, las ofertas que perdieron al aceptarse otra.
+  OfferEventType.SIN_EFECTO,
+];
+
+// Cierres que provoca el propio evento del pedido: el hook de OffersModule
+// corre antes que este, en la misma transaccion, y esas ofertas seguian
+// abiertas cuando el pedido se cancelo o vencio.
+const ORDER_EVENT_CLOSURE_REASONS: readonly string[] = [
+  OfferClosureReason.PEDIDO_CANCELADO,
+  OfferClosureReason.PEDIDO_VENCIDO,
 ];
 
 const pedido = (id: string) => ({
@@ -137,7 +148,7 @@ export class OrderNotificationsIntegration implements OnModuleInit {
     await this.send(tx, recipients, actorId);
   }
 
-  /** Trabajadores con una oferta que no termino por retiro, rechazo o vencimiento. */
+  /** Trabajadores cuya oferta seguia abierta cuando ocurrio el evento del pedido. */
   private async openOfferWorkers(tx: Db, orderId: string): Promise<string[]> {
     const events = await this.offers.listNegotiationEvents(tx, orderId);
     const byOffer = new Map<string, { workerId: string; closed: boolean }>();
@@ -146,7 +157,10 @@ export class OrderNotificationsIntegration implements OnModuleInit {
         workerId: event.workerId,
         closed: false,
       };
-      if (CLOSING_OFFER_EVENTS.includes(event.type)) {
+      if (
+        CLOSING_OFFER_EVENTS.includes(event.type) &&
+        !ORDER_EVENT_CLOSURE_REASONS.includes(event.reason ?? '')
+      ) {
         entry.closed = true;
       }
       byOffer.set(event.offerId, entry);
@@ -222,6 +236,16 @@ export class OrderNotificationsIntegration implements OnModuleInit {
             NotificationType.PRESUPUESTO_ADICIONAL_ACEPTADO,
             'Presupuesto adicional aceptado',
             'El cliente aceptó tu presupuesto adicional. Puedes continuar el trabajo.',
+          ),
+          null,
+        );
+      case 'ADICIONAL_RECHAZADO':
+        return this.send(
+          tx,
+          toWorker(
+            NotificationType.PRESUPUESTO_ADICIONAL_RECHAZADO,
+            'Presupuesto adicional rechazado',
+            'El cliente rechazó tu presupuesto adicional: el trabajo se detuvo y el pedido se cerró. Solo queda pendiente el cobro de la visita, si corresponde.',
           ),
           null,
         );

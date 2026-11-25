@@ -16,6 +16,7 @@ export type WorkflowEvent =
       workerId: string;
     }
   | { type: 'ADICIONAL_ACEPTADO'; orderId: string; budgetId: string }
+  | { type: 'ADICIONAL_RECHAZADO'; orderId: string; budgetId: string }
   | {
       type: 'TRABAJO_TERMINADO';
       orderId: string;

@@ -18,6 +18,7 @@ import {
   ImageDownload,
   OrderImagesService,
 } from './images/order-images.service.js';
+import { OpenNegotiationRegistry } from './open-negotiation.registry.js';
 import { catalogRefs, dbNow } from './order-support.js';
 import {
   ORDER_PUBLIC_SELECT,
@@ -43,6 +44,10 @@ const NO_ORDERS: Prisma.OrderWhereInput = { id: { in: [] } };
  * del cliente debe estar ACTIVA (decision del equipo, M-8): si no, el pedido
  * se oculta y no admite ofertas, aunque su dueno lo siga viendo.
  * Se aplica igual al listado, al detalle, a las fotos y a las ofertas.
+ *
+ * RF-13: con una solicitud de cambio de zona PENDIENTE no se le muestran
+ * oportunidades nuevas: el listado, el detalle y las fotos quedan limitados a
+ * los pedidos en los que ya tiene una negociacion abierta.
  */
 @Injectable()
 export class OrderVisibilityService {
@@ -51,7 +56,24 @@ export class OrderVisibilityService {
     private readonly catalogs: CatalogsService,
     private readonly images: OrderImagesService,
     private readonly workerProfiles: WorkerProfileService,
+    private readonly openNegotiations: OpenNegotiationRegistry,
   ) {}
+
+  /** Lo que se le muestra al trabajador: lo visible que ademas se le ofrece. */
+  private async discoverableWhere(
+    worker: ApprovedWorker,
+    now: Date,
+  ): Promise<Prisma.OrderWhereInput> {
+    const visible = await this.visibleWhere(worker, now);
+    if (!(await this.workerProfiles.hasPendingZoneChange(worker.profileId))) {
+      return visible;
+    }
+    const negotiating = await this.openNegotiations.openOrderIds(
+      this.prisma,
+      worker.userId,
+    );
+    return { AND: [visible, { id: { in: negotiating } }] };
+  }
 
   /**
    * Con `tx` (operaciones que escriben, como ofertar) la zona y las
@@ -107,7 +129,7 @@ export class OrderVisibilityService {
     const now = await dbNow(this.prisma);
     const where: Prisma.OrderWhereInput = {
       AND: [
-        await this.visibleWhere(worker, now),
+        await this.discoverableWhere(worker, now),
         ...(categoryId ? [{ categoryId }] : []),
       ],
     };
@@ -135,7 +157,9 @@ export class OrderVisibilityService {
   ): Promise<WorkerOrderView> {
     const now = await dbNow(this.prisma);
     const order = await this.prisma.order.findFirst({
-      where: { AND: [{ id: orderId }, await this.visibleWhere(worker, now)] },
+      where: {
+        AND: [{ id: orderId }, await this.discoverableWhere(worker, now)],
+      },
       select: ORDER_PUBLIC_SELECT,
     });
     if (!order) {
