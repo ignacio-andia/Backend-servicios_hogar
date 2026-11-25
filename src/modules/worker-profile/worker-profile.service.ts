@@ -123,6 +123,17 @@ export interface ScheduleView {
   isActive: boolean;
 }
 
+/** Datos publicos del trabajador (RF-46). Sin contacto ni datos de verificacion. */
+export interface PublicWorkerProfile {
+  workerId: string;
+  firstName: string;
+  lastName: string;
+  yearsOfExperience: number;
+  description: string | null;
+  zone: CatalogRef | null;
+  specialties: CatalogRef[];
+}
+
 export interface PendingRequirement {
   field: 'phone' | 'specialties' | 'zone' | 'schedules';
   message: string;
@@ -713,6 +724,54 @@ export class WorkerProfileService {
       orderBy: { createdAt: 'asc' },
     });
     return profiles.map(toApprovedWorker);
+  }
+
+  /**
+   * Perfil PUBLICO de un trabajador (RF-46): solo perfiles APROBADOS de cuentas
+   * activas con rol de trabajador. Expone unicamente nombre, experiencia,
+   * descripcion, zona y especialidades: nunca correo, telefono, documentos,
+   * horarios, estado de verificacion ni historial. Cualquier otro caso (no
+   * existe, no esta aprobado, suspendido, cuenta inactiva) responde 404 sin
+   * distinguirlos.
+   */
+  async getPublicProfile(workerUserId: string): Promise<PublicWorkerProfile> {
+    const profile = await this.prisma.workerProfile.findFirst({
+      where: {
+        userId: workerUserId,
+        status: WorkerProfileStatus.APROBADO,
+        user: {
+          status: UserStatus.ACTIVO,
+          roles: { some: { role: RoleName.TRABAJADOR } },
+        },
+      },
+      select: {
+        userId: true,
+        yearsOfExperience: true,
+        description: true,
+        zoneId: true,
+        specialties: { select: { categoryId: true } },
+        user: { select: { firstName: true, lastName: true } },
+      },
+    });
+    if (!profile) {
+      throw new NotFoundException('El trabajador no existe');
+    }
+    const [zones, categories] = await Promise.all([
+      this.catalogs.findByIds(CatalogKind.ZONE, [profile.zoneId]),
+      this.catalogs.findByIds(
+        CatalogKind.CATEGORY,
+        profile.specialties.map((item) => item.categoryId),
+      ),
+    ]);
+    return {
+      workerId: profile.userId,
+      firstName: profile.user.firstName,
+      lastName: profile.user.lastName,
+      yearsOfExperience: profile.yearsOfExperience,
+      description: profile.description,
+      zone: zones.length > 0 ? toRef(zones[0]) : null,
+      specialties: categories.map(toRef),
+    };
   }
 
   // ---------------------------------------------------------------------

@@ -109,6 +109,18 @@ export class WorkflowQueryService {
     return execution ? toExecutionView(execution) : null;
   }
 
+  /**
+   * Reporte de inasistencia del pedido (RF-36), para TimelineModule. Solo
+   * lectura; el llamador ya decidio el permiso.
+   */
+  async getNoShowReport(
+    orderId: string,
+    db: Db = this.prisma,
+  ): Promise<NoShowView | null> {
+    const report = await db.noShowReport.findUnique({ where: { orderId } });
+    return report ? toNoShowView(report) : null;
+  }
+
   /** El trabajo se marco como terminado alguna vez (aunque luego se cierre o reclame). */
   async hasWorkFinished(
     orderId: string,

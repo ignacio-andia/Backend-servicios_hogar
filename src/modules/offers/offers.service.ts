@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Optional,
 } from '@nestjs/common';
 import {
   OfferEventType,
@@ -26,6 +27,10 @@ import { WorkerProfileService } from '../worker-profile/worker-profile.service.j
 import type { CounterOfferDto } from './dto/counter-offer.dto.js';
 import type { CreateOfferDto } from './dto/create-offer.dto.js';
 import { buildWhatsAppContact, type WhatsAppContact } from './offer-contact.js';
+import {
+  OfferEventRegistry,
+  type OfferNegotiationEvent,
+} from './offer-events.registry.js';
 import {
   assertCanClose,
   assertCanCounter,
@@ -104,6 +109,29 @@ export interface AcceptedOfferTerms {
   estimatedDurationMinutes: number;
 }
 
+/** Evento de la negociacion para la linea de tiempo (solo lectura). */
+export interface NegotiationEventRecord {
+  id: string;
+  offerId: string;
+  type: OfferEventType;
+  round: number;
+  amount: Prisma.Decimal | null;
+  actorType: OrderActorType;
+  changedById: string | null;
+  actorRole: RoleName | null;
+  systemProcess: string | null;
+  createdAt: Date;
+  workerId: string;
+  clientId: string;
+}
+
+/** Horario de un trabajo acordado (oferta aceptada). */
+export interface AcceptedJobSlot {
+  orderId: string;
+  proposedStartAt: Date;
+  estimatedDurationMinutes: number;
+}
+
 @Injectable()
 export class OffersService {
   constructor(
@@ -114,7 +142,17 @@ export class OffersService {
     private readonly workerProfiles: WorkerProfileService,
     private readonly catalogs: CatalogsService,
     private readonly activeWork: WorkerActiveWorkRegistry,
+    // Opcional: sin registro (o sin hooks) no se emite ningun aviso.
+    @Optional() private readonly offerEvents?: OfferEventRegistry,
   ) {}
+
+  /** Avisa a los modulos registrados (RF-33), dentro de la transaccion del hecho. */
+  private async emit(
+    tx: Prisma.TransactionClient,
+    event: OfferNegotiationEvent,
+  ): Promise<void> {
+    await this.offerEvents?.runInTransaction([event], tx);
+  }
 
   // ---------------------------------------------------------------------
   // RF-20 y RF-23: contraoferta
@@ -209,6 +247,16 @@ export class OffersService {
                 ? RoleName.CLIENTE
                 : RoleName.TRABAJADOR,
           },
+        });
+        await this.emit(tx, {
+          type: 'CONTRAOFERTA',
+          offerId,
+          orderId,
+          workerId,
+          clientId: target.order.clientId,
+          actorId: userId,
+          round,
+          amount: String(dto.amount),
         });
       });
     } catch (error) {
@@ -333,6 +381,16 @@ export class OffersService {
           },
         });
         await this.supersedeOtherOffers(tx, orderId, offerId, now);
+        await this.emit(tx, {
+          type: 'ACEPTADA',
+          offerId,
+          orderId,
+          workerId,
+          clientId,
+          actorId: clientId,
+          round: offer.round,
+          amount: null,
+        });
       });
     } catch (error) {
       // Respaldos de la BD: offers_one_accepted_per_order_key y
@@ -461,6 +519,68 @@ export class OffersService {
   }
 
   /**
+   * Consulta publica de solo lectura para TimelineModule (RF-32): historial de
+   * la negociacion del pedido, del mas antiguo al mas reciente. Incluye el
+   * trabajador de cada oferta y el cliente del pedido para saber quien ofrecio
+   * y a quien. Sin direccion ni contactos.
+   */
+  async listNegotiationEvents(
+    db: Prisma.TransactionClient,
+    orderId: string,
+  ): Promise<NegotiationEventRecord[]> {
+    const events = await db.offerEvent.findMany({
+      where: { orderId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        offerId: true,
+        type: true,
+        round: true,
+        amount: true,
+        actorType: true,
+        changedById: true,
+        actorRole: true,
+        systemProcess: true,
+        createdAt: true,
+        offer: { select: { workerId: true } },
+        order: { select: { clientId: true } },
+      },
+    });
+    return events.map(({ offer, order, ...event }) => ({
+      ...event,
+      workerId: offer.workerId,
+      clientId: order.clientId,
+    }));
+  }
+
+  /**
+   * Consulta publica de solo lectura para la agenda (RF-30): horario de las
+   * ofertas ACEPTADAS del trabajador en los pedidos indicados.
+   */
+  async findAcceptedJobSlots(
+    db: Prisma.TransactionClient,
+    workerId: string,
+    orderIds: readonly string[],
+  ): Promise<AcceptedJobSlot[]> {
+    if (orderIds.length === 0) {
+      return [];
+    }
+    return db.offer.findMany({
+      where: {
+        workerId,
+        status: OfferStatus.ACEPTADA,
+        orderId: { in: [...orderIds] },
+      },
+      select: {
+        orderId: true,
+        proposedStartAt: true,
+        estimatedDurationMinutes: true,
+      },
+      orderBy: { proposedStartAt: 'asc' },
+    });
+  }
+
+  /**
    * Cierra como VENCIDA, con su evento del sistema, cada oferta VIGENTE del
    * pedido cuya vigencia ya termino (reloj de la BD) y, si el pedido queda
    * EN_NEGOCIACION sin ofertas vigentes, lo devuelve a PUBLICADO con
@@ -479,8 +599,10 @@ export class OffersService {
       if (!order) {
         return 0;
       }
-      const due = await tx.$queryRaw<{ id: string; round: number }[]>`
-        SELECT "id"::text AS "id", "round"
+      const due = await tx.$queryRaw<
+        { id: string; round: number; workerId: string }[]
+      >`
+        SELECT "id"::text AS "id", "round", "worker_id"::text AS "workerId"
         FROM "offers"
         WHERE "order_id" = ${orderId}::uuid
           AND "status" = 'VIGENTE'
@@ -508,6 +630,18 @@ export class OffersService {
           systemProcess: OFFER_EXPIRATION_PROCESS,
         })),
       });
+      for (const offer of due) {
+        await this.emit(tx, {
+          type: 'VENCIDA',
+          offerId: offer.id,
+          orderId,
+          workerId: offer.workerId,
+          clientId: order.clientId,
+          actorId: null,
+          round: offer.round,
+          amount: null,
+        });
+      }
       // Un pedido vencido sin marcar (estado efectivo) no admite transiciones.
       if (order.effectiveStatus === OrderStatus.EN_NEGOCIACION) {
         await this.reopenIfNoOpenOffers(tx, orderId, order.status, now, {
@@ -790,6 +924,16 @@ export class OffersService {
           },
         });
         await this.reopenIfNoOpenOffers(tx, orderId, order.status, now, actor);
+        await this.emit(tx, {
+          type: status === OfferStatus.RECHAZADA ? 'RECHAZADA' : 'RETIRADA',
+          offerId,
+          orderId,
+          workerId: target.workerId,
+          clientId: target.order.clientId,
+          actorId: userId,
+          round: offer.round,
+          amount: null,
+        });
       });
     } catch (error) {
       // Respaldo de la BD (offer_events_offer_closing_key): la oferta ya
@@ -930,6 +1074,22 @@ export class OffersService {
             actorRole: RoleName.TRABAJADOR,
           },
         });
+        if (this.offerEvents?.hasHooks) {
+          const { clientId } = await tx.order.findUniqueOrThrow({
+            where: { id: orderId },
+            select: { clientId: true },
+          });
+          await this.emit(tx, {
+            type: 'PROPUESTA',
+            offerId: offer.id,
+            orderId,
+            workerId: workerUserId,
+            clientId,
+            actorId: workerUserId,
+            round: 1,
+            amount: String(dto.amount),
+          });
+        }
         // T6.4.1: la primera oferta abre la negociacion. El cambio lo hace
         // OrdersModule (transition), con el pedido ya bloqueado; no toca
         // publishedAt ni expiresAt.
