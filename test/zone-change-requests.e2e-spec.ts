@@ -35,10 +35,6 @@ import {
   PublicUser,
   UsersService,
 } from '../src/modules/users/users.service.js';
-import {
-  ActiveWorkKind,
-  WorkerActiveWorkRegistry,
-} from '../src/modules/worker-profile/active-work.registry.js';
 import { WorkerProfileService } from '../src/modules/worker-profile/worker-profile.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { deleteWorkerData } from './utils/worker-profile-cleanup.js';
@@ -183,13 +179,6 @@ describe('Cambio de zona: validaciones y decisiones (T4.2, e2e)', () => {
     users = app.get(UsersService);
     profiles = app.get(WorkerProfileService);
     notifications = app.get(NotificationsService);
-    // El modulo de ofertas todavia no existe (T4.2 no integra OFERTAS): solo
-    // esta instancia de prueba registra una fuente sin ofertas activas.
-    app.get(WorkerActiveWorkRegistry).register({
-      kind: ActiveWorkKind.OFERTAS,
-      countActive: () => Promise.resolve(0),
-    });
-
     admin = await addRole(await newUser('admin'), RoleName.ADMINISTRADOR);
     inactiveAdmin = await addRole(
       await newUser('admin-inactivo'),
@@ -857,11 +846,12 @@ describe('Cambio de zona: validaciones y decisiones (T4.2, e2e)', () => {
       expect((await candidates()).map((c) => c.userId)).not.toContain(
         worker.user.id,
       );
-      // Sigue APROBADO: puede consultar pedidos, pero no participar.
-      await http()
+      // Sigue APROBADO (la ruta responde), pero no se le ofrecen pedidos.
+      const available = await http()
         .get('/api/orders/available')
         .set('Authorization', auth(worker.user))
         .expect(200);
+      expect(available.body.data).toEqual([]);
 
       await http()
         .post(`${BASE}/me/zone-change-requests/${requestId}/withdraw`)

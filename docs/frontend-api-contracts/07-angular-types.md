@@ -11,7 +11,9 @@
   - `prop?: T`: se puede omitir, pero no enviar `null`.
   - `prop?: T | null`: se puede omitir o enviar `null`.
 - **`null` en la respuesta:** `prop: T | null`. Las propiedades de respuesta **siempre** están presentes; ninguna es opcional, salvo `OrderWarning.orderIds`.
-- Los tipos que **no existen** en el backend (pagos, agenda, reclamos, calificaciones) **no** se incluyen.
+- Las interfaces de este archivo cubren los endpoints **#1–#81**. Para **#82–#115** (flujo del trabajo, reclamos, pagos, calificaciones, agenda y seguimiento) la fuente contractual es [10](10-sprint1-endpoints.md): sus entradas, modelos y valores no se repiten aquí, para no mantener dos definiciones. Si algo difiere, manda 10.
+- Al escribir esos tipos, reutilice los de aquí: `CatalogRef` es el mismo; `ScheduleView` de 10 es `Schedule`; `OwnerOrderView` es `OwnerOrder`; `Paginated<T>` es `PaginatedResponse<T>`.
+- `NotificationType` y `NotificationResourceType` son compartidos por todos los endpoints y se listan completos (significado en [04](04-enums-and-states.md)).
 
 ```ts
 // =====================================================================
@@ -24,35 +26,79 @@ export const USER_STATUSES = ['ACTIVO', 'INACTIVO', 'SUSPENDIDO'] as const;
 export type UserStatus = (typeof USER_STATUSES)[number];
 
 export const WORKER_PROFILE_STATUSES = [
-  'BORRADOR', 'PENDIENTE', 'OBSERVADO', 'APROBADO', 'RECHAZADO', 'SUSPENDIDO',
+  'BORRADOR',
+  'PENDIENTE',
+  'OBSERVADO',
+  'APROBADO',
+  'RECHAZADO',
+  'SUSPENDIDO',
 ] as const;
 export type WorkerProfileStatus = (typeof WORKER_PROFILE_STATUSES)[number];
 
 export const WEEK_DAYS = [
-  'LUNES', 'MARTES', 'MIERCOLES', 'JUEVES', 'VIERNES', 'SABADO', 'DOMINGO',
+  'LUNES',
+  'MARTES',
+  'MIERCOLES',
+  'JUEVES',
+  'VIERNES',
+  'SABADO',
+  'DOMINGO',
 ] as const;
 export type WeekDay = (typeof WEEK_DAYS)[number];
 
-export const WORKER_DOCUMENT_TYPES = ['IDENTIDAD', 'ANTECEDENTES', 'CERTIFICADO', 'REFERENCIA'] as const;
+export const WORKER_DOCUMENT_TYPES = [
+  'IDENTIDAD',
+  'ANTECEDENTES',
+  'CERTIFICADO',
+  'REFERENCIA',
+] as const;
 export type WorkerDocumentType = (typeof WORKER_DOCUMENT_TYPES)[number];
 
-export const ZONE_CHANGE_REQUEST_STATUSES = ['PENDIENTE', 'APROBADA', 'RECHAZADA', 'CANCELADA'] as const;
+export const ZONE_CHANGE_REQUEST_STATUSES = [
+  'PENDIENTE',
+  'APROBADA',
+  'RECHAZADA',
+  'CANCELADA',
+] as const;
 export type ZoneChangeCancellationCause =
-  | 'SUSPENSION_PERFIL' | 'SUSPENSION_CUENTA' | 'RETIRO_TRABAJADOR';
-export type ZoneChangeRequestStatus = (typeof ZONE_CHANGE_REQUEST_STATUSES)[number];
+  'SUSPENSION_PERFIL' | 'SUSPENSION_CUENTA' | 'RETIRO_TRABAJADOR';
+export type ZoneChangeRequestStatus =
+  (typeof ZONE_CHANGE_REQUEST_STATUSES)[number];
 
 export const ORDER_STATUSES = [
-  'PUBLICADO', 'EN_NEGOCIACION', 'ACORDADO', 'ANTICIPO_REGISTRADO', 'VISITA_REALIZADA',
-  'PRESUPUESTO_ADICIONAL_PENDIENTE', 'EN_EJECUCION', 'TERMINADO', 'EN_RECLAMO', 'CERRADO',
-  'SIN_ACUERDO', 'VENCIDO', 'CANCELADO',
+  'PUBLICADO',
+  'EN_NEGOCIACION',
+  'ACORDADO',
+  'ANTICIPO_REGISTRADO',
+  'VISITA_REALIZADA',
+  'PRESUPUESTO_ADICIONAL_PENDIENTE',
+  'EN_EJECUCION',
+  'TERMINADO',
+  'EN_RECLAMO',
+  'CERRADO',
+  'SIN_ACUERDO',
+  'VENCIDO',
+  'CANCELADO',
 ] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 export type AuditAction =
-  | 'CREACION' | 'EDICION' | 'DESACTIVACION' | 'CAMBIO_ESTADO' | 'APROBACION' | 'RECHAZO'
-  | 'CONSULTA_DOCUMENTOS' | 'VISUALIZACION_DOCUMENTO' | 'DESCARGA_DOCUMENTO';
+  | 'CREACION'
+  | 'EDICION'
+  | 'DESACTIVACION'
+  | 'CAMBIO_ESTADO'
+  | 'APROBACION'
+  | 'RECHAZO'
+  | 'CONSULTA_DOCUMENTOS'
+  | 'VISUALIZACION_DOCUMENTO'
+  | 'DESCARGA_DOCUMENTO';
 export type AuditEntityType =
-  | 'CATEGORIA_SERVICIO' | 'ZONA' | 'PERFIL_TRABAJADOR' | 'SOLICITUD_CAMBIO_ZONA';
+  | 'CATEGORIA_SERVICIO'
+  | 'ZONA'
+  | 'PERFIL_TRABAJADOR'
+  | 'SOLICITUD_CAMBIO_ZONA'
+  | 'RECLAMO'
+  | 'USUARIO';
 
 export type ImageVariant = 'full' | 'thumb';
 
@@ -77,7 +123,7 @@ export interface PaginatedResponse<T> {
 }
 export interface PageQuery {
   page?: number;
-  limit?: number; // usuarios, bitacora y solicitudes: <= 100; pedidos: <= 50
+  limit?: number; // usuarios, bitacora y solicitudes: <= 100; pedidos y ofertas: <= 50
 }
 
 // =====================================================================
@@ -98,7 +144,8 @@ export interface LoginRequest {
   email: string;
   password: string;
 }
-export interface User {           // PublicUser
+export interface User {
+  // PublicUser
   id: string;
   firstName: string;
   lastName: string;
@@ -126,12 +173,14 @@ export interface UpdateUserStatusRequest {
 // =====================================================================
 // Catalogos y bitacora
 // =====================================================================
-export interface CatalogOption {   // publico
+export interface CatalogOption {
+  // publico
   id: string;
   name: string;
   description: string | null;
 }
-export interface CatalogItem {     // administracion
+export interface CatalogItem {
+  // administracion
   id: string;
   name: string;
   description: string | null;
@@ -139,7 +188,8 @@ export interface CatalogItem {     // administracion
   createdAt: string;
   updatedAt: string;
 }
-export interface CatalogRef {      // embebido
+export interface CatalogRef {
+  // embebido
   id: string;
   name: string;
   isActive: boolean;
@@ -180,7 +230,7 @@ export interface AuditLogQuery extends PageQuery {
 export interface ScheduleItemRequest {
   dayOfWeek: WeekDay;
   startTime: string; // 'HH:mm'
-  endTime: string;   // 'HH:mm' o '24:00'
+  endTime: string; // 'HH:mm' o '24:00'
   isActive?: boolean | null;
 }
 export interface CreateWorkerProfileRequest {
@@ -236,7 +286,8 @@ export interface AdminWorkerProfileView {
   allowedDecisions: WorkerProfileStatus[];
 }
 // Solo administradores: PATCH /worker-profile/admin/profiles/:profileId/status
-export type AdminProfileDecision = 'APROBADO' | 'OBSERVADO' | 'RECHAZADO' | 'SUSPENDIDO';
+export type AdminProfileDecision =
+  'APROBADO' | 'OBSERVADO' | 'RECHAZADO' | 'SUSPENDIDO';
 export interface ChangeWorkerProfileStatusRequest {
   status: AdminProfileDecision;
   reason?: string; // obligatorio y no vacio salvo APROBADO; no admite null
@@ -252,12 +303,50 @@ export interface ReassignRejectedProfileZoneRequest {
 // Notificaciones internas (#61-#64). Se llama AppNotification para no chocar
 // con el tipo global Notification del navegador.
 export type NotificationType =
-  | 'PERFIL_APROBADO' | 'PERFIL_OBSERVADO' | 'PERFIL_RECHAZADO' | 'PERFIL_SUSPENDIDO'
-  | 'PERFIL_REACTIVADO' | 'VERIFICACION_SOLICITADA'
-  | 'VERIFICACION_REENVIADA_OBSERVACION' | 'VERIFICACION_REENVIADA_RECHAZO'
-  | 'SOLICITUD_ZONA_APROBADA' | 'SOLICITUD_ZONA_RECHAZADA' | 'SOLICITUD_ZONA_CANCELADA'
-  | 'SOLICITUD_ZONA_RETIRADA' | 'ZONA_REASIGNADA' | 'BORRADO_ARCHIVO_ESCALADO';
-export type NotificationResourceType = 'PERFIL_TRABAJADOR' | 'SOLICITUD_CAMBIO_ZONA';
+  | 'PERFIL_APROBADO'
+  | 'PERFIL_OBSERVADO'
+  | 'PERFIL_RECHAZADO'
+  | 'PERFIL_SUSPENDIDO'
+  | 'PERFIL_REACTIVADO'
+  | 'VERIFICACION_SOLICITADA'
+  | 'VERIFICACION_REENVIADA_OBSERVACION'
+  | 'VERIFICACION_REENVIADA_RECHAZO'
+  | 'SOLICITUD_ZONA_APROBADA'
+  | 'SOLICITUD_ZONA_RECHAZADA'
+  | 'SOLICITUD_ZONA_CANCELADA'
+  | 'SOLICITUD_ZONA_RETIRADA'
+  | 'ZONA_REASIGNADA'
+  | 'BORRADO_ARCHIVO_ESCALADO'
+  | 'OFERTA_RECIBIDA'
+  | 'CONTRAOFERTA_RECIBIDA'
+  | 'OFERTA_ACEPTADA'
+  | 'OFERTA_RECHAZADA'
+  | 'OFERTA_RETIRADA'
+  | 'OFERTA_VENCIDA'
+  | 'PEDIDO_CANCELADO'
+  | 'PEDIDO_VENCIDO'
+  | 'VISITA_REGISTRADA'
+  | 'TRABAJO_INICIADO'
+  | 'PRESUPUESTO_ADICIONAL_PROPUESTO'
+  | 'PRESUPUESTO_ADICIONAL_ACEPTADO'
+  | 'PRESUPUESTO_ADICIONAL_RECHAZADO'
+  | 'TRABAJO_TERMINADO'
+  | 'CONFORMIDAD_CONFIRMADA'
+  | 'PEDIDO_CERRADO_POR_PLAZO'
+  | 'INASISTENCIA_REPORTADA'
+  | 'RECLAMO_PRESENTADO'
+  | 'RECLAMO_EN_REVISION'
+  | 'RECLAMO_RESUELTO'
+  | 'PAGO_DECLARADO'
+  | 'PAGO_CON_DIFERENCIA'
+  | 'CALIFICACION_RECIBIDA';
+export type NotificationResourceType =
+  | 'PERFIL_TRABAJADOR'
+  | 'SOLICITUD_CAMBIO_ZONA'
+  | 'PEDIDO'
+  | 'OFERTA'
+  | 'RECLAMO'
+  | 'PAGO';
 export interface AppNotification {
   id: string;
   type: NotificationType;
@@ -273,8 +362,12 @@ export interface ListNotificationsQuery {
   page?: number;
   limit?: number; // 1 a 100, por defecto 20
 }
-export interface UnreadNotificationsCount { unread: number; }
-export interface MarkAllNotificationsReadResponse { updated: number; }
+export interface UnreadNotificationsCount {
+  unread: number;
+}
+export interface MarkAllNotificationsReadResponse {
+  updated: number;
+}
 
 export interface Schedule {
   id: string;
@@ -287,7 +380,8 @@ export interface PendingRequirement {
   field: 'phone' | 'specialties' | 'zone' | 'schedules';
   message: string;
 }
-export interface WorkerProfile {    // WorkerProfileView
+export interface WorkerProfile {
+  // WorkerProfileView
   id: string;
   userId: string;
   status: WorkerProfileStatus;
@@ -323,8 +417,12 @@ export interface WorkerEligibility {
   message: string;
   reason: string | null;
   // T4-F4: solicitud de cambio de zona pendiente y si puede asumir trabajos nuevos.
-  pendingZoneChangeRequest: { id: string; toZone: CatalogRef; createdAt: string } | null;
-  canTakeNewWork: boolean; // eligible y sin solicitud pendiente
+  pendingZoneChangeRequest: {
+    id: string;
+    toZone: CatalogRef;
+    createdAt: string;
+  } | null;
+  canTakeNewWork: boolean; // eligible y sin solicitud pendiente (solo trabajo nuevo)
 }
 export interface WorkerDocument {
   id: string;
@@ -342,8 +440,11 @@ export interface WorkerDocument {
 // Zona y solicitudes de cambio
 // =====================================================================
 export type ZoneChangeBlockerCode =
-  | 'PERFIL_EN_BORRADOR' | 'ESTADO_NO_PERMITIDO' | 'SOLICITUD_PENDIENTE'
-  | 'TRABAJO_ACTIVO' | 'VERIFICACION_NO_DISPONIBLE';
+  | 'PERFIL_EN_BORRADOR'
+  | 'ESTADO_NO_PERMITIDO'
+  | 'SOLICITUD_PENDIENTE'
+  | 'TRABAJO_ACTIVO'
+  | 'VERIFICACION_NO_DISPONIBLE';
 export interface ZoneChangeBlocker {
   code: ZoneChangeBlockerCode;
   message: string;
@@ -443,7 +544,8 @@ export interface OrderImage {
   sizeBytes: number;
   thumbnailSizeBytes: number;
 }
-export interface WorkerOrder {     // WorkerOrderView (trabajador aprobado)
+export interface WorkerOrder {
+  // WorkerOrderView (trabajador aprobado)
   id: string;
   status: OrderStatus; // estado efectivo
   category: CatalogRef;
@@ -456,7 +558,8 @@ export interface WorkerOrder {     // WorkerOrderView (trabajador aprobado)
   expiresAt: string;
   lastEditedAt: string | null;
 }
-export interface OwnerOrder extends WorkerOrder { // OwnerOrderView (cliente duenio)
+export interface OwnerOrder extends WorkerOrder {
+  // OwnerOrderView (cliente duenio)
   address: { addressLine: string; reference: string | null } | null;
   cancelledAt: string | null;
   anonymizedAt: string | null; // T5.4: sin direccion ni fotos; descripcion fija
@@ -515,11 +618,24 @@ export interface AssignedOrder extends WorkerOrder {
 }
 
 // ---------------------------------------------------------------- Ofertas
-export const OFFER_STATUSES = ['VIGENTE', 'ACEPTADA', 'RECHAZADA', 'RETIRADA', 'VENCIDA', 'SIN_EFECTO'] as const;
+export const OFFER_STATUSES = [
+  'VIGENTE',
+  'ACEPTADA',
+  'RECHAZADA',
+  'RETIRADA',
+  'VENCIDA',
+  'SIN_EFECTO',
+] as const;
 export type OfferStatus = (typeof OFFER_STATUSES)[number];
 export type OfferParty = 'CLIENTE' | 'TRABAJADOR';
 export type OfferEventType =
-  | 'PROPUESTA' | 'CONTRAOFERTA' | 'ACEPTADA' | 'RECHAZADA' | 'RETIRADA' | 'VENCIDA' | 'SIN_EFECTO';
+  | 'PROPUESTA'
+  | 'CONTRAOFERTA'
+  | 'ACEPTADA'
+  | 'RECHAZADA'
+  | 'RETIRADA'
+  | 'VENCIDA'
+  | 'SIN_EFECTO';
 
 export interface CreateOfferRequest {
   amount: string;
@@ -571,10 +687,17 @@ export interface OfferEvent {
   reason: string | null;
   createdAt: string;
 }
-export type OfferDetail<T extends Offer = Offer> = T & { history: OfferEvent[] };
+export type OfferDetail<T extends Offer = Offer> = T & {
+  history: OfferEvent[];
+};
 
 export type WhatsAppContact =
-  | { available: true; channel: 'WHATSAPP'; contactRole: OfferParty; url: string }
+  | {
+      available: true;
+      channel: 'WHATSAPP';
+      contactRole: OfferParty;
+      url: string;
+    }
   | {
       available: false;
       channel: 'WHATSAPP';
@@ -586,27 +709,27 @@ export type WhatsAppContact =
 
 ## Tabla de correspondencia (backend → Angular)
 
-| Backend | Tipo propuesto |
-|---|---|
-| `PublicUser` | `User` |
-| `RegisterDto`, `LoginDto` | `RegisterRequest`, `LoginRequest` |
-| `UpdateUserDto`, `UpdateUserStatusDto` | `UpdateUserRequest`, `UpdateUserStatusRequest` |
-| `CatalogOption`, `CatalogItem`, `CatalogRef` | Mismos nombres |
-| `CreateCatalogItemDto`, `UpdateCatalogItemDto` | `CreateCatalogItemRequest`, `UpdateCatalogItemRequest` |
-| `AuditLogView` | `AuditLog` |
-| `WorkerProfileView`, `ScheduleView` | `WorkerProfile`, `Schedule` |
-| `WorkerStatusView`, `StatusHistoryEntry` | `WorkerStatus`, `WorkerStatusHistoryEntry` |
-| `WorkerDocumentView` | `WorkerDocument` |
-| `ZoneStatusView`, `ZoneChangeRequestView`, `AdminZoneChangeRequestView` | `ZoneStatus`, `ZoneChangeRequest`, `AdminZoneChangeRequest` |
-| `WorkerOrderView`, `OwnerOrderView`, `OrderImageView` | `WorkerOrder`, `OwnerOrder`, `OrderImage` |
-| `AssignedOrderView` | `AssignedOrder` |
-| `NotificationView` | `AppNotification` (evita el `Notification` global del navegador) |
-| `CreateOfferDto`, `CounterOfferDto` | `CreateOfferRequest`, `CounterOfferRequest` |
-| `ListOffersQueryDto`, `ListReceivedOffersQueryDto` | `ListOffersQuery`, `ListReceivedOffersQuery` |
-| `OfferView`, `ReceivedOfferView`, `OfferEventView`, `OfferDetail<T>` | `Offer`, `ReceivedOffer`, `OfferEvent`, `OfferDetail<T>` |
-| `WhatsAppContact` | Mismo nombre |
-| `PaginatedOrders<T>`, `PaginatedOffers<T>`, `PaginatedUsers`, `PaginatedAuditLogs`, `PaginatedZoneChangeRequests`, `PaginatedNotifications` | `PaginatedResponse<T>` (misma forma) |
+| Backend                                                                                                                                     | Tipo propuesto                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `PublicUser`                                                                                                                                | `User`                                                           |
+| `RegisterDto`, `LoginDto`                                                                                                                   | `RegisterRequest`, `LoginRequest`                                |
+| `UpdateUserDto`, `UpdateUserStatusDto`                                                                                                      | `UpdateUserRequest`, `UpdateUserStatusRequest`                   |
+| `CatalogOption`, `CatalogItem`, `CatalogRef`                                                                                                | Mismos nombres                                                   |
+| `CreateCatalogItemDto`, `UpdateCatalogItemDto`                                                                                              | `CreateCatalogItemRequest`, `UpdateCatalogItemRequest`           |
+| `AuditLogView`                                                                                                                              | `AuditLog`                                                       |
+| `WorkerProfileView`, `ScheduleView`                                                                                                         | `WorkerProfile`, `Schedule`                                      |
+| `WorkerStatusView`, `StatusHistoryEntry`                                                                                                    | `WorkerStatus`, `WorkerStatusHistoryEntry`                       |
+| `WorkerDocumentView`                                                                                                                        | `WorkerDocument`                                                 |
+| `ZoneStatusView`, `ZoneChangeRequestView`, `AdminZoneChangeRequestView`                                                                     | `ZoneStatus`, `ZoneChangeRequest`, `AdminZoneChangeRequest`      |
+| `WorkerOrderView`, `OwnerOrderView`, `OrderImageView`                                                                                       | `WorkerOrder`, `OwnerOrder`, `OrderImage`                        |
+| `AssignedOrderView`                                                                                                                         | `AssignedOrder`                                                  |
+| `NotificationView`                                                                                                                          | `AppNotification` (evita el `Notification` global del navegador) |
+| `CreateOfferDto`, `CounterOfferDto`                                                                                                         | `CreateOfferRequest`, `CounterOfferRequest`                      |
+| `ListOffersQueryDto`, `ListReceivedOffersQueryDto`                                                                                          | `ListOffersQuery`, `ListReceivedOffersQuery`                     |
+| `OfferView`, `ReceivedOfferView`, `OfferEventView`, `OfferDetail<T>`                                                                        | `Offer`, `ReceivedOffer`, `OfferEvent`, `OfferDetail<T>`         |
+| `WhatsAppContact`                                                                                                                           | Mismo nombre                                                     |
+| `PaginatedOrders<T>`, `PaginatedOffers<T>`, `PaginatedUsers`, `PaginatedAuditLogs`, `PaginatedZoneChangeRequests`, `PaginatedNotifications` | `PaginatedResponse<T>` (misma forma)                             |
 
 ## Tipos que no deben crearse todavía
 
-`Negotiation` (la negociación vive en `Offer` y su `history`), `Visit`, `AdditionalBudget`, `Schedule` de agenda (no confundir con el horario de atención), `Claim`, `Payment`, `Receipt`, `Rating`, `PublicWorkerProfile`, `OrderTimeline`/historial de pedido, `AdminOrder`. **No tienen contrato** (ver 09).
+`Negotiation` (la negociación vive en `Offer` y su `history`) y `Schedule` de agenda como reserva (la agenda se arma con `AgendaView`, ver 10). Los modelos de #82–#112 sí tienen contrato: tómelos de [10](10-sprint1-endpoints.md).

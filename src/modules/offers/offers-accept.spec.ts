@@ -58,7 +58,7 @@ describe('OffersService.accept (T6.4.2)', () => {
     offer: { findUnique: Fn; findFirst: Fn };
   };
   let users: { findByIdForShare: Fn };
-  let workerProfiles: { lockApprovedWorker: Fn };
+  let workerProfiles: { lockApprovedWorkerForAgreedWork: Fn };
   let catalogs: { findByIdsForShare: Fn };
   let orders: { transition: Fn; findActiveAssignedOrderIds: Fn };
   let service: OffersService;
@@ -151,7 +151,7 @@ describe('OffersService.accept (T6.4.2)', () => {
       }),
     };
     workerProfiles = {
-      lockApprovedWorker: vi.fn(() => {
+      lockApprovedWorkerForAgreedWork: vi.fn(() => {
         calls.push('trabajador');
         return Promise.resolve({});
       }),
@@ -178,6 +178,41 @@ describe('OffersService.accept (T6.4.2)', () => {
       catalogs as unknown as CatalogsService,
       {} as never,
     );
+  });
+
+  describe('vencimiento con el reloj real, ya con los bloqueos (RF-13)', () => {
+    /** La BD responde otra hora a clock_timestamp() que a now(). */
+    const clockAt = (clock: Date) => {
+      const base = tx.$queryRaw.getMockImplementation()!;
+      tx.$queryRaw.mockImplementation((strings: TemplateStringsArray) =>
+        strings.join('?').includes('clock_timestamp')
+          ? Promise.resolve([{ now: clock }])
+          : base(strings),
+      );
+    };
+
+    it('rechaza una oferta que vencio mientras se esperaban los bloqueos', async () => {
+      clockAt(new Date(NOW.getTime() + 48 * HOUR));
+
+      await expect(service.accept('cliente-1', 'oferta-1')).rejects.toThrow(
+        /venci/,
+      );
+      expect(tx.offer.update).not.toHaveBeenCalled();
+    });
+
+    it('rechaza un pedido que vencio mientras se esperaban los bloqueos', async () => {
+      tx.order.findUniqueOrThrow.mockResolvedValue({
+        zoneId: 'zona-1',
+        categoryId: 'cat-1',
+        expiresAt: new Date(NOW.getTime() + 1000),
+      });
+      clockAt(new Date(NOW.getTime() + 2000));
+
+      await expect(service.accept('cliente-1', 'oferta-1')).rejects.toThrow(
+        'estado VENCIDO',
+      );
+      expect(tx.offer.update).not.toHaveBeenCalled();
+    });
   });
 
   it('asigna al trabajador por OrdersService.transition, acepta la oferta y deja SIN_EFECTO las demas', async () => {
@@ -339,7 +374,7 @@ describe('OffersService.accept (T6.4.2)', () => {
     [
       'trabajador no aprobado',
       () =>
-        workerProfiles.lockApprovedWorker.mockRejectedValue(
+        workerProfiles.lockApprovedWorkerForAgreedWork.mockRejectedValue(
           new ConflictException('no habilitado'),
         ),
       'no habilitado',

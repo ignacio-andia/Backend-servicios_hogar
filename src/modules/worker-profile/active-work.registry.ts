@@ -3,7 +3,7 @@ import type { Prisma } from '../../generated/prisma/client.js';
 
 /**
  * Tipos de trabajo activo que impiden pedir un cambio de zona (RF-13).
- * OrdersModule registra PEDIDOS; OFERTAS la registrara el modulo de ofertas.
+ * OrdersModule registra PEDIDOS y OffersModule registra OFERTAS.
  */
 export const ActiveWorkKind = {
   PEDIDOS: 'PEDIDOS',
@@ -46,8 +46,9 @@ export type ActiveWorkCheck =
  * de un trabajador (enviar una oferta, asignar un pedido) y toda decision de
  * cambio de zona debe llamar a lockWorker() dentro de su transaccion antes de
  * leer o escribir: asi esas operaciones se ejecutan de a una por trabajador.
- * Para ofertas y asignaciones conviene WorkerProfileService.lockApprovedWorker,
- * que ademas relee el perfil aprobado con el bloqueo.
+ * Ademas, WorkerProfileService.lockApprovedWorker (trabajo nuevo) y
+ * lockApprovedWorkerForAgreedWork (compromisos existentes, RF-13) toman este
+ * bloqueo y releen el perfil aprobado.
  *
  * ORDEN DE BLOQUEOS DEL PROYECTO: primero el trabajador, despues el pedido
  * y al final los catalogos (CatalogsService.findByIdsForShare).

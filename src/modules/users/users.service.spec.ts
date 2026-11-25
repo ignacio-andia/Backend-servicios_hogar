@@ -53,6 +53,7 @@ describe('UsersService', () => {
     $queryRaw: ReturnType<typeof vi.fn>;
   };
   let accountStatus: AccountStatusRegistry;
+  let audit: { record: ReturnType<typeof vi.fn> };
   let service: UsersService;
 
   beforeEach(() => {
@@ -74,9 +75,11 @@ describe('UsersService', () => {
       $queryRaw: vi.fn().mockResolvedValue([]),
     };
     accountStatus = new AccountStatusRegistry();
+    audit = { record: vi.fn() };
     service = new UsersService(
       prisma as unknown as PrismaService,
       accountStatus,
+      audit as never,
     );
   });
 
@@ -377,6 +380,51 @@ describe('UsersService', () => {
         expect(onSuspended).not.toHaveBeenCalled();
       },
     );
+
+    it('registra en la bitacora, con la transaccion, el cambio hecho por un administrador', async () => {
+      suspendAs();
+
+      await service.updateStatus(ADMIN_ID, OTHER_ID, {
+        status: UserStatus.SUSPENDIDO,
+      });
+
+      expect(audit.record).toHaveBeenCalledWith(
+        {
+          actorId: ADMIN_ID,
+          action: 'CAMBIO_ESTADO',
+          entityType: 'USUARIO',
+          entityId: OTHER_ID,
+          details: { fromStatus: 'ACTIVO', toStatus: 'SUSPENDIDO' },
+        },
+        prisma,
+      );
+    });
+
+    it('si la bitacora falla, el cambio falla (se revierte)', async () => {
+      suspendAs();
+      audit.record.mockRejectedValue(new Error('sin bitacora'));
+
+      await expect(
+        service.updateStatus(ADMIN_ID, OTHER_ID, {
+          status: UserStatus.SUSPENDIDO,
+        }),
+      ).rejects.toThrow('sin bitacora');
+    });
+
+    it('la baja de la propia cuenta por un usuario no es una accion administrativa', async () => {
+      prisma.user.findUnique
+        .mockResolvedValueOnce(actorRecord(OTHER_ID, [RoleName.CLIENTE]))
+        .mockResolvedValueOnce(userRecord(OTHER_ID));
+      prisma.user.update.mockResolvedValue(
+        userRecord(OTHER_ID, [RoleName.CLIENTE], UserStatus.INACTIVO),
+      );
+
+      await service.updateStatus(OTHER_ID, OTHER_ID, {
+        status: UserStatus.INACTIVO,
+      });
+
+      expect(audit.record).not.toHaveBeenCalled();
+    });
 
     it('no admite dos efectos con el mismo nombre', () => {
       accountStatus.register({ name: 'x', onSuspended: vi.fn() });

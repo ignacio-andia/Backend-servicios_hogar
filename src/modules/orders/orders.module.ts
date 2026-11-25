@@ -5,11 +5,14 @@ import { PrismaModule } from '../../prisma/prisma.module.js';
 import { StorageModule } from '../../storage/storage.module.js';
 import { CatalogsModule } from '../catalogs/catalogs.module.js';
 import { WorkerProfileModule } from '../worker-profile/worker-profile.module.js';
+import { AcceptedOfferRegistry } from './accepted-offer.registry.js';
+import { AdvanceConfirmationRegistry } from './advance-confirmation.registry.js';
 import { OrderImageProcessor } from './images/order-image.processor.js';
 import { OrderImagesService } from './images/order-images.service.js';
 import { OrderExpirationService } from './order-expiration.service.js';
 import { OrderImageTooLargeFilter } from './order-image-too-large.filter.js';
 import { OrderLifecycleRegistry } from './order-lifecycle.registry.js';
+import { OpenNegotiationRegistry } from './open-negotiation.registry.js';
 import { OrderRetentionService } from './order-retention.service.js';
 import { OrdersActiveWorkSource } from './orders-active-work.source.js';
 import { OrdersConfig } from './orders.config.js';
@@ -47,10 +50,25 @@ import { OrderVisibilityService } from './order-visibility.service.js';
     OrderImageProcessor,
     OrderImageTooLargeFilter,
     OrderLifecycleRegistry,
+    AdvanceConfirmationRegistry,
+    OpenNegotiationRegistry,
+    AcceptedOfferRegistry,
     OrderExpirationService,
     OrderRetentionService,
     OrdersActiveWorkSource,
   ],
-  exports: [OrdersService, OrderVisibilityService, OrderLifecycleRegistry],
+  // OrdersConfig, OrderImageProcessor y OrderImageTooLargeFilter se exportan para
+  // que ClaimsModule reutilice el procesamiento de fotos (WebP sin metadatos).
+  exports: [
+    OrdersService,
+    OrderVisibilityService,
+    OrderLifecycleRegistry,
+    AdvanceConfirmationRegistry,
+    OpenNegotiationRegistry,
+    AcceptedOfferRegistry,
+    OrdersConfig,
+    OrderImageProcessor,
+    OrderImageTooLargeFilter,
+  ],
 })
 export class OrdersModule {}

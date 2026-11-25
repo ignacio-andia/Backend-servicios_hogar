@@ -6,6 +6,7 @@ import { UsersModule } from '../users/users.module.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
 import { getJwtExpiresIn, getJwtSecret, JWT_ALGORITHM } from './jwt.config.js';
+import { AuthRateLimiter } from './rate-limit/auth-rate-limiter.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
 
 @Module({
@@ -25,6 +26,6 @@ import { JwtStrategy } from './strategies/jwt.strategy.js';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
+  providers: [AuthService, JwtStrategy, AuthRateLimiter],
 })
 export class AuthModule {}

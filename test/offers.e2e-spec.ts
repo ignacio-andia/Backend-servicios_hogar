@@ -2387,7 +2387,7 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       }
     });
 
-    it('consultar el contacto no cambia la oferta; una oferta cerrada conserva el acceso pero no admite negociacion', async () => {
+    it('consultar el contacto no cambia la oferta; una oferta cerrada ya no entrega el contacto ni admite negociacion', async () => {
       const closedOrder = await newOrder();
       const closed = (await offer(worker, closedOrder, slot()).expect(201)).body
         .id;
@@ -2410,12 +2410,14 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
         .set('Authorization', auth(worker))
         .send({})
         .expect(200);
-      // Mismo acceso que el detalle de la oferta (que sigue disponible).
+      // El detalle sigue disponible, pero ya no se entrega el telefono.
       await http()
         .get(`/api/offers/received/${closed}`)
         .set('Authorization', auth(client))
         .expect(200);
-      await asClient(client, closed).expect(200);
+      const denied = await asClient(client, closed).expect(409);
+      expect(JSON.stringify(denied.body)).not.toContain('wa.me');
+      await asWorker(worker, closed).expect(409);
       await http()
         .post(`/api/offers/${closed}/accept`)
         .set('Authorization', auth(client))

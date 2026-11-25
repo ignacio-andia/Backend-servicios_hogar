@@ -139,7 +139,57 @@ export const ORDER_TRANSITIONS: Readonly<
     OrderStatus.CANCELADO,
     OrderStatus.VENCIDO,
   ],
+  // Ciclo de vida del trabajo (RF-25 a RF-28, RF-34, RF-37, RF-38). Los
+  // destinos que dependen de otro modulo se anotan con su dueno:
+  // - ACORDADO -> ANTICIPO_REGISTRADO: solo con la confirmacion del
+  //   trabajador asignado (transition() la exige); lo ejecuta PaymentsModule (RF-39) con
+  //   OrdersService.transition(); aqui solo se habilita.
+  // - CANCELADO: solo por OrdersService.cancelAgreedWork() (RF-34).
+  // - PRESUPUESTO_ADICIONAL_PENDIENTE -> CERRADO: solo por el rechazo del
+  //   cliente (RF-27), que los invariantes del flujo exigen.
+  // PENDIENTE DE CONFIRMAR CON EL DOCENTE: contraoferta del adicional
+  // (CU-27 A1).
+  [OrderStatus.ACORDADO]: [
+    OrderStatus.ANTICIPO_REGISTRADO,
+    OrderStatus.CANCELADO,
+  ],
+  [OrderStatus.ANTICIPO_REGISTRADO]: [
+    OrderStatus.VISITA_REALIZADA,
+    OrderStatus.EN_EJECUCION,
+    OrderStatus.CANCELADO,
+  ],
+  [OrderStatus.VISITA_REALIZADA]: [
+    OrderStatus.EN_EJECUCION,
+    OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE,
+    OrderStatus.CANCELADO,
+  ],
+  [OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE]: [
+    OrderStatus.EN_EJECUCION,
+    // RF-27: el cliente rechaza el adicional y el trabajo se cierra.
+    OrderStatus.CERRADO,
+    OrderStatus.CANCELADO,
+  ],
+  [OrderStatus.EN_EJECUCION]: [
+    OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE,
+    OrderStatus.TERMINADO,
+    OrderStatus.CANCELADO,
+  ],
+  [OrderStatus.TERMINADO]: [OrderStatus.CERRADO, OrderStatus.EN_RECLAMO],
+  [OrderStatus.EN_RECLAMO]: [OrderStatus.CERRADO],
 };
+
+/**
+ * Estados desde los que el cliente puede "Cancelar trabajo" (RF-34): con
+ * acuerdo y sin terminar (CU-34: "Acordado o En ejecucion y no Terminado").
+ * Un trabajo terminado se disputa con un reclamo (CU-34 A2).
+ */
+export const ORDER_WORK_CANCELLABLE_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.ACORDADO,
+  OrderStatus.ANTICIPO_REGISTRADO,
+  OrderStatus.VISITA_REALIZADA,
+  OrderStatus.PRESUPUESTO_ADICIONAL_PENDIENTE,
+  OrderStatus.EN_EJECUCION,
+];
 
 /**
  * Estados que exigen un trabajador asignado: con acuerdo. El trabajador se

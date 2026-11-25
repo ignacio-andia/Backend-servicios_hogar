@@ -4,7 +4,7 @@
 
 Backend de la plataforma web que conecta a personas que necesitan servicios técnicos del hogar (plomería, electricidad, albañilería, reparación de electrodomésticos, etc.) con trabajadores que ofrecen esos servicios.
 
-Está desarrollado con **NestJS**, **TypeScript**, **PostgreSQL** y **Prisma ORM**, y sigue una arquitectura de **monolito modular**: una sola aplicación organizada en módulos funcionales independientes (por ahora `auth`, `users`, `catalogs`, `audit` y `worker-profile`).
+Está desarrollado con **NestJS**, **TypeScript**, **PostgreSQL** y **Prisma ORM**, y sigue una arquitectura de **monolito modular**: una sola aplicación organizada en módulos funcionales independientes (`auth`, `users`, `catalogs`, `audit`, `notifications`, `worker-profile`, `orders`, `offers`, `service-workflow`, `claims`, `payments`, `reviews`, `timeline`, `order-notifications` y `agenda`).
 
 ---
 
@@ -14,37 +14,37 @@ Versiones comprobadas con las que el proyecto compila, pasa las pruebas y se eje
 
 ### Programas que debe instalar cada integrante
 
-| Programa | Versión a instalar | Versión comprobada |
-|---|---|---|
-| Node.js | 24 (LTS) | 24.22.2 |
-| npm | 11 (se instala con Node.js) | 11.19.1 |
-| PostgreSQL | 18 | 18.6 |
-| Git | Cualquier versión reciente | 2.55.0 |
+| Programa   | Versión a instalar          | Versión comprobada |
+| ---------- | --------------------------- | ------------------ |
+| Node.js    | 24 (LTS)                    | 24.22.2            |
+| npm        | 11 (se instala con Node.js) | 11.19.1            |
+| PostgreSQL | 18                          | 18.6               |
+| Git        | Cualquier versión reciente  | 2.55.0             |
 
-> Prisma 7.10.1 exige Node.js `^20.19`, `^22.12` o `>=24.0`, y NestJS 12 exige Node.js `>=20`. El equipo trabaja con **Node.js 24**: usar otra versión mayor puede funcionar, pero no está comprobado.
+> Prisma 7.10.1 exige Node.js `^20.19`, `^22.12` o `>=24.0`, y NestJS 12 exige Node.js `>=20`. El equipo trabaja con **Node.js 24**: usar otra versión mayor puede funcionar, pero no es la recomendada (el cierre del Sprint 1 también compiló, pasó las pruebas y arrancó con Node.js 26.13.1 y npm 11.20.0).
 
 ### Dependencias principales del proyecto (instaladas con `npm ci`)
 
-| Paquete | Versión |
-|---|---|
-| `@nestjs/core`, `@nestjs/common`, `@nestjs/platform-express`, `@nestjs/testing` | 12.4.2 |
-| `@nestjs/cli` | 12.0.12 |
-| `@nestjs/config` | 12.1.1 |
-| `@nestjs/jwt` | 12.0.4 |
-| `@nestjs/passport` | 12.0.1 |
-| `typescript` | 6.0.3 |
-| `prisma` (CLI) | 7.10.1 |
-| `@prisma/client` | 7.10.1 |
-| `@prisma/adapter-pg` | 7.10.1 |
-| `pg` | 8.23.1 |
-| `passport` | 0.7.0 |
-| `passport-jwt` | 4.0.1 |
-| `bcrypt` | 6.0.0 |
-| `class-validator` | 0.15.1 |
-| `class-transformer` | 0.5.1 |
-| `sharp` (procesamiento de fotos de pedidos) | 0.35.5 |
-| `@nestjs/schedule` (tareas programadas) | 12.0.4 |
-| `vitest` (pruebas) | 4.1.12 |
+| Paquete                                                                         | Versión |
+| ------------------------------------------------------------------------------- | ------- |
+| `@nestjs/core`, `@nestjs/common`, `@nestjs/platform-express`, `@nestjs/testing` | 12.4.2  |
+| `@nestjs/cli`                                                                   | 12.0.12 |
+| `@nestjs/config`                                                                | 12.1.1  |
+| `@nestjs/jwt`                                                                   | 12.0.4  |
+| `@nestjs/passport`                                                              | 12.0.1  |
+| `typescript`                                                                    | 6.0.3   |
+| `prisma` (CLI)                                                                  | 7.10.1  |
+| `@prisma/client`                                                                | 7.10.1  |
+| `@prisma/adapter-pg`                                                            | 7.10.1  |
+| `pg`                                                                            | 8.23.1  |
+| `passport`                                                                      | 0.7.0   |
+| `passport-jwt`                                                                  | 4.0.1   |
+| `bcrypt`                                                                        | 6.0.0   |
+| `class-validator`                                                               | 0.15.1  |
+| `class-transformer`                                                             | 0.5.1   |
+| `sharp` (procesamiento de fotos de pedidos)                                     | 0.35.5  |
+| `@nestjs/schedule` (tareas programadas)                                         | 12.0.4  |
+| `vitest` (pruebas)                                                              | 4.1.12  |
 
 El proyecto es **ESM** (`"type": "module"` en `package.json`): los imports relativos terminan en `.js` y las pruebas usan Vitest.
 
@@ -96,7 +96,7 @@ git clone <URL_DEL_REPOSITORIO>
 cd <CARPETA_DEL_REPOSITORIO>
 ```
 
-> Reemplaza `<URL_DEL_REPOSITORIO>` por la URL de GitHub del proyecto (todavía no hay un remoto configurado en Git) y `<CARPETA_DEL_REPOSITORIO>` por la carpeta creada al clonar. Todos los comandos siguientes se ejecutan **dentro de la carpeta del backend**, que es donde están `package.json` y la carpeta `prisma/`.
+> Reemplaza `<URL_DEL_REPOSITORIO>` por la URL de GitHub del proyecto y `<CARPETA_DEL_REPOSITORIO>` por la carpeta creada al clonar. Todos los comandos siguientes se ejecutan **dentro de la carpeta del backend**, que es donde están `package.json` y la carpeta `prisma/`.
 
 ---
 
@@ -104,13 +104,13 @@ cd <CARPETA_DEL_REPOSITORIO>
 
 El proyecto usa estos nombres:
 
-| Elemento | Valor |
-|---|---|
-| Base de datos | `servicios_hogar_db` |
-| Usuario | `servicios_hogar_user` |
-| Host / puerto | `localhost` / `5432` |
-| Esquema | `public` |
-| Contraseña | `<CONTRASEÑA_LOCAL>`, que define cada integrante en su máquina |
+| Elemento      | Valor                                                          |
+| ------------- | -------------------------------------------------------------- |
+| Base de datos | `servicios_hogar_db`                                           |
+| Usuario       | `servicios_hogar_user`                                         |
+| Host / puerto | `localhost` / `5432`                                           |
+| Esquema       | `public`                                                       |
+| Contraseña    | `<CONTRASEÑA_LOCAL>`, que define cada integrante en su máquina |
 
 > **Sobre la contraseña:** es una contraseña **local de desarrollo**. No está publicada en el repositorio y no debe compartirse por canales públicos. Elige una para tu máquina (o usa la acordada internamente por el equipo) y escríbela solo en el `CREATE ROLE` de abajo y en tu archivo `.env`. Nunca uses aquí contraseñas de producción.
 
@@ -162,9 +162,9 @@ GRANT ALL ON SCHEMA public TO servicios_hogar_user;
 
 > Desde PostgreSQL 15, el esquema `public` pertenece a `pg_database_owner`, es decir, al dueño de la base de datos. Como `servicios_hogar_user` es el dueño, ya puede crear tablas; los `GRANT` lo dejan explícito.
 
-> Las migraciones instalan la extensión **`citext`**, que hace que los nombres de categorías y zonas sean únicos sin distinguir mayúsculas. Viene incluida en PostgreSQL (instalador de Windows e imágenes oficiales). Como es una extensión *trusted*, el dueño de la base de datos puede instalarla sin ser superusuario. Por eso es importante que la base de datos pertenezca a `servicios_hogar_user` y que todo use el esquema `public`.
+> Las migraciones instalan la extensión **`citext`**, que hace que los nombres de categorías y zonas sean únicos sin distinguir mayúsculas. Viene incluida en PostgreSQL (instalador de Windows e imágenes oficiales). Como es una extensión _trusted_, el dueño de la base de datos puede instalarla sin ser superusuario. Por eso es importante que la base de datos pertenezca a `servicios_hogar_user` y que todo use el esquema `public`.
 
-**Solo si vas a crear migraciones nuevas** (ver la sección H), dale además permiso para crear bases de datos. Prisma lo necesita para su *shadow database* temporal:
+**Solo si vas a crear migraciones nuevas** (ver la sección H), dale además permiso para crear bases de datos. Prisma lo necesita para su _shadow database_ temporal:
 
 ```sql
 ALTER ROLE servicios_hogar_user CREATEDB;
@@ -210,35 +210,42 @@ Debe mostrar `servicios_hogar_user | servicios_hogar_db`. En pgAdmin, también p
 
 Formato: `postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/BASE_DE_DATOS`
 
-| Parte | Valor del proyecto | Significado |
-|---|---|---|
-| `postgresql://` | — | Protocolo de PostgreSQL |
-| `USUARIO` | `servicios_hogar_user` | Usuario creado en la sección E |
-| `CONTRASEÑA` | `<CONTRASEÑA_LOCAL>` | Tu contraseña local de ese usuario |
-| `HOST` | `localhost` | Equipo donde corre PostgreSQL |
-| `PUERTO` | `5432` | Puerto de PostgreSQL |
-| `BASE_DE_DATOS` | `servicios_hogar_db` | Base de datos creada en la sección E |
+| Parte           | Valor del proyecto     | Significado                          |
+| --------------- | ---------------------- | ------------------------------------ |
+| `postgresql://` | —                      | Protocolo de PostgreSQL              |
+| `USUARIO`       | `servicios_hogar_user` | Usuario creado en la sección E       |
+| `CONTRASEÑA`    | `<CONTRASEÑA_LOCAL>`   | Tu contraseña local de ese usuario   |
+| `HOST`          | `localhost`            | Equipo donde corre PostgreSQL        |
+| `PUERTO`        | `5432`                 | Puerto de PostgreSQL                 |
+| `BASE_DE_DATOS` | `servicios_hogar_db`   | Base de datos creada en la sección E |
 
 > Si la contraseña contiene `@ : / # ? %` u otros caracteres especiales, escríbelos codificados para URL. Por ejemplo, `@` se escribe `%40`, `#` se escribe `%23` y `%` se escribe `%25`.
 
 ### Otras variables
 
-| Variable | Obligatoria | Descripción |
-|---|---|---|
-| `JWT_SECRET` | Sí | Clave para firmar los tokens JWT. **Mínimo 32 caracteres**: el backend no arranca si falta o es más corta. Cada integrante genera la suya y nunca se comparte. |
-| `JWT_EXPIRES_IN` | No (por defecto `1h`) | Duración de los tokens: segundos (`3600`) o duración con unidad (`15m`, `1h`, `7d`). |
-| `PORT` | No (por defecto `3000`) | Puerto HTTP del backend. |
-| `FILE_STORAGE_DIR` | No (por defecto `storage/private`) | Carpeta privada donde se guardan los documentos de los trabajadores y las fotos de los pedidos. No puede estar dentro de `src/`, `public/` ni `dist/`; `/storage` ya está en `.gitignore`. |
-| `WORKER_DOCUMENT_MAX_MB` | No (por defecto `5`) | Tamaño máximo de cada documento, en MB (como máximo 20). |
-| `SCHEDULED_JOBS_ENABLED` | No (por defecto `true`) | `false` apaga las tareas programadas (vencimiento de pedidos y reintentos de borrado). Las pruebas e2e las apagan. |
-| `FILE_DELETION_RETRY_INTERVAL_MINUTES` | No (por defecto `5`) | Cada cuánto se reintentan los archivos que no se pudieron borrar (también al arrancar). A los 10 intentos se avisa a los administradores y se sigue reintentando cada 6 horas. |
-| `OFFER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `5`, máximo `1440`) | Cada cuánto corre el vencimiento automático de ofertas (también al arrancar). La vigencia de una oferta no es configurable: 24 horas (T6.5.1). |
-| `ORDER_EXPIRATION_INTERVAL_MINUTES` | No (por defecto `15`) | Cada cuánto corre la tarea de vencimiento (también corre una vez al arrancar). El plazo de vencimiento no es configurable: son 7 días desde la publicación (T5.1). `ORDER_EXPIRATION_HOURS` ya no existe y se ignora. |
-| `ORDER_MIN_IMAGES` | No (por defecto `1`) | Mínimo de fotos por pedido (como mucho 4). El **máximo es 4 y no es configurable** (T5.3): si se define `ORDER_MAX_IMAGES` con otro valor, la aplicación no arranca. Multer acepta como mucho 5 archivos, para que la quinta foto reciba el mensaje del servicio. |
-| `ORDER_IMAGE_MAX_MB` | No (por defecto `10`) | Peso máximo de cada foto subida, en MB (como máximo 25). |
-| `ORDER_IMAGE_MAX_PIXELS` | No (por defecto `50000000`) | Megapíxeles máximos de la foto original. |
-| `ORDER_IMAGE_MAX_DIMENSION` / `ORDER_IMAGE_QUALITY` / `ORDER_THUMBNAIL_SIZE` | No (por defecto `1600` / `80` / `400`) | Lado mayor, calidad WebP y tamaño de la miniatura de las fotos guardadas. |
-| `ORDER_DUPLICATE_WINDOW_DAYS` | No (por defecto `7`) | Días hacia atrás para el aviso de posible pedido duplicado. |
+| Variable                                                                                 | Obligatoria                              | Descripción                                                                                                                                                                                                                                                       |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JWT_SECRET`                                                                             | Sí                                       | Clave para firmar los tokens JWT. **Mínimo 32 caracteres**: el backend no arranca si falta o es más corta. Cada integrante genera la suya y nunca se comparte.                                                                                                    |
+| `JWT_EXPIRES_IN`                                                                         | No (por defecto `1h`)                    | Duración de los tokens: segundos (`3600`) o duración con unidad (`15m`, `1h`, `7d`).                                                                                                                                                                              |
+| `AUTH_LOGIN_MAX_FAILURES`, `AUTH_LOGIN_MAX_FAILURES_PER_IP`, `AUTH_LOGIN_WINDOW_MINUTES` | No (`5`, `30`, `15`)                     | Fallos de login permitidos por correo e IP, y por IP, en cada ventana; superados, `429` con `Retry-After`. El contador vive en memoria de cada instancia y usa la IP de la conexión (detrás de un proxy, todos comparten la del proxy)                            |
+| `AUTH_REGISTER_MAX_PER_IP`, `AUTH_REGISTER_WINDOW_MINUTES`                               | No (`20`, `60`)                          | Registros permitidos por IP en cada ventana                                                                                                                                                                                                                       |
+| `PORT`                                                                                   | No (por defecto `3000`)                  | Puerto HTTP del backend.                                                                                                                                                                                                                                          |
+| `FILE_STORAGE_DIR`                                                                       | No (por defecto `storage/private`)       | Carpeta privada donde se guardan los documentos de los trabajadores y las fotos de los pedidos. No puede estar dentro de `src/`, `public/` ni `dist/`; `/storage` ya está en `.gitignore`.                                                                        |
+| `WORKER_DOCUMENT_MAX_MB`                                                                 | No (por defecto `5`)                     | Tamaño máximo de cada documento, en MB (como máximo 20).                                                                                                                                                                                                          |
+| `SCHEDULED_JOBS_ENABLED`                                                                 | No (por defecto `true`)                  | `false` apaga las tareas programadas (vencimiento de pedidos y de ofertas, cierre de pedidos terminados y reintentos de borrado). Las pruebas e2e las apagan.                                                                                                     |
+| `FILE_DELETION_RETRY_INTERVAL_MINUTES`                                                   | No (por defecto `5`)                     | Cada cuánto se reintentan los archivos que no se pudieron borrar (también al arrancar). A los 10 intentos se avisa a los administradores y se sigue reintentando cada 6 horas.                                                                                    |
+| `OFFER_EXPIRATION_INTERVAL_MINUTES`                                                      | No (por defecto `5`, máximo `1440`)      | Cada cuánto corre el vencimiento automático de ofertas (también al arrancar). La vigencia de una oferta no es configurable: 24 horas (T6.5.1).                                                                                                                    |
+| `ORDER_EXPIRATION_INTERVAL_MINUTES`                                                      | No (por defecto `15`)                    | Cada cuánto corre la tarea de vencimiento (también corre una vez al arrancar). El plazo de vencimiento no es configurable: son 7 días desde la publicación (T5.1). `ORDER_EXPIRATION_HOURS` ya no existe y se ignora.                                             |
+| `ORDER_MIN_IMAGES`                                                                       | No (por defecto `1`)                     | Mínimo de fotos por pedido (como mucho 4). El **máximo es 4 y no es configurable** (T5.3): si se define `ORDER_MAX_IMAGES` con otro valor, la aplicación no arranca. Multer acepta como mucho 5 archivos, para que la quinta foto reciba el mensaje del servicio. |
+| `ORDER_IMAGE_MAX_MB`                                                                     | No (por defecto `10`)                    | Peso máximo de cada foto subida, en MB (como máximo 25).                                                                                                                                                                                                          |
+| `ORDER_IMAGE_MAX_PIXELS`                                                                 | No (por defecto `50000000`)              | Megapíxeles máximos de la foto original.                                                                                                                                                                                                                          |
+| `ORDER_IMAGE_MAX_DIMENSION` / `ORDER_IMAGE_QUALITY` / `ORDER_THUMBNAIL_SIZE`             | No (por defecto `1600` / `80` / `400`)   | Lado mayor, calidad WebP y tamaño de la miniatura de las fotos guardadas.                                                                                                                                                                                         |
+| `ORDER_DUPLICATE_WINDOW_DAYS`                                                            | No (por defecto `7`)                     | Días hacia atrás para el aviso de posible pedido duplicado.                                                                                                                                                                                                       |
+| `CORS_ORIGIN`                                                                            | No (por defecto `http://localhost:4200`) | Orígenes del frontend autorizados, separados por coma.                                                                                                                                                                                                            |
+| `PAYMENTS_ADVANCE_CONFIRMED_BY`                                                          | No (por defecto `TRABAJADOR`)            | Quién confirma la recepción del anticipo del 25 %. El **único valor permitido** es `TRABAJADOR` (el trabajador asignado); cualquier otro impide arrancar.                                                                                                         |
+| `REVIEWS_ELIGIBLE_STATUSES`                                                              | No (sin valor)                           | Estados del pedido que habilitan calificar, separados por coma (por ejemplo `TERMINADO,CERRADO`). **Sin valor las calificaciones están deshabilitadas** (pendiente del docente). Un estado desconocido impide arrancar.                                           |
+| `CLAIM_MIN_IMAGES` / `CLAIM_MAX_IMAGES`                                                  | No (por defecto `0` / `20`)              | Mínimo y máximo de fotos por reclamo (máximo técnico 20). El peso por foto es `ORDER_IMAGE_MAX_MB`.                                                                                                                                                               |
+| `WORKFLOW_CLOSURE_INTERVAL_MINUTES`                                                      | No (por defecto `15`, máximo `1440`)     | Cada cuánto se cierran los pedidos `TERMINADO` cuyo plazo de 7 días venció (también al arrancar). El plazo no es configurable.                                                                                                                                    |
 
 Para generar un `JWT_SECRET` aleatorio, ejecuta esto y copia el resultado en `.env`:
 
@@ -260,7 +267,7 @@ npm ci
 
 > Si `package-lock.json` y `package.json` no coinciden, `npm ci` se detiene con un error. En ese caso, avisa al equipo en lugar de ejecutar `npm install`, que reescribiría el lockfile.
 
-> npm 11 puede mostrar avisos del tipo *"packages have install scripts not yet covered by allowScripts"* para `prisma`, `@prisma/engines` y `bcrypt`. Son solo avisos: el proyecto funciona con esa configuración (ver la sección L si Prisma o bcrypt fallan).
+> `package.json` autoriza en `allowScripts` los scripts de instalación de `prisma`, `@prisma/engines` y `bcrypt` en las versiones fijadas. Si npm 11 avisa de scripts no autorizados (por ejemplo, tras cambiar una versión), consulta la sección L.
 
 ---
 
@@ -288,24 +295,29 @@ npx prisma migrate deploy
 
 Este comando aplica, en orden, las migraciones versionadas de `prisma/migrations/` que falten en tu base de datos. **No borra datos ni reinicia la base de datos**, y es el comando correcto para una copia recién clonada y después de cada `git pull` que traiga migraciones nuevas.
 
-| Migración | Contenido |
-|---|---|
-| `20261110000000_create_users_and_roles` | Usuarios y roles |
-| `20261111000000_create_catalogs_and_audit_log` | Categorías, zonas, bitácora y las categorías iniciales |
-| `20261111100000_case_insensitive_catalog_names` | Extensión `citext`: nombres únicos sin distinguir mayúsculas, con un máximo de 100 caracteres |
-| `20261111100100_rename_appliances_category` | Renombra la categoría inicial a «Electrodomésticos» y conserva su id |
-| `20261111100200_audit_log_append_only` | Trigger que impide modificar, borrar o vaciar la bitácora |
-| `20261112000000_create_worker_profiles` | Perfil del trabajador, especialidades, horarios, documentos, historial de estados y solicitudes de cambio de zona, con `CHECK`, un índice único parcial y un trigger de solo inserción |
+| Migración                                           | Contenido                                                                                                                                                                                                                            |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `20261110000000_create_users_and_roles`             | Usuarios y roles                                                                                                                                                                                                                     |
+| `20261111000000_create_catalogs_and_audit_log`      | Categorías, zonas, bitácora y las categorías iniciales                                                                                                                                                                               |
+| `20261111100000_case_insensitive_catalog_names`     | Extensión `citext`: nombres únicos sin distinguir mayúsculas, con un máximo de 100 caracteres                                                                                                                                        |
+| `20261111100100_rename_appliances_category`         | Renombra la categoría inicial a «Electrodomésticos» y conserva su id                                                                                                                                                                 |
+| `20261111100200_audit_log_append_only`              | Trigger que impide modificar, borrar o vaciar la bitácora                                                                                                                                                                            |
+| `20261112000000_create_worker_profiles`             | Perfil del trabajador, especialidades, horarios, documentos, historial de estados y solicitudes de cambio de zona, con `CHECK`, un índice único parcial y un trigger de solo inserción                                               |
 | `20261114000000_zone_change_requests_history_guard` | Protege el historial de solicitudes de cambio de zona: no se borran, una resuelta no se modifica y siempre registra la fecha y el responsable (el administrador que decidió o provocó la cancelación, o el trabajador que la retiró) |
-| `20261115000000_create_orders` | Pedidos, fotos, historial de estados y cola de borrado de archivos |
-| `20261122000000_audit_document_access` | Acciones de bitácora para el acceso administrativo a documentos |
-| `20261122100000_create_notifications` | Notificaciones internas, con sus índices y un `CHECK` del recurso relacionado |
-| `20261122200000_zone_change_cancellation` | Estado `CANCELADA` y causa de cancelación de las solicitudes de cambio de zona (con un `CHECK`), y tipos de notificación del cambio de zona |
-| `20261122300000_zone_change_withdrawal` | Causa `RETIRO_TRABAJADOR` y notificación `SOLICITUD_ZONA_RETIRADA` (retiro voluntario) |
-| `20261122400000_zone_reassignment_notification` | Notificación `ZONA_REASIGNADA` (reasignación administrativa de zona) |
-| `20261122500000_zone_change_account_suspension` | Causa `SUSPENSION_CUENTA`: suspender una cuenta cancela su solicitud de cambio de zona pendiente |
-| `20261123000000_order_retention` | `orders.anonymized_at`, `pending_file_deletions.escalated_at` y la notificación `BORRADO_ARCHIVO_ESCALADO` (T5.4) |
-| `20261124000000_create_offers` | Tablas `offers` y `offer_events` (historial de solo inserción), sus enums, índices únicos parciales y triggers que protegen las condiciones y los cierres (T6.1) |
+| `20261115000000_create_orders`                      | Pedidos, fotos, historial de estados y cola de borrado de archivos                                                                                                                                                                   |
+| `20261122000000_audit_document_access`              | Acciones de bitácora para el acceso administrativo a documentos                                                                                                                                                                      |
+| `20261122100000_create_notifications`               | Notificaciones internas, con sus índices y un `CHECK` del recurso relacionado                                                                                                                                                        |
+| `20261122200000_zone_change_cancellation`           | Estado `CANCELADA` y causa de cancelación de las solicitudes de cambio de zona (con un `CHECK`), y tipos de notificación del cambio de zona                                                                                          |
+| `20261122300000_zone_change_withdrawal`             | Causa `RETIRO_TRABAJADOR` y notificación `SOLICITUD_ZONA_RETIRADA` (retiro voluntario)                                                                                                                                               |
+| `20261122400000_zone_reassignment_notification`     | Notificación `ZONA_REASIGNADA` (reasignación administrativa de zona)                                                                                                                                                                 |
+| `20261122500000_zone_change_account_suspension`     | Causa `SUSPENSION_CUENTA`: suspender una cuenta cancela su solicitud de cambio de zona pendiente                                                                                                                                     |
+| `20261123000000_order_retention`                    | `orders.anonymized_at`, `pending_file_deletions.escalated_at` y la notificación `BORRADO_ARCHIVO_ESCALADO` (T5.4)                                                                                                                    |
+| `20261124000000_create_offers`                      | Tablas `offers` y `offer_events` (historial de solo inserción), sus enums, índices únicos parciales y triggers que protegen las condiciones y los cierres (T6.1)                                                                     |
+| `20261124100000_service_workflow_and_claims`        | Visitas, presupuestos adicionales, ejecución, inasistencias, reclamos y sus fotos                                                                                                                                                    |
+| `20261124200000_payments_reviews_notifications`     | Pagos, declaraciones, constancias y calificaciones (con sus restricciones y triggers) y tipos de notificación del flujo                                                                                                              |
+| `20261124210000_notification_offer_expired`         | Notificación `OFERTA_VENCIDA`                                                                                                                                                                                                        |
+| `20261125000000_audit_claims_and_accounts`          | Valores `RECLAMO` y `USUARIO` de `AuditEntityType` (bitácora de decisiones sobre reclamos y cambios de estado de cuentas)                                                                                                            |
+| `20261125000100_notification_budget_rejected`       | Notificación `PRESUPUESTO_ADICIONAL_RECHAZADO` (RF-27)                                                                                                                                                                               |
 
 > Algunas migraciones tienen SQL escrito a mano (conversión a `citext`, `CHECK` y triggers) porque Prisma no los genera. **No las regeneres ni las edites**: Prisma propone `DROP COLUMN`/`ADD COLUMN` para el cambio a `citext`, y eso borraría los nombres existentes.
 
@@ -339,6 +351,7 @@ npm run admin:create-first
 ```
 
 El comando compila el proyecto y pide:
+
 1. Nombre.
 2. Apellido.
 3. Correo electrónico.
@@ -399,18 +412,19 @@ Para comprobar que inició correctamente:
 
 ### Otros comandos disponibles
 
-| Comando | Descripción |
-|---|---|
-| `npm run start` | Inicia sin modo watch |
-| `npm run start:debug` | Inicia con depurador y watch |
-| `npm run build` | Compila a `dist/` |
-| `npm run start:prod` | Ejecuta la versión compilada (`dist/main`); requiere `npm run build` |
-| `npm run admin:create-first` | Crea el **primer** administrador (sección H, paso 5). Solo funciona si no existe ninguno |
-| `npm run lint` | Revisa el código con oxlint |
-| `npm run format` | Formatea `src/` y `test/` con Prettier |
-| `npm test` | Pruebas unitarias (Vitest) |
-| `npm run test:e2e` | Pruebas end-to-end. **Usan la base de datos de tu `.env`**: crean cuentas de prueba (`@users-e2e.test`, `@auth-e2e.test`, `@orders-e2e.test`, etc.) y las borran al terminar. Las fotos de prueba van a una carpeta temporal. La prueba del primer administrador crea un esquema temporal vacío (`first_admin_*`), le aplica las migraciones y lo borra al terminar: no toca los datos existentes. Requieren las migraciones aplicadas y que el usuario de la BD pueda crear esquemas. |
-| `npm run test:cov` | Pruebas unitarias con cobertura |
+| Comando                      | Descripción                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `npm run start`              | Inicia sin modo watch                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `npm run start:debug`        | Inicia con depurador y watch                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `npm run build`              | Compila a `dist/`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `npm run start:prod`         | Ejecuta la versión compilada (`dist/main`); requiere `npm run build`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `npm run admin:create-first` | Crea el **primer** administrador (sección H, paso 5). Solo funciona si no existe ninguno                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `npm run lint`               | Revisa el código con oxlint                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `npm run format`             | Formatea `src/` y `test/` con Prettier                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `npm test`                   | Pruebas unitarias (Vitest)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `npm run test:watch`         | Pruebas unitarias en modo observación                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `npm run test:e2e`           | Pruebas end-to-end. **Usan la base de datos de tu `.env`**: crean cuentas de prueba (`@users-e2e.test`, `@auth-e2e.test`, `@orders-e2e.test`, etc.) y las borran al terminar. Las fotos de prueba van a una carpeta temporal. La prueba del primer administrador crea un esquema temporal vacío (`first_admin_*`), le aplica las migraciones y lo borra al terminar: no toca los datos existentes. Requieren las migraciones aplicadas y que el usuario de la BD pueda crear esquemas. Con `E2E_ISOLATED_SCHEMA=true` (PowerShell: `$env:E2E_ISOLATED_SCHEMA="true"`) toda la corrida usa un esquema temporal con todas las migraciones y no toca los datos de `public`. |
+| `npm run test:cov`           | Pruebas unitarias con cobertura                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ---
 
@@ -418,29 +432,29 @@ Para comprobar que inició correctamente:
 
 Base: `http://localhost:3000/api`. Los endpoints protegidos requieren la cabecera `Authorization: Bearer <accessToken>`, con el token que devuelven el registro o el inicio de sesión.
 
-| Método | Ruta | JWT | Descripción y permisos |
-|---|---|---|---|
-| `POST` | `/api/auth/register` | No | Registro público. Crea la cuenta con el rol `CLIENTE` y devuelve `{ accessToken, tokenType, user }`. Responde `409` si el correo ya existe. |
-| `POST` | `/api/auth/login` | No | Inicio de sesión. Devuelve `{ accessToken, tokenType, user }`. Responde `401` si las credenciales son inválidas y `403` si la cuenta no está activa. |
-| `GET` | `/api/auth/me` | Sí | Perfil del usuario autenticado. |
-| `GET` | `/api/users?page=1&limit=20` | Sí | Lista paginada de usuarios (`limit` máximo 100). **Solo administradores.** |
-| `GET` | `/api/users/:id` | Sí | Consulta un usuario. El propio usuario o un administrador. |
-| `PATCH` | `/api/users/:id` | Sí | Actualiza `firstName`, `lastName` o `phone`. El propio usuario o un administrador. |
-| `PATCH` | `/api/users/:id/status` | Sí | Cambia el estado (`ACTIVO`, `INACTIVO`, `SUSPENDIDO`). Un usuario solo puede pasar su propia cuenta a `INACTIVO`; un administrador puede asignar cualquier estado. Suspender una cuenta cancela, en la misma transacción, su solicitud de cambio de zona pendiente (causa `SUSPENSION_CUENTA`), con bitácora y notificación. |
+| Método  | Ruta                         | JWT | Descripción y permisos                                                                                                                                                                                                                                                                                                       |
+| ------- | ---------------------------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`  | `/api/auth/register`         | No  | Registro público. Crea la cuenta con el rol `CLIENTE` y devuelve `{ accessToken, tokenType, user }`. Responde `409` si el correo ya existe.                                                                                                                                                                                  |
+| `POST`  | `/api/auth/login`            | No  | Inicio de sesión. Devuelve `{ accessToken, tokenType, user }`. Responde `401` si las credenciales son inválidas y `403` si la cuenta no está activa.                                                                                                                                                                         |
+| `GET`   | `/api/auth/me`               | Sí  | Perfil del usuario autenticado.                                                                                                                                                                                                                                                                                              |
+| `GET`   | `/api/users?page=1&limit=20` | Sí  | Lista paginada de usuarios (`limit` máximo 100). **Solo administradores.**                                                                                                                                                                                                                                                   |
+| `GET`   | `/api/users/:id`             | Sí  | Consulta un usuario. El propio usuario o un administrador.                                                                                                                                                                                                                                                                   |
+| `PATCH` | `/api/users/:id`             | Sí  | Actualiza `firstName`, `lastName` o `phone`. El propio usuario o un administrador.                                                                                                                                                                                                                                           |
+| `PATCH` | `/api/users/:id/status`      | Sí  | Cambia el estado (`ACTIVO`, `INACTIVO`, `SUSPENDIDO`). Un usuario solo puede pasar su propia cuenta a `INACTIVO`; un administrador puede asignar cualquier estado. Suspender una cuenta cancela, en la misma transacción, su solicitud de cambio de zona pendiente (causa `SUSPENSION_CUENTA`), con bitácora y notificación. |
 
 ### Catálogos: categorías de servicio (RF-48) y zonas (RF-49)
 
 Las rutas son iguales para categorías y zonas: cambia `categories` por `zones`. Nunca se borran registros: se desactivan, y cada creación, edición o desactivación queda en la bitácora (`admin_audit_logs`).
 
-| Método | Ruta | JWT | Descripción y permisos |
-|---|---|---|---|
-| `GET` | `/api/catalogs/categories` | No | Lista pública, **solo activas**, ordenada por nombre: `[{ id, name, description }]`. |
-| `GET` | `/api/catalogs/categories/:id` | No | Una categoría activa. Responde `404` si no existe o está inactiva. |
-| `GET` | `/api/catalogs/admin/categories?isActive=true\|false` | Sí | Catálogo completo, activas e inactivas (el filtro es opcional). **Solo administradores.** |
-| `GET` | `/api/catalogs/admin/categories/:id` | Sí | Una categoría con su estado y fechas. **Solo administradores.** |
-| `POST` | `/api/catalogs/categories` | Sí | Crea una categoría activa. Body: `{ "name", "description"? }`. **Solo administradores.** |
-| `PATCH` | `/api/catalogs/categories/:id` | Sí | Edita `name` y/o `description` (`null` borra la descripción). **Solo administradores.** |
-| `PATCH` | `/api/catalogs/categories/:id/deactivate` | Sí | Desactiva sin borrar. Responde `409` si ya estaba inactiva. **Solo administradores.** |
+| Método  | Ruta                                                  | JWT | Descripción y permisos                                                                    |
+| ------- | ----------------------------------------------------- | --- | ----------------------------------------------------------------------------------------- |
+| `GET`   | `/api/catalogs/categories`                            | No  | Lista pública, **solo activas**, ordenada por nombre: `[{ id, name, description }]`.      |
+| `GET`   | `/api/catalogs/categories/:id`                        | No  | Una categoría activa. Responde `404` si no existe o está inactiva.                        |
+| `GET`   | `/api/catalogs/admin/categories?isActive=true\|false` | Sí  | Catálogo completo, activas e inactivas (el filtro es opcional). **Solo administradores.** |
+| `GET`   | `/api/catalogs/admin/categories/:id`                  | Sí  | Una categoría con su estado y fechas. **Solo administradores.**                           |
+| `POST`  | `/api/catalogs/categories`                            | Sí  | Crea una categoría activa. Body: `{ "name", "description"? }`. **Solo administradores.**  |
+| `PATCH` | `/api/catalogs/categories/:id`                        | Sí  | Edita `name` y/o `description` (`null` borra la descripción). **Solo administradores.**   |
+| `PATCH` | `/api/catalogs/categories/:id/deactivate`             | Sí  | Desactiva sin borrar. Responde `409` si ya estaba inactiva. **Solo administradores.**     |
 
 - **Validación:** el nombre es obligatorio, tiene de 2 a 100 caracteres y es único sin distinguir mayúsculas, incluso frente a registros inactivos (`409`). PostgreSQL lo garantiza con un índice único sobre una columna `citext`, también ante solicitudes simultáneas. La descripción es opcional, de hasta 500 caracteres. Cualquier otro campo responde `400`.
 - **Errores:** `401` sin sesión, `403` sin rol administrador, `400` para un ID que no es UUID o datos inválidos, `404` si el registro no existe.
@@ -448,17 +462,18 @@ Las rutas son iguales para categorías y zonas: cambia `categories` por `zones`.
 
 ### Bitácora de administración (RF-53)
 
-| Método | Ruta | JWT | Descripción y permisos |
-|---|---|---|---|
-| `GET` | `/api/audit-logs` | Sí | Consulta paginada, de lo más reciente a lo más antiguo. **Solo administradores.** |
+| Método | Ruta              | JWT | Descripción y permisos                                                            |
+| ------ | ----------------- | --- | --------------------------------------------------------------------------------- |
+| `GET`  | `/api/audit-logs` | Sí  | Consulta paginada, de lo más reciente a lo más antiguo. **Solo administradores.** |
 
 - **Filtros opcionales:**
-  - `entityType`: `CATEGORIA_SERVICIO`, `ZONA`, `PERFIL_TRABAJADOR` o `SOLICITUD_CAMBIO_ZONA`.
+  - `entityType`: `CATEGORIA_SERVICIO`, `ZONA`, `PERFIL_TRABAJADOR`, `SOLICITUD_CAMBIO_ZONA`, `RECLAMO` o `USUARIO`.
   - `action`: `CREACION`, `EDICION`, `DESACTIVACION`, `CAMBIO_ESTADO`, `APROBACION`, `RECHAZO`, `CONSULTA_DOCUMENTOS`, `VISUALIZACION_DOCUMENTO` o `DESCARGA_DOCUMENTO`. Las tres últimas registran el acceso de un administrador a los documentos de un trabajador (`entityId` es el id del perfil).
   - `actorId`: UUID del administrador.
   - `entityId`: UUID del registro afectado.
   - `from` y `to`: fechas ISO 8601. Una fecha sin hora se interpreta en UTC, y en `to` incluye todo ese día.
   - `page` y `limit`: `limit` admite un máximo de 100.
+- **Reclamos y cuentas:** cada revisión y decisión de un reclamo (`RECLAMO`, con `{ orderId, fromStatus, toStatus }`, sin el texto del reclamo ni de la decisión) y cada cambio de estado de una cuenta hecho por un administrador (`USUARIO`, con `{ fromStatus, toStatus }`). La baja que un usuario hace de su propia cuenta no es una acción administrativa y no se registra.
 - **Respuesta:** `{ data: [{ id, action, entityType, entityId, details, createdAt, actor: { id, firstName, lastName, email } }], meta: { page, limit, total, totalPages } }`.
 - **Inmutabilidad:** no hay endpoints para editar ni borrar. Además, PostgreSQL rechaza `UPDATE`, `DELETE` y `TRUNCATE` sobre `admin_audit_logs` mediante un trigger.
 
@@ -468,60 +483,60 @@ Todas las rutas `me` actúan sobre el perfil del usuario del JWT y exigen el rol
 
 **Cómo se obtiene el rol TRABAJADOR:** una cuenta de cliente lo recibe al crear su perfil de trabajador, en la misma transacción (si la creación falla, no se otorga). Conserva además el rol CLIENTE (RF-02). Tener el rol **no** habilita las funciones de trabajador: para eso el perfil debe estar `APROBADO` (RF-03).
 
-| Método | Ruta | Descripción |
-|---|---|---|
-| `POST` | `/api/worker-profile` | Crea el perfil propio en estado `BORRADOR` y otorga el rol TRABAJADOR. Lo pueden usar cuentas con rol CLIENTE o TRABAJADOR. Body: `{ yearsOfExperience, description?, zoneId, categoryIds[], schedules?[] }`. Responde `409` si la cuenta ya tiene un perfil. |
-| `GET` | `/api/worker-profile/me` | Perfil con zona (`isActive`, `zoneRequiresChange`), especialidades, horarios, `pendingRequirements`, `canEdit` y `canSubmit`. |
-| `PATCH` | `/api/worker-profile/me` | Edita `yearsOfExperience` y `description` en `BORRADOR`, `OBSERVADO`, `RECHAZADO` o `SUSPENDIDO` (un perfil suspendido sigue suspendido). `zoneId` solo se acepta en `BORRADOR`; después responde `403`. |
-| `PUT` | `/api/worker-profile/me/specialties` | Reemplaza las especialidades: `{ categoryIds[] }`, solo con categorías activas. |
-| `PUT` | `/api/worker-profile/me/schedules` | Reemplaza los horarios: `{ schedules: [{ dayOfWeek, startTime: "HH:mm", endTime: "HH:mm", isActive? }] }`. Admite varios intervalos por día, sin superposiciones. |
-| `POST` | `/api/worker-profile/me/submit` | Envía o reenvía a revisión desde `BORRADOR`, `OBSERVADO` o `RECHAZADO`: pasa a `PENDIENTE`. Si falta algo responde `400` con la lista. |
-| `GET` | `/api/worker-profile/me/status` | Estado vigente, observación (`statusReason`) e historial de cambios. |
-| `GET` | `/api/worker-profile/me/eligibility` | Indica si la cuenta puede usar funciones de trabajador (solo con perfil `APROBADO`). |
-| `POST` | `/api/worker-profile/me/documents` | `multipart/form-data` con `type` (`IDENTIDAD`, `ANTECEDENTES`, `CERTIFICADO` o `REFERENCIA`) y `file` (PDF, JPG o PNG). |
-| `POST` | `/api/worker-profile/me/documents/:documentId/replace` | Sube una versión nueva; la anterior queda en el historial. |
-| `GET` | `/api/worker-profile/me/documents` | Documentos propios, vigentes y reemplazados. |
-| `GET` | `/api/worker-profile/me/documents/:documentId/download` | Descarga autorizada de un documento propio. Un documento ajeno responde `404`. |
-| `GET` | `/api/worker-profile/me/zone` | Zona actual, solicitud pendiente, `canRequestChange` y `blockers` (motivos por los que no puede pedir el cambio). |
-| `POST` | `/api/worker-profile/me/zone-change-requests` | Solicita cambiar de zona: `{ toZoneId, reason }`. La zona no cambia hasta que un administrador aprueba. Solo con el perfil `APROBADO`. Responde `409` si el perfil no está aprobado, si ya hay una pendiente, si tiene pedidos u ofertas activos o si esa verificación todavía no está disponible. |
-| `POST` | `/api/worker-profile/me/zone-change-requests/:requestId/withdraw` | Retira la solicitud propia `PENDIENTE` (sin cuerpo): queda `CANCELADA` con `cancellationCause: RETIRO_TRABAJADOR`. La zona no cambia. `404` si no es propia; `409` si ya se resolvió. |
-| `GET` | `/api/worker-profile/me/zone-change-requests` | Historial de solicitudes y decisiones. |
-| `GET` | `/api/worker-profile/admin/zone-change-requests?status&resolved&workerUserId&page&limit` | **Solo administradores.** Solicitudes con datos del trabajador, zonas involucradas y quién resolvió. `resolved=true` devuelve el historial de resoluciones. |
-| `GET` | `/api/worker-profile/admin/zone-change-requests/:requestId` | **Solo administradores.** Detalle de una solicitud. |
-| `PATCH` | `/api/worker-profile/admin/zone-change-requests/:requestId` | **Solo administradores.** `{ decision: "APROBADA" \| "RECHAZADA", comment? }`. `comment` es **obligatorio al rechazar** (`400` si falta o está vacío). Al aprobar, la nueva zona reemplaza a la anterior; al rechazar, se conserva. Queda en la bitácora con el estado anterior y el nuevo, y se notifica al trabajador. Un administrador no puede resolver su propia solicitud. Aprobar responde `409` si el perfil está `SUSPENDIDO` o `RECHAZADO` o si la zona solicitada fue desactivada (hay que rechazarla). |
-| `GET` | `/api/worker-profile/admin/inactive-zone-profiles?zoneId=` | Perfiles cuya zona fue desactivada. **Solo administradores.** |
-| `GET` | `/api/worker-profile/admin/profiles?status&zoneId&categoryId&page&limit` | **Solo administradores.** Perfiles para revisar, con los datos de la cuenta (`limit` máximo 100). Primero los enviados hace más tiempo. Nunca incluye el perfil del propio administrador. |
-| `GET` | `/api/worker-profile/admin/profiles/:profileId` | **Solo administradores.** Detalle para revisar: perfil, cuenta, motivo vigente, historial con quién decidió cada cambio y `allowedDecisions`. `403` si es el perfil del propio administrador. No incluye los documentos. |
-| `GET` | `/api/worker-profile/admin/profiles/:profileId/documents` | **Solo administradores.** Metadatos de los documentos del perfil (vigentes y reemplazados). Queda en la bitácora (`CONSULTA_DOCUMENTOS`). `403` si es el perfil del propio administrador. |
-| `GET` | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/view` | **Solo administradores.** Abre el documento en línea (`inline`). Queda en la bitácora (`VISUALIZACION_DOCUMENTO`). `404` si el documento es de otro perfil o no existe. |
-| `GET` | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/download` | **Solo administradores.** Descarga el documento (`attachment`). Queda en la bitácora (`DESCARGA_DOCUMENTO`). |
-| `PATCH` | `/api/worker-profile/admin/profiles/:profileId/zone` | **Solo administradores.** `{ zoneId, justification }`. Reasigna la zona de un perfil `RECHAZADO`, `OBSERVADO`, `PENDIENTE` o `SUSPENDIDO` cuya zona actual fue desactivada: la zona nueva debe estar activa y ser distinta. La justificación es obligatoria. El perfil conserva su estado; queda en la bitácora y se notifica al trabajador. `409` en otro estado o si su zona sigue activa; `403` sobre el propio perfil. |
-| `PATCH` | `/api/worker-profile/admin/profiles/:profileId/status` | **Solo administradores.** `{ status: "APROBADO" \| "OBSERVADO" \| "RECHAZADO" \| "SUSPENDIDO", reason? }`. El motivo es obligatorio y no puede estar vacío salvo al aprobar. Responde `409` si la transición no está permitida o si el perfil no cumple los requisitos para aprobarse, y `403` si el perfil es del propio administrador. Queda en el historial y en la bitácora. No cambia los roles ni el estado de la cuenta. |
+| Método  | Ruta                                                                                     | Descripción                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST`  | `/api/worker-profile`                                                                    | Crea el perfil propio en estado `BORRADOR` y otorga el rol TRABAJADOR. Lo pueden usar cuentas con rol CLIENTE o TRABAJADOR. Body: `{ yearsOfExperience, description?, zoneId, categoryIds[], schedules?[] }`. Responde `409` si la cuenta ya tiene un perfil.                                                                                                                                                                                                                                                      |
+| `GET`   | `/api/worker-profile/me`                                                                 | Perfil con zona (`isActive`, `zoneRequiresChange`), especialidades, horarios, `pendingRequirements`, `canEdit` y `canSubmit`.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `PATCH` | `/api/worker-profile/me`                                                                 | Edita `yearsOfExperience` y `description` en `BORRADOR`, `OBSERVADO`, `RECHAZADO` o `SUSPENDIDO` (un perfil suspendido sigue suspendido). `zoneId` solo se acepta en `BORRADOR`; después responde `403`.                                                                                                                                                                                                                                                                                                           |
+| `PUT`   | `/api/worker-profile/me/specialties`                                                     | Reemplaza las especialidades: `{ categoryIds[] }`, solo con categorías activas.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `PUT`   | `/api/worker-profile/me/schedules`                                                       | Reemplaza los horarios: `{ schedules: [{ dayOfWeek, startTime: "HH:mm", endTime: "HH:mm", isActive? }] }`. Admite varios intervalos por día, sin superposiciones.                                                                                                                                                                                                                                                                                                                                                  |
+| `POST`  | `/api/worker-profile/me/submit`                                                          | Envía o reenvía a revisión desde `BORRADOR`, `OBSERVADO` o `RECHAZADO`: pasa a `PENDIENTE`. Si falta algo responde `400` con la lista.                                                                                                                                                                                                                                                                                                                                                                             |
+| `GET`   | `/api/worker-profile/me/status`                                                          | Estado vigente, observación (`statusReason`) e historial de cambios.                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `GET`   | `/api/worker-profile/me/eligibility`                                                     | Indica si la cuenta puede usar funciones de trabajador (solo con perfil `APROBADO`).                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `POST`  | `/api/worker-profile/me/documents`                                                       | `multipart/form-data` con `type` (`IDENTIDAD`, `ANTECEDENTES`, `CERTIFICADO` o `REFERENCIA`) y `file` (PDF, JPG o PNG).                                                                                                                                                                                                                                                                                                                                                                                            |
+| `POST`  | `/api/worker-profile/me/documents/:documentId/replace`                                   | Sube una versión nueva; la anterior queda en el historial.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `GET`   | `/api/worker-profile/me/documents`                                                       | Documentos propios, vigentes y reemplazados.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `GET`   | `/api/worker-profile/me/documents/:documentId/download`                                  | Descarga autorizada de un documento propio. Un documento ajeno responde `404`.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `GET`   | `/api/worker-profile/me/zone`                                                            | Zona actual, solicitud pendiente, `canRequestChange` y `blockers` (motivos por los que no puede pedir el cambio).                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `POST`  | `/api/worker-profile/me/zone-change-requests`                                            | Solicita cambiar de zona: `{ toZoneId, reason }`. La zona no cambia hasta que un administrador aprueba. Solo con el perfil `APROBADO`. Responde `409` si el perfil no está aprobado, si ya hay una pendiente, si tiene pedidos u ofertas activos o si esa verificación todavía no está disponible.                                                                                                                                                                                                                 |
+| `POST`  | `/api/worker-profile/me/zone-change-requests/:requestId/withdraw`                        | Retira la solicitud propia `PENDIENTE` (sin cuerpo): queda `CANCELADA` con `cancellationCause: RETIRO_TRABAJADOR`. La zona no cambia. `404` si no es propia; `409` si ya se resolvió.                                                                                                                                                                                                                                                                                                                              |
+| `GET`   | `/api/worker-profile/me/zone-change-requests`                                            | Historial de solicitudes y decisiones.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `GET`   | `/api/worker-profile/admin/zone-change-requests?status&resolved&workerUserId&page&limit` | **Solo administradores.** Solicitudes con datos del trabajador, zonas involucradas y quién resolvió. `resolved=true` devuelve el historial de resoluciones.                                                                                                                                                                                                                                                                                                                                                        |
+| `GET`   | `/api/worker-profile/admin/zone-change-requests/:requestId`                              | **Solo administradores.** Detalle de una solicitud.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `PATCH` | `/api/worker-profile/admin/zone-change-requests/:requestId`                              | **Solo administradores.** `{ decision: "APROBADA" \| "RECHAZADA", comment? }`. `comment` es **obligatorio al rechazar** (`400` si falta o está vacío). Al aprobar, la nueva zona reemplaza a la anterior; al rechazar, se conserva. Queda en la bitácora con el estado anterior y el nuevo, y se notifica al trabajador. Un administrador no puede resolver su propia solicitud. Aprobar responde `409` si el perfil está `SUSPENDIDO` o `RECHAZADO` o si la zona solicitada fue desactivada (hay que rechazarla). |
+| `GET`   | `/api/worker-profile/admin/inactive-zone-profiles?zoneId=`                               | Perfiles cuya zona fue desactivada. **Solo administradores.**                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `GET`   | `/api/worker-profile/admin/profiles?status&zoneId&categoryId&page&limit`                 | **Solo administradores.** Perfiles para revisar, con los datos de la cuenta (`limit` máximo 100). Primero los enviados hace más tiempo. Nunca incluye el perfil del propio administrador.                                                                                                                                                                                                                                                                                                                          |
+| `GET`   | `/api/worker-profile/admin/profiles/:profileId`                                          | **Solo administradores.** Detalle para revisar: perfil, cuenta, motivo vigente, historial con quién decidió cada cambio y `allowedDecisions`. `403` si es el perfil del propio administrador. No incluye los documentos.                                                                                                                                                                                                                                                                                           |
+| `GET`   | `/api/worker-profile/admin/profiles/:profileId/documents`                                | **Solo administradores.** Metadatos de los documentos del perfil (vigentes y reemplazados). Queda en la bitácora (`CONSULTA_DOCUMENTOS`). `403` si es el perfil del propio administrador.                                                                                                                                                                                                                                                                                                                          |
+| `GET`   | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/view`               | **Solo administradores.** Abre el documento en línea (`inline`). Queda en la bitácora (`VISUALIZACION_DOCUMENTO`). `404` si el documento es de otro perfil o no existe.                                                                                                                                                                                                                                                                                                                                            |
+| `GET`   | `/api/worker-profile/admin/profiles/:profileId/documents/:documentId/download`           | **Solo administradores.** Descarga el documento (`attachment`). Queda en la bitácora (`DESCARGA_DOCUMENTO`).                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `PATCH` | `/api/worker-profile/admin/profiles/:profileId/zone`                                     | **Solo administradores.** `{ zoneId, justification }`. Reasigna la zona de un perfil `RECHAZADO`, `OBSERVADO`, `PENDIENTE` o `SUSPENDIDO` cuya zona actual fue desactivada: la zona nueva debe estar activa y ser distinta. La justificación es obligatoria. El perfil conserva su estado; queda en la bitácora y se notifica al trabajador. `409` en otro estado o si su zona sigue activa; `403` sobre el propio perfil.                                                                                         |
+| `PATCH` | `/api/worker-profile/admin/profiles/:profileId/status`                                   | **Solo administradores.** `{ status: "APROBADO" \| "OBSERVADO" \| "RECHAZADO" \| "SUSPENDIDO", reason? }`. El motivo es obligatorio y no puede estar vacío salvo al aprobar. Responde `409` si la transición no está permitida o si el perfil no cumple los requisitos para aprobarse, y `403` si el perfil es del propio administrador. Queda en el historial y en la bitácora. No cambia los roles ni el estado de la cuenta.                                                                                    |
 
 - **Estados:** `BORRADOR` → `PENDIENTE` → (`APROBADO` / `OBSERVADO` / `RECHAZADO`); `OBSERVADO` y `RECHAZADO` → `PENDIENTE` (reenvío); `APROBADO` ↔ `SUSPENDIDO`. El trabajador solo puede enviar o reenviar su perfil; los demás cambios los hace un administrador con `PATCH /api/worker-profile/admin/profiles/:profileId/status`. Un perfil `PENDIENTE` solo se aprueba si sigue cumpliendo los requisitos de envío (zona y especialidades activas, teléfono, horario activo); si no, responde `409` con lo que falta. La reactivación `SUSPENDIDO` → `APROBADO` exige los mismos requisitos (T4-F1). Ambas los comprueban dentro de la transacción, con la cuenta, el perfil, la zona y las especialidades bloqueados.
 - **Perfil rechazado (T3.1):** `RECHAZADO` no es terminal. El trabajador ve el motivo, corrige datos, especialidades, horarios y documentos, y reenvía con `POST /api/worker-profile/me/submit` (mismos requisitos que el primer envío). La zona sigue fija. El reenvío agrega una entrada al historial de estados y conserva la decisión anterior con su motivo; no se registra en la bitácora administrativa. No cambia los roles ni el estado de la cuenta, y el perfil no recibe pedidos hasta una nueva aprobación.
 - **Perfil suspendido (T4-F7):** el trabajador puede regularizar sus datos, especialidades, horarios y documentos, pero no cambiar su zona ni enviar su perfil a revisión; sigue `SUSPENDIDO` y sin trabajos, ofertas ni asignaciones nuevas. Un administrador le reasigna la zona si fue desactivada y lo reactiva solo cuando cumple todos los requisitos.
 - **Perfil rechazado, observado, pendiente o suspendido con la zona desactivada (T4.4, T4-F2 y T4-F7):** el trabajador no puede cambiar la zona ni pedir un cambio, y sin una zona activa no puede reenviar ni ser aprobado. Un administrador le asigna otra zona activa con `PATCH /api/worker-profile/admin/profiles/:profileId/zone` y una justificación obligatoria. Solo funciona si la zona actual está inactiva, nunca sobre el propio perfil, y no cambia el estado (lo conserva) ni crea una solicitud de cambio de zona. Queda en la bitácora (`EDICION` sobre `PERFIL_TRABAJADOR`, con zona anterior, nueva y justificación) y el trabajador recibe `ZONA_REASIGNADA`.
 - **Documentos:** el formato se detecta por el contenido del archivo, no por su extensión. Un archivo demasiado grande responde `413` y un formato no permitido, `400`. Los archivos se guardan en `FILE_STORAGE_DIR` con nombres aleatorios y nunca se exponen sus rutas. Los administradores los consultan por las rutas `admin/profiles/:profileId/documents…`. Cada acceso exitoso queda en la bitácora; los intentos rechazados no.
-- **Para otros módulos:** `WorkerProfileService.assertWorkerApproved(userId)`, `lockApprovedWorker(tx, userId)` (dentro de una transacción: bloquea al trabajador y relee su perfil aprobado), `findApprovedWorkers({ categoryId, zoneId })`, `findProfilesWithInactiveZone(zoneId?)`, `ZoneChangeRequestsService.decide(...)` y el guard `ApprovedWorkerGuard`. Para usarlos, el módulo debe importar `WorkerProfileModule`.
+- **Para otros módulos:** `WorkerProfileService.assertWorkerApproved(userId)`, `lockApprovedWorker(tx, userId)` (trabajo nuevo) y `lockApprovedWorkerForAgreedWork(tx, userId)` (compromisos existentes): dentro de una transacción, bloquean al trabajador y releen su perfil aprobado, `findApprovedWorkers({ categoryId, zoneId })`, `findProfilesWithInactiveZone(zoneId?)`, `ZoneChangeRequestsService.decide(...)` y el guard `ApprovedWorkerGuard`. Para usarlos, el módulo debe importar `WorkerProfileModule`.
 - **Estados que pueden pedir un cambio de zona:** solo `APROBADO` (especificación v1.0 §4, T4.2). `BORRADOR` elige la zona directamente. Lista en `ZONE_REQUEST_ALLOWED_STATUSES`.
 - **Suspensión con una solicitud pendiente (T4.2):** al suspender el perfil, la solicitud pasa a `CANCELADA` con `cancellationCause: SUSPENSION_PERFIL`, en la misma transacción. No es un rechazo: la zona no cambia, `decidedBy` y `decidedAt` registran qué administrador la provocó y cuándo, queda en la bitácora (`CAMBIO_ESTADO`) y el trabajador recibe una notificación.
 - **Retiro voluntario (T4.3):** el trabajador retira su solicitud pendiente. Queda `CANCELADA` con `cancellationCause: RETIRO_TRABAJADOR`; `decidedBy` y `decidedAt` registran que la retiró él y cuándo. Recibe una notificación. Como acción del trabajador, igual que el envío del perfil, no va a la bitácora administrativa: la constancia es la propia solicitud.
-- **Trabajo nuevo con una solicitud pendiente (T4.3):** no puede ofertar ni recibir asignaciones nuevas (`409`): lo comprueba `WorkerProfileService.lockApprovedWorker`, que usan la asignación de pedidos y `assertOpenForOffers`. Tampoco aparece en `findApprovedWorkers`. Sus trabajos ya acordados no cambian. Al resolverse o retirarse la solicitud vuelve a participar. OffersModule lo aplica al ofertar, contraofertar y aceptar.
-- **Cambio de zona y trabajo activo:** el trabajador no puede pedir un cambio de zona mientras tenga pedidos u ofertas activos. Hoy cuentan los pedidos asignados en `ACORDADO` y estados posteriores, hasta `EN_RECLAMO` (`ACTIVE_ORDER_STATUSES`, pendiente con el docente). Como todavía no hay salida desde `ACORDADO` (RF-34 y cierre pendientes), un trabajador con un acuerdo queda bloqueado para cambiar de zona hasta que esos módulos existan. OrdersModule ya registra la fuente `PEDIDOS`; OffersModule **no** registra la fuente `OFERTAS` (decisión del equipo: no debe habilitar cambios de zona), así que **la solicitud sigue bloqueada** (`blockers: VERIFICACION_NO_DISPONIBLE`).
-- **Integración de ofertas:**
-  1. Registrar la consulta `OFERTAS` en `onModuleInit`: `registry.register({ kind: ActiveWorkKind.OFERTAS, countActive: (workerUserId, db) => db.<modelo>.count({ ... }) })`. Debe leer con `db`, la transacción que recibe. La fuente `PEDIDOS` ya la registra OrdersModule. Al registrar la fuente real, la prueba e2e de worker-profile que hoy registra una fuente `OFERTAS` de prueba debe ajustarse.
+- **Solicitud de cambio de zona pendiente (RF-13, T4.3):** **bloqueadas** las oportunidades nuevas: ver pedidos disponibles que no esté negociando (listado, detalle y fotos), crear una oferta, figurar en `findApprovedWorkers` y recibir una asignación sin oferta vigente en ese pedido (`409`). **Permitidas** las negociaciones abiertas (contraofertar, aceptar, rechazar, retirar) y los trabajos acordados (visita, cobros, ejecución, presupuesto adicional, finalización). Al aprobarse, las oportunidades nuevas son de la zona nueva. Al resolverse o retirarse, vuelve a participar. Detalle: [WorkerProfileModule](src/modules/worker-profile/README.md).
+- **Cambio de zona y trabajo activo:** el trabajador no puede pedir un cambio de zona mientras tenga pedidos u ofertas activos (`409`, `TRABAJO_ACTIVO`). Cuentan los pedidos asignados de `ACORDADO` a `EN_RECLAMO` (`ACTIVE_ORDER_STATUSES`, pendiente con el docente; fuente `PEDIDOS`, de OrdersModule) y las ofertas `VIGENTE` sin vencer de pedidos abiertos (fuente `OFERTAS`, de OffersModule). Un pedido `CERRADO` o `CANCELADO` y una oferta aceptada o cerrada no cuentan.
+- **Integración:**
+  1. Cada módulo dueño de trabajo registra su fuente en `WorkerActiveWorkRegistry` (una por tipo; un segundo registro detiene el arranque). Si faltara alguna, la solicitud se bloquea con `VERIFICACION_NO_DISPONIBLE`.
   2. **Orden de bloqueos: primero el trabajador, después el pedido.** Al crear una oferta, usar `OrderVisibilityService.assertOpenForOffers(tx, workerUserId, orderId)`, que respeta ese orden. Para asignar, `OrdersService.transition(...)` también lo respeta. Ningún hook de pedido puede llamar a `lockWorker`.
 - **Pendiente del docente:** si aprobar un cambio de zona devuelve el perfil a revisión (hoy no) y si al aprobar se vuelve a verificar el trabajo activo (implementado pero desactivado: `recheckActiveWorkOnApproval`). Todo está centralizado en `ZONE_CHANGE_POLICY` y en `ZoneChangeRequestsService.applyApprovedChange`.
 
 ### Notificaciones internas (T3.2)
 
-| Método | Ruta | JWT | Descripción y permisos |
-|---|---|---|---|
-| `GET` | `/api/notifications` | Sí | Notificaciones propias, de la más reciente a la más antigua. Query: `unread` (`true` o `false`, opcional), `page`, `limit` (máximo 100). |
-| `GET` | `/api/notifications/unread-count` | Sí | `{ unread }`: cantidad de notificaciones propias no leídas. |
-| `PATCH` | `/api/notifications/:notificationId/read` | Sí | Marca una notificación propia como leída (idempotente). `404` si es ajena o no existe. |
-| `PATCH` | `/api/notifications/read-all` | Sí | Marca como leídas todas las propias. Responde `{ updated }`. |
+| Método  | Ruta                                      | JWT | Descripción y permisos                                                                                                                   |
+| ------- | ----------------------------------------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`   | `/api/notifications`                      | Sí  | Notificaciones propias, de la más reciente a la más antigua. Query: `unread` (`true` o `false`, opcional), `page`, `limit` (máximo 100). |
+| `GET`   | `/api/notifications/unread-count`         | Sí  | `{ unread }`: cantidad de notificaciones propias no leídas.                                                                              |
+| `PATCH` | `/api/notifications/:notificationId/read` | Sí  | Marca una notificación propia como leída (idempotente). `404` si es ajena o no existe.                                                   |
+| `PATCH` | `/api/notifications/read-all`             | Sí  | Marca como leídas todas las propias. Responde `{ updated }`.                                                                             |
 
 - **Solo internas:** se guardan en la tabla `notifications`. No hay correo, SMS ni push, y no se borran automáticamente.
 - **Permisos:** cualquier cuenta `ACTIVO`, con cualquier rol. El destinatario sale siempre del token: no se acepta `userId`.
@@ -530,29 +545,44 @@ Todas las rutas `me` actúan sobre el perfil del usuario del JWT y exigen el rol
 - **Consistencia:** la notificación se crea en la misma transacción que el evento. Si falla, el cambio de estado o el envío tampoco se guarda.
 - **Para otros módulos:** importe `NotificationsModule` y use `NotificationsService.create(userId, notificacion, tx)` o `createForRole(rol, notificacion, { excludeUserIds }, tx)`. El texto lo arma el módulo que origina el evento.
 - **Cambio de zona (T4.2):** el trabajador recibe `SOLICITUD_ZONA_APROBADA`, `SOLICITUD_ZONA_RECHAZADA` (con el motivo) o `SOLICITUD_ZONA_CANCELADA` (al suspender su perfil), en la misma transacción que la decisión, y `SOLICITUD_ZONA_RETIRADA` al retirarla (T4.3).
-- **Pendientes:** notificaciones de pedidos, ofertas, visitas y reclamos.
+- **Pedidos, ofertas, trabajo, reclamos, pagos y calificaciones (RF-33):** `OrderNotificationsModule` registra hooks que guardan el aviso en la misma transacción del hecho; `PaymentsModule` y `ReviewsModule` crean los suyos. Quien provoca un hecho de pedido u oferta no recibe su propio aviso.
+
+| Hecho                                                               | Destinatario                                        | Tipos                                                                                                                  |
+| ------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Oferta nueva, contraoferta, retiro                                  | La otra parte                                       | `OFERTA_RECIBIDA`, `CONTRAOFERTA_RECIBIDA`, `OFERTA_RETIRADA`                                                          |
+| Oferta aceptada o rechazada                                         | El trabajador                                       | `OFERTA_ACEPTADA`, `OFERTA_RECHAZADA`                                                                                  |
+| Oferta vencida                                                      | Cliente y trabajador                                | `OFERTA_VENCIDA`                                                                                                       |
+| Pedido cancelado o vencido                                          | Cliente, trabajadores con oferta abierta y asignado | `PEDIDO_CANCELADO`, `PEDIDO_VENCIDO`                                                                                   |
+| Visita, inicio, adicional propuesto, terminado, reclamo en revisión | El cliente                                          | `VISITA_REGISTRADA`, `TRABAJO_INICIADO`, `PRESUPUESTO_ADICIONAL_PROPUESTO`, `TRABAJO_TERMINADO`, `RECLAMO_EN_REVISION` |
+| Adicional aceptado, conformidad                                     | El trabajador                                       | `PRESUPUESTO_ADICIONAL_ACEPTADO`, `CONFORMIDAD_CONFIRMADA`                                                             |
+| Cierre por plazo, reclamo resuelto                                  | Cliente y trabajador                                | `PEDIDO_CERRADO_POR_PLAZO`, `RECLAMO_RESUELTO`                                                                         |
+| Inasistencia y reclamo presentado                                   | Trabajador y administradores                        | `INASISTENCIA_REPORTADA`, `RECLAMO_PRESENTADO`                                                                         |
+| Pago declarado / montos distintos                                   | La otra parte / ambas y administradores             | `PAGO_DECLARADO`, `PAGO_CON_DIFERENCIA`                                                                                |
+| Calificación                                                        | El calificado                                       | `CALIFICACION_RECIBIDA`                                                                                                |
+
+- **Sin aviso todavía:** quien pierde una oferta porque se aceptó otra y las ofertas cerradas por suspensión.
 
 ### Pedidos (RF-14 a RF-18)
 
 Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un pedido ajeno responde `404`. Las rutas `available` son para trabajadores con perfil **APROBADO**.
 
-| Método | Ruta | Descripción |
-|---|---|---|
-| `POST` | `/api/orders` | Publica un pedido (`multipart/form-data`): `categoryId`, `zoneId`, `description` (10 a 2000 caracteres), `budgetAmount` (mayor que 0, hasta 2 decimales), `addressLine`, `addressReference?` y de 1 a 4 fotos en el campo `images`. Queda `PUBLICADO` y vence a los 7 días de su publicación (T5.1). Devuelve `{ order, warnings }`. |
-| `POST` | `/api/orders/duplicate-check` | Aviso orientativo antes de publicar: `{ categoryId, zoneId, description }` → `{ warnings }`. Nunca bloquea. |
-| `GET` | `/api/orders/me?status&page&limit` | Pedidos propios, del más reciente al más antiguo (`limit` máximo 50). |
-| `GET` | `/api/orders/me/:orderId` | Detalle propio con dirección, fotos, `canEdit` y `canCancel`. |
-| `PATCH` | `/api/orders/me/:orderId` | Edita `categoryId`, `description`, `budgetAmount`, `addressLine` y/o `addressReference` (`null` la borra). La categoría nueva debe existir y estar activa; el pedido pasa a verse en esa categoría. La zona no se edita (cancelar y crear otro pedido). No cambia el estado, las fechas ni las ofertas existentes. |
-| `POST` | `/api/orders/me/:orderId/images` | Agrega una foto (campo `image`). `201` con el pedido actualizado; `409` si ya tiene el máximo. |
-| `PUT` | `/api/orders/me/:orderId/images/:imageId` | Reemplaza una foto (campo `image`); la anterior se borra del disco. `200` con el pedido actualizado. |
-| `DELETE` | `/api/orders/me/:orderId/images/:imageId` | Borra una foto del disco. `200` con el pedido actualizado (nueva `revision` y vencimiento); `409` si quedaría por debajo del mínimo (hay que reemplazarla). |
-| `POST` | `/api/orders/me/:orderId/cancel` | Cancela: `{ reason? }` (hasta 500 caracteres). `200` con el pedido. Limpia el pedido (T5.4): borra sus fotos y su dirección y anonimiza la descripción; conserva el registro mínimo y su historial. |
-| `GET` | `/api/orders/me/:orderId/images/:imageId?variant=full\|thumb` | Descarga una foto propia. |
-| `GET` | `/api/orders/available?categoryId&page&limit` | Pedidos visibles para el trabajador: misma zona, categoría entre sus especialidades, `PUBLICADO` o `EN_NEGOCIACION` sin vencer, zona y categoría activas, cuenta del cliente `ACTIVO`, y nunca los suyos como cliente (RN-14). Sin dirección ni datos del cliente. |
-| `GET` | `/api/orders/available/:orderId` | Detalle con la misma regla. Un pedido no visible responde `404`. |
-| `GET` | `/api/orders/available/:orderId/images/:imageId?variant=full\|thumb` | Foto de un pedido visible. |
-| `GET` | `/api/orders/assigned/:orderId` | Trabajador **asignado**, con acuerdo vigente: descripción, fotos, **dirección exacta** y nombre del cliente. Otro trabajador: `404` (G2). |
-| `GET` | `/api/orders/assigned/:orderId/images/:imageId?variant=full\|thumb` | Foto del pedido asignado, con la misma regla. |
+| Método   | Ruta                                                                 | Descripción                                                                                                                                                                                                                                                                                                                          |
+| -------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST`   | `/api/orders`                                                        | Publica un pedido (`multipart/form-data`): `categoryId`, `zoneId`, `description` (10 a 2000 caracteres), `budgetAmount` (mayor que 0, hasta 2 decimales), `addressLine`, `addressReference?` y de 1 a 4 fotos en el campo `images`. Queda `PUBLICADO` y vence a los 7 días de su publicación (T5.1). Devuelve `{ order, warnings }`. |
+| `POST`   | `/api/orders/duplicate-check`                                        | Aviso orientativo antes de publicar: `{ categoryId, zoneId, description }` → `{ warnings }`. Nunca bloquea.                                                                                                                                                                                                                          |
+| `GET`    | `/api/orders/me?status&page&limit`                                   | Pedidos propios, del más reciente al más antiguo (`limit` máximo 50).                                                                                                                                                                                                                                                                |
+| `GET`    | `/api/orders/me/:orderId`                                            | Detalle propio con dirección, fotos, `canEdit` y `canCancel`.                                                                                                                                                                                                                                                                        |
+| `PATCH`  | `/api/orders/me/:orderId`                                            | Edita `categoryId`, `description`, `budgetAmount`, `addressLine` y/o `addressReference` (`null` la borra). La categoría nueva debe existir y estar activa; el pedido pasa a verse en esa categoría. La zona no se edita (cancelar y crear otro pedido). No cambia el estado, las fechas ni las ofertas existentes.                   |
+| `POST`   | `/api/orders/me/:orderId/images`                                     | Agrega una foto (campo `image`). `201` con el pedido actualizado; `409` si ya tiene el máximo.                                                                                                                                                                                                                                       |
+| `PUT`    | `/api/orders/me/:orderId/images/:imageId`                            | Reemplaza una foto (campo `image`); la anterior se borra del disco. `200` con el pedido actualizado.                                                                                                                                                                                                                                 |
+| `DELETE` | `/api/orders/me/:orderId/images/:imageId`                            | Borra una foto del disco. `200` con el pedido actualizado (nueva `revision` y vencimiento); `409` si quedaría por debajo del mínimo (hay que reemplazarla).                                                                                                                                                                          |
+| `POST`   | `/api/orders/me/:orderId/cancel`                                     | Cancela: `{ reason? }` (hasta 500 caracteres). `200` con el pedido. Limpia el pedido (T5.4): borra sus fotos y su dirección y anonimiza la descripción; conserva el registro mínimo y su historial.                                                                                                                                  |
+| `GET`    | `/api/orders/me/:orderId/images/:imageId?variant=full\|thumb`        | Descarga una foto propia.                                                                                                                                                                                                                                                                                                            |
+| `GET`    | `/api/orders/available?categoryId&page&limit`                        | Pedidos visibles para el trabajador: misma zona, categoría entre sus especialidades, `PUBLICADO` o `EN_NEGOCIACION` sin vencer, zona y categoría activas, cuenta del cliente `ACTIVO`, y nunca los suyos como cliente (RN-14). Sin dirección ni datos del cliente.                                                                   |
+| `GET`    | `/api/orders/available/:orderId`                                     | Detalle con la misma regla. Un pedido no visible responde `404`.                                                                                                                                                                                                                                                                     |
+| `GET`    | `/api/orders/available/:orderId/images/:imageId?variant=full\|thumb` | Foto de un pedido visible.                                                                                                                                                                                                                                                                                                           |
+| `GET`    | `/api/orders/assigned/:orderId`                                      | Trabajador **asignado**, con acuerdo vigente: descripción, fotos, **dirección exacta** y nombre del cliente. Otro trabajador: `404` (G2).                                                                                                                                                                                            |
+| `GET`    | `/api/orders/assigned/:orderId/images/:imageId?variant=full\|thumb`  | Foto del pedido asignado, con la misma regla.                                                                                                                                                                                                                                                                                        |
 
 - **Edición:** solo en `PUBLICADO` o `EN_NEGOCIACION` y antes de vencer.
   - Toda edición efectiva sube `revision` y actualiza `lastEditedAt`. Agregar, reemplazar o borrar una foto también cuenta como edición.
@@ -585,39 +615,83 @@ Las rutas `me` son del cliente dueño del pedido y exigen el rol **CLIENTE**; un
     - `PUBLICADO → EN_NEGOCIACION`: primera oferta.
     - `EN_NEGOCIACION → ACORDADO`: exige `assignWorkerId`, un trabajador aprobado distinto del cliente.
     - `EN_NEGOCIACION → PUBLICADO`: conserva el vencimiento original (T5.1); con `releaseWorker` libera la asignación.
-    - `SIN_ACUERDO` y la salida desde `ACORDADO` siguen pendientes con el docente.
+    - Las demás transiciones están en «Estados y transiciones del pedido».
   - `OrderVisibilityService.assertOpenForOffers(tx, workerUserId, orderId)`: dentro de la transacción del llamador, bloquea y relee al trabajador, bloquea el pedido, lee zona y categorías con `FOR SHARE` (`CatalogsService`) y aplica la misma regla de visibilidad. Devuelve `{ worker, order }`.
   - `create()` también vuelve a validar la zona y la categoría dentro de su transacción, con `FOR SHARE`.
   - Ofertas y catálogos o suspensiones (decisión del equipo, T6): con la zona o la categoría inactivas no se oferta, contraoferta ni acepta (las ofertas se conservan y continúan al reactivarlas); al suspender una cuenta o un perfil, sus ofertas vigentes quedan `SIN_EFECTO` (ver OffersModule).
-  - `OrderLifecycleRegistry.register({ name, inTransaction?, afterCommit? })` recibe los eventos `EDITADO`, `CANCELADO` y `VENCIDO` (con `fromStatus`: `PUBLICADO` o `EN_NEGOCIACION`).
+  - `OrderLifecycleRegistry.register({ name, beforeTransition?, inTransaction?, afterCommit? })` recibe los eventos `EDITADO`, `CANCELADO` y `VENCIDO` (con `fromStatus`). `beforeTransition` permite a un módulo rechazar (409) una transición que incumpla sus invariantes, dentro de la transacción y con el pedido bloqueado.
+  - `AdvanceConfirmationRegistry`: OrdersModule pide por aquí la confirmación del anticipo; la implementa PaymentsModule.
   - OrdersModule registra la fuente `PEDIDOS` en `WorkerActiveWorkRegistry`: pedidos asignados en estados activos.
 - **Pendiente del docente:** todo está centralizado en `src/modules/orders/orders.rules.ts` y `orders.config.ts`.
-  - Cuándo se llega a `SIN_ACUERDO` y cómo se sale de `ACORDADO` (RF-34).
+  - Cuándo se llega a `SIN_ACUERDO`, la contraoferta del presupuesto adicional (CU-27 A1) y el tratamiento del anticipo al cancelar (RF-34).
   - Qué estados cuentan como activos.
   - Visibilidad de la dirección exacta.
   - Si se pueden editar categoría o zona.
   - Soporte de HEIC (la cantidad ya está definida: hasta 4 fotos).
 
+#### Estados y transiciones del pedido
+
+Definidas en `ORDER_TRANSITIONS` (`orders.rules.ts`). Todo cambio queda en `order_status_history`.
+
+| Desde                                                         | Hacia                             | Quién y cómo                                                       |
+| ------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------ |
+| (nuevo)                                                       | `PUBLICADO`                       | Cliente publica                                                    |
+| `PUBLICADO`                                                   | `EN_NEGOCIACION`                  | Primera oferta                                                     |
+| `EN_NEGOCIACION`                                              | `PUBLICADO`                       | Sin ofertas vigentes                                               |
+| `EN_NEGOCIACION`                                              | `ACORDADO`                        | El cliente acepta una oferta                                       |
+| `PUBLICADO`, `EN_NEGOCIACION`                                 | `CANCELADO`                       | Cliente (`/orders/me/:orderId/cancel`)                             |
+| `PUBLICADO`, `EN_NEGOCIACION`                                 | `VENCIDO`                         | Tarea automática a los 7 días de la publicación                    |
+| `ACORDADO`                                                    | `ANTICIPO_REGISTRADO`             | **Solo el trabajador asignado**, al confirmar el anticipo del 25 % |
+| `ANTICIPO_REGISTRADO`                                         | `VISITA_REALIZADA`                | Trabajador, si la oferta requiere visita                           |
+| `ANTICIPO_REGISTRADO`                                         | `EN_EJECUCION`                    | Trabajador, si la oferta no requiere visita                        |
+| `VISITA_REALIZADA`                                            | `EN_EJECUCION`                    | Trabajador                                                         |
+| `VISITA_REALIZADA`, `EN_EJECUCION`                            | `PRESUPUESTO_ADICIONAL_PENDIENTE` | Trabajador propone un adicional                                    |
+| `PRESUPUESTO_ADICIONAL_PENDIENTE`                             | `EN_EJECUCION`                    | El cliente lo acepta                                               |
+| `PRESUPUESTO_ADICIONAL_PENDIENTE`                             | `CERRADO`                         | El cliente rechaza el adicional (RF-27)                            |
+| `EN_EJECUCION`                                                | `TERMINADO`                       | Trabajador; abre el plazo de 7 días                                |
+| `TERMINADO`                                                   | `CERRADO`                         | Conformidad del cliente o plazo vencido (tarea automática)         |
+| `TERMINADO`                                                   | `EN_RECLAMO`                      | Reclamo del cliente dentro del plazo                               |
+| `EN_RECLAMO`                                                  | `CERRADO`                         | Decisión del administrador                                         |
+| `ACORDADO` a `EN_EJECUCION` (incluido el adicional pendiente) | `CANCELADO`                       | Cliente, «Cancelar trabajo»                                        |
+
+Pendientes del docente: `SIN_ACUERDO` y la contraoferta del presupuesto adicional (CU-27 A1).
+
 ### Ofertas y negociación (RF-19 a RF-24)
 
 Reglas, estados, bloqueos y ejemplos para Angular: [`src/modules/offers/README.md`](src/modules/offers/README.md). Contratos detallados: `docs/frontend-api-contracts/` (#69–#79).
 
-| Método | Ruta | Descripción |
-|---|---|---|
-| `POST` | `/api/offers/orders/:orderId` | Trabajador aprobado: oferta con `amount`, `requiresVisit`, `visitCost`, `materialsIncluded`, `proposedStartAt` y `estimatedDurationMinutes`. La primera oferta pasa el pedido a `EN_NEGOCIACION` |
-| `GET` | `/api/offers/me`, `/api/offers/me/:offerId` | Trabajador: sus ofertas (paginado) y el detalle con historial |
-| `GET` | `/api/offers/received`, `/api/offers/received/:offerId` | Cliente: ofertas de sus pedidos (`orderId?`) y el detalle con historial |
-| `POST` | `/api/offers/:offerId/counter` | Contraoferta (solo `amount`) de la parte que tiene el turno; máximo 3 rondas |
-| `POST` | `/api/offers/:offerId/reject` | Cliente, en su turno |
-| `POST` | `/api/offers/:offerId/withdraw` | Trabajador, en cualquier turno; no puede volver a ofertar |
-| `POST` | `/api/offers/:offerId/accept` | Cliente, en su turno: pedido `ACORDADO` con el trabajador asignado; las demás ofertas `SIN_EFECTO` |
-| `GET` | `/api/offers/received/:offerId/whatsapp`, `/api/offers/me/:offerId/whatsapp` | Enlace `wa.me` para escribir a la otra parte (canal externo; no cambia la oferta) |
+| Método | Ruta                                                                         | Descripción                                                                                                                                                                                      |
+| ------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST` | `/api/offers/orders/:orderId`                                                | Trabajador aprobado: oferta con `amount`, `requiresVisit`, `visitCost`, `materialsIncluded`, `proposedStartAt` y `estimatedDurationMinutes`. La primera oferta pasa el pedido a `EN_NEGOCIACION` |
+| `GET`  | `/api/offers/me`, `/api/offers/me/:offerId`                                  | Trabajador: sus ofertas (paginado) y el detalle con historial                                                                                                                                    |
+| `GET`  | `/api/offers/received`, `/api/offers/received/:offerId`                      | Cliente: ofertas de sus pedidos (`orderId?`) y el detalle con historial                                                                                                                          |
+| `POST` | `/api/offers/:offerId/counter`                                               | Contraoferta (solo `amount`) de la parte que tiene el turno; máximo 3 rondas                                                                                                                     |
+| `POST` | `/api/offers/:offerId/reject`                                                | Cliente, en su turno                                                                                                                                                                             |
+| `POST` | `/api/offers/:offerId/withdraw`                                              | Trabajador, en cualquier turno; no puede volver a ofertar                                                                                                                                        |
+| `POST` | `/api/offers/:offerId/accept`                                                | Cliente, en su turno: pedido `ACORDADO` con el trabajador asignado; las demás ofertas `SIN_EFECTO`                                                                                               |
+| `GET`  | `/api/offers/received/:offerId/whatsapp`, `/api/offers/me/:offerId/whatsapp` | Enlace `wa.me` para escribir a la otra parte (canal externo; no cambia la oferta)                                                                                                                |
 
 - **Vigencia:** 24 horas, reiniciadas con cada contraoferta. La tarea de vencimiento corre al arrancar y cada `OFFER_EXPIRATION_INTERVAL_MINUTES`.
 - **Cierres automáticos:** al cancelarse o vencer el pedido y al suspenderse la cuenta del cliente, la del trabajador o su perfil.
 - **Sin ofertas vigentes** el pedido vuelve a `PUBLICADO` (no existe `SIN_ACUERDO`), sin tocar su plazo de 7 días.
 - **Después de aceptar:** el trabajador asignado consulta el pedido con la dirección en `GET /api/orders/assigned/:orderId`.
-- **Pendientes:** notificaciones de ofertas, historial para el administrador.
+- **Pendiente:** historial de negociación para el administrador (la línea de tiempo del pedido ya se lo muestra).
+
+### Trabajo, reclamos, pagos, calificaciones, agenda y seguimiento (Sprint 1)
+
+Entradas, respuestas y errores: [`docs/frontend-api-contracts/10-sprint1-endpoints.md`](docs/frontend-api-contracts/10-sprint1-endpoints.md) (#82–#112) y el README de cada módulo.
+
+| Módulo                                                      | Rutas (prefijo `/api`)                                                                                                                                                                                                                                 |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [Flujo del trabajo](src/modules/service-workflow/README.md) | `GET /orders/:orderId/workflow`; `POST /orders/:orderId/` + `visit`, `visit/payment-confirmation`, `start`, `additional-budgets`, `additional-budgets/:budgetId/accept` y `/reject`, `finish`, `confirm-conformity`, `cancel-work`, `no-show`          |
+| [Reclamos](src/modules/claims/README.md)                    | `POST /orders/:orderId/claims`; `GET /orders/:orderId/claim`; `GET /claims/:claimId/images/:imageId`; `GET /admin/claims`, `GET /admin/claims/:claimId`; `POST /admin/claims/:claimId/review` y `/decision`                                            |
+| [Pagos](src/modules/payments/README.md)                     | `GET /orders/:orderId/payments` y `/receipts`; `POST /orders/:orderId/payments/:concept/declarations`; `GET /admin/payments/differences`                                                                                                               |
+| [Calificaciones](src/modules/reviews/README.md)             | `POST /orders/:orderId/reviews`; `GET /orders/:orderId/reviews/mine`, `/reviews/received`; `GET /workers/search` (cliente); públicas `GET /workers/:workerId/public-profile` y `/reviews`; `GET /admin/reviews`, `PATCH /admin/reviews/:reviewId/hide` |
+| [Agenda](src/modules/agenda/README.md)                      | `GET /agenda/me`; `POST /agenda/me/check`                                                                                                                                                                                                              |
+| [Seguimiento](src/modules/timeline/README.md)               | `GET /orders/:orderId/timeline`                                                                                                                                                                                                                        |
+| [Reportes](src/modules/reports/README.md)                   | `GET /admin/reports/:type` (JSON o CSV)                                                                                                                                                                                                                |
+
+La plataforma no procesa dinero: pagos solo registra las declaraciones de las partes.
 
 Ejemplo de registro:
 
@@ -636,6 +710,14 @@ La contraseña debe tener **al menos 8 caracteres, una letra y un número**. Las
 
 ---
 
+### Límite de intentos de autenticación
+
+Login: 5 fallos por correo e IP y 30 por IP cada 15 minutos. Registro: 20 intentos por IP cada hora. Superado el límite, `429` con `Retry-After`.
+
+> **Limitación:** los contadores viven **en la memoria de cada instancia** y se pierden al reiniciar. Con varias instancias, cada una cuenta por separado y el límite efectivo se multiplica: hace falta un almacén compartido (por ejemplo Redis) antes de escalar. La IP es la de la conexión: detrás de un proxy o balanceador todos los clientes comparten una, así que hay que configurar la confianza en el proxy antes de desplegar así.
+
+**No implementado:** recuperación de contraseña (RF-05). Requiere decidir el canal de envío (correo o SMS) y su proveedor.
+
 ## K. Estructura del proyecto
 
 ```text
@@ -648,12 +730,19 @@ src/
 ├── common/                # Código compartido entre módulos (configuración global, decoradores)
 ├── generated/prisma/      # Cliente Prisma generado: no editar ni subir al repositorio
 ├── modules/               # Módulos funcionales
+│   ├── agenda/            # Agenda del trabajador y consulta de disponibilidad
 │   ├── audit/             # Bitácora de acciones administrativas: registro y consulta (solo administradores)
 │   ├── auth/              # Registro, login, JWT (Passport), JwtAuthGuard, RolesGuard, @Auth, @CurrentUser
 │   ├── catalogs/          # Categorías de servicio y zonas de Cochabamba
+│   ├── claims/            # Reclamos y decisión del administrador
 │   ├── notifications/     # Notificaciones internas: bandeja del usuario y servicio para los demás módulos
 │   ├── offers/            # Ofertas y negociación: contraofertas, aceptación, vencimiento, cierres y WhatsApp (ver su README)
+│   ├── order-notifications/ # Avisos internos de pedidos, ofertas y flujo del trabajo
 │   ├── orders/            # Pedidos: publicación, fotos, visibilidad, edición, cancelación y vencimiento
+│   ├── payments/          # Declaraciones de pago, anticipo y constancias
+│   ├── reviews/           # Calificaciones y perfil público del trabajador
+│   ├── service-workflow/  # Visita, presupuesto adicional, ejecución, conformidad, cancelación e inasistencia
+│   ├── timeline/          # Línea de tiempo del pedido
 │   ├── users/             # Cuentas, datos personales, estado y roles
 │   └── worker-profile/    # Perfil del trabajador, documentos, estados y zona fija
 ├── prisma/                # PrismaModule y PrismaService (cliente compartido con adapter-pg)
@@ -688,6 +777,7 @@ Un módulo usa a otro solo a través de los servicios que este exporta. Por ejem
   ```
 
   Debe responder `aceptando conexiones` o `accepting connections`. En Windows, revisa en **Servicios** (`services.msc`) que `postgresql-x64-18` esté en ejecución.
+
 - Verifica que el host y el puerto de `DATABASE_URL` sean `localhost` y `5432`.
 
 ### Usuario o contraseña incorrectos (`password authentication failed for user "servicios_hogar_user"`)
@@ -714,7 +804,7 @@ Crea la base de datos (sección E, pasos 2 a 4) y luego aplica las migraciones c
   npx prisma validate
   ```
 
-- Si Prisma no encuentra su motor (*schema engine*) o bcrypt falla al cargar después de `npm ci` con avisos de `allowScripts`, revisa los scripts pendientes y autoriza los de estos paquetes:
+- Si Prisma no encuentra su motor (_schema engine_) o bcrypt falla al cargar después de `npm ci` con avisos de `allowScripts`, revisa los scripts pendientes y autoriza los de estos paquetes:
 
   ```bash
   npm install-scripts ls
@@ -742,7 +832,7 @@ Aparece al ejecutar `prisma migrate dev`. Al usuario le falta el permiso `CREATE
 
 ### `extension "citext" is not available` o `permission denied to create extension "citext"`
 
-- `citext` viene en el paquete *contrib* de PostgreSQL. Si no está disponible, reinstala PostgreSQL 18 con el instalador oficial.
+- `citext` viene en el paquete _contrib_ de PostgreSQL. Si no está disponible, reinstala PostgreSQL 18 con el instalador oficial.
 - Si falta el permiso, la base de datos no pertenece a `servicios_hogar_user`. Corrígelo como `postgres` con `ALTER DATABASE servicios_hogar_db OWNER TO servicios_hogar_user;` y vuelve a ejecutar `npx prisma migrate deploy`.
 
 ### `La bitácora de administración es de solo inserción`

@@ -28,10 +28,6 @@ import {
   PublicUser,
   UsersService,
 } from '../src/modules/users/users.service.js';
-import {
-  ActiveWorkKind,
-  WorkerActiveWorkRegistry,
-} from '../src/modules/worker-profile/active-work.registry.js';
 import { WorkerProfileService } from '../src/modules/worker-profile/worker-profile.service.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { deleteWorkerData } from './utils/worker-profile-cleanup.js';
@@ -761,10 +757,9 @@ describe('WorkerProfileModule (e2e)', () => {
   });
 
   describe('RF-13: zona fija y solicitudes de cambio', () => {
-    // OrdersModule ya registra la fuente PEDIDOS (pedidos asignados). El
-    // modulo de ofertas todavia no existe: las pruebas que lo necesitan
-    // registran una fuente de prueba; la aplicacion real no lo hace.
-    let activeOffers = 0;
+    // OrdersModule registra la fuente PEDIDOS y OffersModule la fuente
+    // OFERTAS. Los bloqueos por trabajo activo se prueban en
+    // rf13-zone-change.e2e-spec.ts.
     let rejectedId: string;
 
     const requestChange = (toZoneId: string, reason = 'Me mudé de barrio') =>
@@ -790,42 +785,11 @@ describe('WorkerProfileModule (e2e)', () => {
         .send({ zoneId: zoneC.id })
         .expect(403));
 
-    it('sin la verificacion de ofertas, bloquea la solicitud e informa el motivo', async () => {
+    it('sin pedidos ni ofertas activos puede solicitar el cambio', async () => {
       const status = await zoneStatus();
       expect(status.body).toMatchObject({
         currentZone: { id: zoneB.id },
         pendingRequest: null,
-        canRequestChange: false,
-        blockers: [{ code: 'VERIFICACION_NO_DISPONIBLE' }],
-      });
-
-      const res = await requestChange(zoneC.id).expect(409);
-      expect(res.body.message[0]).toContain(
-        'no se puede verificar si tiene ofertas activos',
-      );
-      expect(
-        await prisma.zoneChangeRequest.count({ where: { profileId } }),
-      ).toBe(0);
-    });
-
-    it('con pedidos u ofertas activos bloquea la solicitud e informa el motivo', async () => {
-      const registry = app.get(WorkerActiveWorkRegistry);
-      registry.register({
-        kind: ActiveWorkKind.OFERTAS,
-        countActive: () => Promise.resolve(activeOffers),
-      });
-      activeOffers = 1;
-
-      const blocked = await zoneStatus();
-      expect(blocked.body.blockers).toMatchObject([{ code: 'TRABAJO_ACTIVO' }]);
-      const res = await requestChange(zoneC.id).expect(409);
-      expect(res.body.message).toEqual([
-        'No puede solicitar un cambio de zona mientras tenga trabajo activo (1 ofertas activos).',
-      ]);
-
-      activeOffers = 0;
-      const allowed = await zoneStatus();
-      expect(allowed.body).toMatchObject({
         canRequestChange: true,
         blockers: [],
       });
