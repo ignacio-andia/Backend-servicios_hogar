@@ -56,6 +56,12 @@ model User {
   reviewsReceived      Review[]                     @relation("ReviewTarget")
   reviewsHidden        Review[]                     @relation("ReviewHiddenBy")
 
+  /// Recomendacion de trabajadores (RecommendationsModule): solo relaciones
+  /// inversas con nombre explicito; no cambian la tabla users.
+  recommendationSettings  RecommendationSettings[]   @relation("RecommendationSettingsAuthor")
+  recommendationsAsked    WorkerRecommendation[]     @relation("RecommendationRequester")
+  recommendationsReceived WorkerRecommendationItem[] @relation("RecommendedWorker")
+
   @@index([status])
   @@map("users")
 }
@@ -131,6 +137,7 @@ enum AuditEntityType {
   SOLICITUD_CAMBIO_ZONA
   RECLAMO
   USUARIO
+  CONFIGURACION_RECOMENDACION
 }
 
 /// Bitácora de acciones administrativas (RF-53): quién, qué y cuándo.
@@ -394,6 +401,8 @@ model Order {
   payments          Payment[]
   serviceReceipt    ServiceReceipt?
   reviews           Review[]
+  /// Recomendaciones de trabajadores generadas para el pedido: solo relacion inversa.
+  recommendations   WorkerRecommendation[]
 
   @@index([zoneId, categoryId, status, expiresAt])
   @@index([clientId, createdAt])
@@ -519,6 +528,9 @@ model Offer {
   events        OfferEvent[] @relation("OfferEvents")
   /// Inversa de la FK compuesta (mismos eventos que `events`).
   eventsOfOrder OfferEvent[] @relation("OfferEventsSameOrder")
+
+  /// Recomendaciones que senalan esta oferta como abierta: solo relacion inversa.
+  recommendationItems WorkerRecommendationItem[]
 
   // Indices parciales en la migracion (Prisma no los modela):
   // - offers_order_worker_open_key: una sola VIGENTE por trabajador y pedido
@@ -913,4 +925,93 @@ model Review {
   @@unique([orderId, authorId])
   @@index([targetId, createdAt(sort: Desc)])
   @@map("reviews")
+}
+
+// ---------------------------------------------------------------------------
+// Recomendacion de trabajadores (RecommendationsModule)
+// ---------------------------------------------------------------------------
+
+/// Criterios de la recomendacion de trabajadores, versionados: cada cambio del
+/// administrador crea una version nueva y las anteriores no se modifican
+/// (trigger de solo insercion). La version vigente es la de numero mayor. Los
+/// pesos son porcentajes enteros que suman 100 (CHECK).
+model RecommendationSettings {
+  id                      String   @id @default(uuid()) @db.Uuid
+  version                 Int      @unique
+  reputationWeight        Int      @map("reputation_weight") @db.SmallInt
+  completedServicesWeight Int      @map("completed_services_weight") @db.SmallInt
+  availabilityWeight      Int      @map("availability_weight") @db.SmallInt
+  /// Calificaciones neutras (3 estrellas) que se suman al promedio: una sola
+  /// calificacion de 5 no gana a un historial largo (promedio bayesiano).
+  reviewsForConfidence    Int      @map("reviews_for_confidence") @db.SmallInt
+  /// Servicios completados con los que el criterio llega al 100 %.
+  completedServicesTarget Int      @map("completed_services_target") @db.SmallInt
+  /// Horas libres en los proximos 7 dias con las que el criterio llega al 100 %.
+  availabilityHoursTarget Int      @map("availability_hours_target") @db.SmallInt
+  /// Null solo en la version 1, que crea la migracion.
+  createdById             String?  @map("created_by_id") @db.Uuid
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  createdBy       User?                  @relation("RecommendationSettingsAuthor", fields: [createdById], references: [id], onDelete: Restrict)
+  recommendations WorkerRecommendation[]
+
+  @@map("recommendation_settings")
+}
+
+/// Recomendacion generada para un pedido. Guarda la version de criterios
+/// usada, asi el historial muestra siempre con que pesos se calculo aunque el
+/// administrador los cambie despues. Solo insercion (trigger).
+model WorkerRecommendation {
+  id              String   @id @default(uuid()) @db.Uuid
+  orderId         String   @map("order_id") @db.Uuid
+  requestedById   String   @map("requested_by_id") @db.Uuid
+  settingsId      String   @map("settings_id") @db.Uuid
+  /// Trabajadores que cumplian los filtros al generarla (se guardan los mejores).
+  candidatesCount Int      @map("candidates_count")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  order       Order                      @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  requestedBy User                       @relation("RecommendationRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  settings    RecommendationSettings     @relation(fields: [settingsId], references: [id], onDelete: Restrict)
+  items       WorkerRecommendationItem[]
+
+  @@index([orderId, createdAt(sort: Desc)])
+  @@index([settingsId])
+  @@map("worker_recommendations")
+}
+
+/// Un trabajador recomendado, con los datos y puntajes de cada criterio tal
+/// como estaban al generar la recomendacion. Puntajes de 0 a 100 con 2
+/// decimales. Solo insercion (trigger).
+model WorkerRecommendationItem {
+  id                     String   @id @default(uuid()) @db.Uuid
+  recommendationId       String   @map("recommendation_id") @db.Uuid
+  workerId               String   @map("worker_id") @db.Uuid
+  rank                   Int      @db.SmallInt
+  totalScore             Decimal  @map("total_score") @db.Decimal(5, 2)
+  /// Reputacion: calificaciones visibles de clientes.
+  reviewsCount           Int      @map("reviews_count")
+  averageRating          Decimal? @map("average_rating") @db.Decimal(3, 2)
+  adjustedRating         Decimal  @map("adjusted_rating") @db.Decimal(3, 2)
+  reputationScore        Decimal  @map("reputation_score") @db.Decimal(5, 2)
+  /// Servicios completados: trabajos terminados (con fecha de fin).
+  completedServices      Int      @map("completed_services")
+  completedServicesScore Decimal  @map("completed_services_score") @db.Decimal(5, 2)
+  /// Disponibilidad en los proximos 7 dias, en minutos.
+  weeklyScheduleMinutes  Int      @map("weekly_schedule_minutes")
+  bookedMinutes          Int      @map("booked_minutes")
+  freeMinutes            Int      @map("free_minutes")
+  availabilityScore      Decimal  @map("availability_score") @db.Decimal(5, 2)
+  /// Oferta VIGENTE del trabajador en el pedido al generar la recomendacion.
+  openOfferId            String?  @map("open_offer_id") @db.Uuid
+
+  recommendation WorkerRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Restrict)
+  worker         User                 @relation("RecommendedWorker", fields: [workerId], references: [id], onDelete: Restrict)
+  openOffer      Offer?               @relation(fields: [openOfferId], references: [id], onDelete: Restrict)
+
+  @@unique([recommendationId, rank])
+  @@unique([recommendationId, workerId])
+  @@index([workerId])
+  @@index([openOfferId])
+  @@map("worker_recommendation_items")
 }
