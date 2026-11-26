@@ -12,6 +12,7 @@ import { OrderNotificationsModule } from './modules/order-notifications/order-no
 import { OrdersModule } from './modules/orders/orders.module.js';
 import { ReportsModule } from './modules/reports/reports.module.js';
 import { PaymentsModule } from './modules/payments/payments.module.js';
+import { RecommendationsModule } from './modules/recommendations/recommendations.module.js';
 import { ReviewsModule } from './modules/reviews/reviews.module.js';
 import { ServiceWorkflowModule } from './modules/service-workflow/service-workflow.module.js';
 import { TimelineModule } from './modules/timeline/timeline.module.js';
@@ -42,6 +43,7 @@ import { WorkerProfileModule } from './modules/worker-profile/worker-profile.mod
     OrderNotificationsModule,
     AgendaModule,
     ReportsModule,
+    RecommendationsModule,
   ],
 })
 export class AppModule {}
