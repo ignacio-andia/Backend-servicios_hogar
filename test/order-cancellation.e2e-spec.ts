@@ -9,9 +9,17 @@
 //   queda nada a medias (fallos provocados con triggers de PostgreSQL);
 // - concurrencia: solicitudes simultaneas que esperan el bloqueo del pedido
 //   producen una sola cancelacion (200) y conflictos (409);
-// - el historial sigue siendo de solo insercion.
+// - el historial sigue siendo de solo insercion: UPDATE, DELETE y TRUNCATE
+//   por separado, rechazados por append_only_guard() (SQLSTATE 42501) y sin
+//   alterar ningun registro. No cubre el ajuste de mantenimiento
+//   app.audit_maintenance, que omite el trigger a proposito.
 // Corre SIEMPRE en un esquema temporal con todas las migraciones: los
 // triggers de fallo y los datos de prueba nunca tocan el esquema public.
+//
+// PENDIENTE TECNICO (fase posterior, no implementado): la cancelacion de un
+// pedido sin acuerdo debe evaluar el vencimiento con la hora real posterior a
+// la adquisicion del bloqueo. Hoy lockOrder() usa now() (inicio de la
+// transaccion); registrado como it.todo al final de este archivo.
 //=========================================================
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -476,28 +484,86 @@ describe('Registro y persistencia de cancelaciones (B2, e2e)', () => {
       }
     });
 
-    it('repetir despues no cambia el registro, que es de solo insercion', async () => {
+    it('repetir despues responde 409 y no cambia nada', async () => {
       const { orderId } = await orderFor(route);
       await cancel(route, orderId, 'Motivo original').expect(200);
       const before = await snapshot(orderId);
 
       await cancel(route, orderId, 'Otro motivo').expect(409);
-      const [row] = await cancellationsOf(orderId);
-      await expect(
-        scoped.orderStatusHistory.update({
-          where: { id: row.id },
-          data: { reason: 'Sobrescrito' },
-        }),
-      ).rejects.toThrow();
-      await expect(
-        scoped.orderStatusHistory.delete({ where: { id: row.id } }),
-      ).rejects.toThrow();
-      await expect(
-        observer.query(`TRUNCATE "${isolated.schema}"."order_status_history"`),
-      ).rejects.toThrow(/solo inserci/);
 
       expect(await snapshot(orderId)).toEqual(before);
     });
+
+    // Cada operacion en su propia prueba, con SQL directo para recibir el
+    // error tal como lo entrega PostgreSQL.
+    it.each([
+      {
+        operation: 'UPDATE',
+        trigger: 'order_status_history_no_update_delete',
+        sql: (table: string) =>
+          `UPDATE ${table} SET "reason" = 'Sobrescrito' WHERE "id" = $1`,
+        byRow: true,
+      },
+      {
+        operation: 'DELETE',
+        trigger: 'order_status_history_no_update_delete',
+        sql: (table: string) => `DELETE FROM ${table} WHERE "id" = $1`,
+        byRow: true,
+      },
+      {
+        operation: 'TRUNCATE',
+        trigger: 'order_status_history_no_truncate',
+        sql: (table: string) => `TRUNCATE ${table}`,
+        byRow: false,
+      },
+    ])(
+      'el historial rechaza $operation mediante su trigger (42501)',
+      async ({ operation, trigger, sql, byRow }) => {
+        const { orderId } = await orderFor(route);
+        await cancel(route, orderId, 'Motivo original').expect(200);
+        const [row] = await cancellationsOf(orderId);
+        const table = `"${isolated.schema}"."order_status_history"`;
+
+        // El trigger que protege esta operacion existe y esta habilitado.
+        const triggers = await observer.query(
+          `SELECT "tgenabled" AS "enabled", pg_get_triggerdef("oid") AS "definition"
+           FROM pg_trigger
+           WHERE "tgrelid" = $1::regclass AND "tgname" = $2`,
+          [table, trigger],
+        );
+        expect(triggers.rows).toEqual([
+          {
+            enabled: 'O',
+            definition: expect.stringMatching(
+              // La funcion puede aparecer calificada con el esquema.
+              new RegExp(
+                `BEFORE .*${operation}.* EXECUTE FUNCTION \\S*append_only_guard\\(\\)`,
+              ),
+            ) as unknown,
+          },
+        ]);
+
+        // TODOS los registros, no solo el de este pedido.
+        const history = async () =>
+          (await observer.query(`SELECT * FROM ${table} ORDER BY "id"`)).rows;
+        const before = await history();
+
+        // 42501 tambien es "permiso denegado": el mensaje y el origen
+        // demuestran que quien rechaza es la funcion del trigger.
+        await expect(
+          observer.query(sql(table), byRow ? [row.id] : []),
+        ).rejects.toMatchObject({
+          code: '42501',
+          message: `La tabla order_status_history es de solo inserción (${operation} no permitido)`,
+          where: expect.stringContaining('append_only_guard()') as unknown,
+        });
+
+        expect(await history()).toEqual(before);
+        expect(before).toContainEqual(
+          expect.objectContaining({ id: row.id, reason: 'Motivo original' }),
+        );
+      },
+    );
   });
 
   it('las dos rutas a la vez sobre un pedido con acuerdo: una sola cancelacion', async () => {
@@ -539,4 +605,9 @@ describe('Registro y persistencia de cancelaciones (B2, e2e)', () => {
     expect(order.assignedWorkerId).toBe(won ? null : worker.id);
     expect(await cancellationsOf(orderId)).toHaveLength(won ? 1 : 0);
   });
+
+  // PENDIENTE TECNICO para una fase posterior (ver el encabezado).
+  it.todo(
+    'cancelar un pedido sin acuerdo evalua el vencimiento con la hora posterior al bloqueo',
+  );
 });

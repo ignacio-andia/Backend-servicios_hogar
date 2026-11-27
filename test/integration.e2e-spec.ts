@@ -1,3 +1,10 @@
+//=========================================================
+// MODIFICADO: integration.e2e-spec.ts
+// Fase B3 (cancelacion): la lista de hooks del pedido incluye
+// 'payments:resumen-cancelacion'. Necesario porque PaymentsModule captura
+// ahora la fotografia economica al cancelar. Regla: sin ese hook registrado
+// una cancelacion no dejaria resumen.
+//=========================================================
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -59,11 +66,12 @@ describe('Integracion de la aplicacion (AppModule, e2e)', () => {
     expect(app.get(AdvanceConfirmationRegistry).get()).not.toBeNull();
   });
 
-  it('registra los hooks del pedido de Offers, Workflow, Claims y avisos', () => {
+  it('registra los hooks del pedido de Offers, Workflow, Claims, pagos y avisos', () => {
     expect(hookNames(app.get(OrderLifecycleRegistry))).toEqual([
       'claims:invariantes',
       'notifications:pedido',
       'offers:cierre-por-pedido',
+      'payments:resumen-cancelacion',
       'workflow:invariantes',
     ]);
   });
