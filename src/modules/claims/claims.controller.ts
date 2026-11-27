@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   StreamableFile,
@@ -22,6 +23,7 @@ import type { UploadedImageFile } from '../orders/images/order-image.processor.j
 import { OrderImageTooLargeFilter } from '../orders/order-image-too-large.filter.js';
 import type { PublicUser } from '../users/users.service.js';
 import type {
+  ClaimAssigneeView,
   ClaimPartyView,
   ClaimView,
   PaginatedClaims,
@@ -33,11 +35,12 @@ import {
   CreateClaimDto,
   DecideClaimDto,
   ListClaimsQueryDto,
+  UpdateClaimAssignmentDto,
 } from './dto/claim.dto.js';
 
 /**
- * Reclamos (RF-37, RF-38). Controller solo HTTP: la logica esta en
- * ClaimsService. Un reclamo ajeno responde 404.
+ * Reclamos (RF-37, RF-38) y su priorizacion. Controller solo HTTP: la logica
+ * esta en ClaimsService. Un reclamo ajeno responde 404.
  */
 @Controller()
 export class ClaimsController {
@@ -90,12 +93,23 @@ export class ClaimsController {
     });
   }
 
-  // --- Administrador (RF-38) ----------------------------------------------
+  // --- Administrador (RF-38 y priorizacion) -------------------------------
 
+  // Filtros: status, priority, situation (PENDIENTE | VENCIDO | EN_PLAZO),
+  // assigneeId (UUID o "none"), page y limit.
   @Get('admin/claims')
   @Auth(RoleName.ADMINISTRADOR)
   list(@Query() query: ListClaimsQueryDto): Promise<PaginatedClaims> {
     return this.claims.listForAdmin(query);
+  }
+
+  // IMPORTANTE: va ANTES de 'admin/claims/:claimId'. Express empareja las
+  // rutas en orden; si fuera despues, "assignees" se tomaria como un claimId
+  // y ParseUUIDPipe responderia 400.
+  @Get('admin/claims/assignees')
+  @Auth(RoleName.ADMINISTRADOR)
+  listAssignees(): Promise<ClaimAssigneeView[]> {
+    return this.claims.listAssignees();
   }
 
   @Get('admin/claims/:claimId')
@@ -104,6 +118,17 @@ export class ClaimsController {
     @Param('claimId', ParseUUIDPipe) claimId: string,
   ): Promise<ClaimView> {
     return this.claims.getForAdmin(claimId);
+  }
+
+  // Prioridad, responsable y fecha limite (RN-2 a RN-5, RN-7).
+  @Patch('admin/claims/:claimId/assignment')
+  @Auth(RoleName.ADMINISTRADOR)
+  updateAssignment(
+    @CurrentUser() user: PublicUser,
+    @Param('claimId', ParseUUIDPipe) claimId: string,
+    @Body() dto: UpdateClaimAssignmentDto,
+  ): Promise<ClaimView> {
+    return this.claims.updateAssignment(user.id, claimId, dto);
   }
 
   @Post('admin/claims/:claimId/review')
