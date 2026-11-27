@@ -1,3 +1,11 @@
+//=========================================================
+// MODIFICADO: orders.rules.ts
+// Fase B1 (cancelacion): se agrega el tipo OrderCancellationKind, que nombra
+// las dos formas de cancelar (sin acuerdo y con acuerdo). Los estados
+// permitidos no cambian: ORDER_CANCELLABLE_STATUSES (RF-18) y
+// ORDER_WORK_CANCELLABLE_STATUSES (RF-34). TERMINADO, EN_RECLAMO, CERRADO,
+// VENCIDO, CANCELADO y SIN_ACUERDO no admiten cancelacion.
+//=========================================================
 import { OrderStatus } from '../../generated/prisma/enums.js';
 
 // Reglas centrales de OrdersModule. Las marcadas como PENDIENTE DE CONFIRMAR
@@ -30,6 +38,13 @@ export const ORDER_EDITABLE_STATUSES: readonly OrderStatus[] = [
   OrderStatus.EN_NEGOCIACION,
 ];
 export const ORDER_CANCELLABLE_STATUSES = ORDER_EDITABLE_STATUSES;
+
+/**
+ * Las dos formas de cancelar un pedido, cada una con su ruta:
+ * SIN_ACUERDO (RF-18, cancelar el pedido) y CON_ACUERDO (RF-34, «Cancelar
+ * trabajo»). Comparten las reglas de OrdersService.cancelOrder().
+ */
+export type OrderCancellationKind = 'SIN_ACUERDO' | 'CON_ACUERDO';
 
 /** Estados en los que un trabajador habilitado puede ver el pedido (RF-17, CU-19). */
 export const ORDER_WORKER_VISIBLE_STATUSES: readonly OrderStatus[] = [
@@ -112,8 +127,8 @@ export const ORDER_ANONYMIZED_DESCRIPTION =
  * Transiciones permitidas. Cada modulo (ofertas, pagos, visitas, agenda,
  * reclamos) agrega aqui las suyas al integrarse y las ejecuta con
  * OrdersService.transition(). CANCELADO y VENCIDO tienen efectos propios
- * (fotos, hooks): solo se llega a ellos con OrdersService.cancel() y
- * OrderExpirationService.
+ * (fotos, hooks): solo se llega a ellos con la cancelacion de OrdersService
+ * (cancel() y cancelAgreedWork()) y con OrderExpirationService.
  *
  * Transiciones de ofertas (decision del equipo):
  * - PUBLICADO -> EN_NEGOCIACION: al recibir la primera oferta.

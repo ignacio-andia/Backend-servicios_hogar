@@ -1,3 +1,8 @@
+//=========================================================
+// MODIFICADO: payments-reviews.e2e-spec.ts
+// Fase B1 (cancelacion): las llamadas que cancelan un pedido sin acuerdo
+// envian el motivo, ahora obligatorio (decision D1).
+//=========================================================
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1486,7 +1491,9 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
         `/offers/orders/${orderId}`,
         offerBody(nextSlot()),
       ).expect(201);
-      await post(client, `/orders/me/${orderId}/cancel`, {}).expect(200);
+      await post(client, `/orders/me/${orderId}/cancel`, {
+        reason: 'Cancelacion de prueba',
+      }).expect(200);
 
       const received = await prisma.notification.findMany({
         where: { type: 'PEDIDO_CANCELADO', resourceId: orderId },
@@ -1621,7 +1628,7 @@ describe('Pagos, calificaciones, seguimiento, avisos y agenda (RF-29 a RF-33, RF
       await http()
         .post(`/api/orders/me/${orderId}/cancel`)
         .set('Authorization', auth(client))
-        .send({})
+        .send({ reason: 'Cancelacion de prueba' })
         .expect(200);
       expect(
         await prisma.notification.count({

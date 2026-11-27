@@ -1,12 +1,11 @@
-import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
-import { Trim } from '../../../common/decorators/trim.decorator.js';
-import { CANCEL_WORK_REASON_MAX_LENGTH } from '../workflow.rules.js';
+//=========================================================
+// MODIFICADO: cancel-work.dto.ts
+// Fase B1 (cancelacion): deja de repetir los validadores del motivo y hereda
+// los de CancelOrderDto. La ruta y el contrato de «Cancelar trabajo» no
+// cambian.
+// Regla (RF-34, CU-34): el motivo es obligatorio, de hasta 500 caracteres.
+//=========================================================
+import { CancelOrderDto } from '../../orders/dto/cancel-order.dto.js';
 
-/** "Cancelar trabajo" (RF-34, CU-34): el motivo es obligatorio. */
-export class CancelWorkDto {
-  @Trim()
-  @IsString()
-  @IsNotEmpty({ message: 'reason es obligatorio' })
-  @MaxLength(CANCEL_WORK_REASON_MAX_LENGTH)
-  reason: string;
-}
+/** "Cancelar trabajo" (RF-34): mismas reglas del motivo que cancelar un pedido. */
+export class CancelWorkDto extends CancelOrderDto {}
