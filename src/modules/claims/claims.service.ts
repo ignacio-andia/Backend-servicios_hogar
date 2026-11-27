@@ -5,10 +5,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  ClaimPriority,
   ClaimStatus,
   OrderStatus,
   Prisma,
   RoleName,
+  UserStatus,
   AuditAction,
   AuditEntityType,
 } from '../../generated/prisma/client.js';
@@ -35,6 +37,7 @@ import {
   type StoredClaimImage,
 } from './claim-images.service.js';
 import {
+  ClaimAssigneeView,
   ClaimPartyView,
   ClaimSummary,
   ClaimView,
@@ -42,30 +45,48 @@ import {
 } from './claim-views.js';
 import { ClaimsConfig } from './claims.config.js';
 import {
+  defaultDueAt,
+  dueAtError,
+  isOverdue,
+  situationWhere,
+} from './claims.rules.js';
+import {
   CreateClaimDto,
   DecideClaimDto,
   ListClaimsQueryDto,
+  UpdateClaimAssignmentDto,
 } from './dto/claim.dto.js';
 
 type Db = Prisma.TransactionClient;
 
 const PRISMA_UNIQUE_VIOLATION = 'P2002';
 
+/** Datos del responsable que se exponen: nunca correo ni contrasena. */
+const ASSIGNEE_SELECT = {
+  select: { id: true, firstName: true, lastName: true },
+} satisfies Prisma.UserDefaultArgs;
+
 const CLAIM_INCLUDE = {
   images: { orderBy: { position: 'asc' } },
+  assignedTo: ASSIGNEE_SELECT,
 } satisfies Prisma.ClaimInclude;
 type ClaimWithImages = Prisma.ClaimGetPayload<{
   include: typeof CLAIM_INCLUDE;
 }>;
 
 /**
- * Reclamos (RF-37, RF-38). Un reclamo por pedido.
+ * Reclamos (RF-37, RF-38) y su priorizacion. Un reclamo por pedido.
  *
  * Concurrencia con la conformidad y el cierre por plazo (RN-10): presentar el
  * reclamo bloquea el pedido (FOR UPDATE) y, DENTRO del bloqueo, exige que siga
  * TERMINADO y que ahora (reloj de la BD) sea anterior al limite
  * conformityDeadline. El cierre por plazo y la conformidad toman el mismo
  * bloqueo: solo uno gana y el otro responde 409 sin efectos.
+ *
+ * Priorizacion: todo reclamo nace con prioridad MEDIA y fecha limite de 72 h
+ * (RN-1, RN-2). El administrador puede cambiar la prioridad, el responsable y
+ * la fecha limite mientras el reclamo no este RESUELTO (RN-3 a RN-5). "Vencido"
+ * no se guarda: se calcula con el reloj de la BD al consultar (RN-6).
  *
  * Las fotos son evidencia: se procesan antes de la transaccion y, si el reclamo
  * no se confirma, se descartan; una vez confirmado el reclamo no se borran.
@@ -156,7 +177,8 @@ export class ClaimsService {
         if (!deadline) {
           throw new ConflictException('El trabajo todavía no fue terminado.');
         }
-        if (!isWithinConformityWindow(await dbClock(tx), deadline)) {
+        const now = await dbClock(tx);
+        if (!isWithinConformityWindow(now, deadline)) {
           throw new ConflictException(
             'El plazo de 7 días para presentar un reclamo ya venció.',
           );
@@ -166,6 +188,8 @@ export class ClaimsService {
             orderId,
             clientId,
             description: dto.description,
+            // RN-1 y RN-2: nace MEDIA (default del schema) con plazo de 72 h.
+            dueAt: defaultDueAt(ClaimPriority.MEDIA, now),
             images: {
               create: stored.map((image, index) =>
                 toImageData(image, index + 1),
@@ -212,7 +236,7 @@ export class ClaimsService {
     if (!claim) {
       throw new NotFoundException('El reclamo no existe');
     }
-    return toClaimView(claim);
+    return toClaimView(claim, await dbClock(this.prisma));
   }
 
   /**
@@ -238,7 +262,7 @@ export class ClaimsService {
       throw new NotFoundException('El pedido no tiene un reclamo');
     }
     return participation.role === 'CLIENTE'
-      ? toClaimView(claim)
+      ? toClaimView(claim, await dbClock(this.prisma))
       : toPartyView(claim);
   }
 
@@ -264,12 +288,38 @@ export class ClaimsService {
   // RF-38: administrador
   // ---------------------------------------------------------------------
 
+  /**
+   * Listado del administrador con filtros por estado, prioridad, situacion
+   * (PENDIENTE / VENCIDO / EN_PLAZO) y responsable. Orden RN-8: prioridad
+   * (URGENTE primero, por el orden del enum), fecha limite mas cercana y
+   * luego el mas antiguo.
+   */
   async listForAdmin({
     status,
+    priority,
+    situation,
+    assigneeId,
     page,
     limit,
   }: ListClaimsQueryDto): Promise<PaginatedClaims> {
-    const where: Prisma.ClaimWhereInput = status ? { status } : {};
+    const now = await dbClock(this.prisma);
+    const filters: Prisma.ClaimWhereInput[] = [];
+    if (status) {
+      filters.push({ status });
+    }
+    if (priority) {
+      filters.push({ priority });
+    }
+    if (situation) {
+      filters.push(situationWhere(situation, now));
+    }
+    if (assigneeId) {
+      filters.push({
+        assignedToId: assigneeId === 'none' ? null : assigneeId,
+      });
+    }
+    const where: Prisma.ClaimWhereInput = { AND: filters };
+
     const [rows, total] = await this.prisma.$transaction([
       this.prisma.claim.findMany({
         where,
@@ -277,10 +327,19 @@ export class ClaimsService {
           id: true,
           orderId: true,
           status: true,
+          priority: true,
+          dueAt: true,
+          assignedAt: true,
           createdAt: true,
+          assignedTo: ASSIGNEE_SELECT,
           _count: { select: { images: true } },
         },
-        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        orderBy: [
+          { priority: 'asc' },
+          { dueAt: 'asc' },
+          { createdAt: 'asc' },
+          { id: 'asc' },
+        ],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -290,6 +349,11 @@ export class ClaimsService {
       id: row.id,
       orderId: row.orderId,
       status: row.status,
+      priority: row.priority,
+      dueAt: row.dueAt,
+      assignedAt: row.assignedAt,
+      assignee: row.assignedTo,
+      overdue: isOverdue(row, now),
       imageCount: row._count.images,
       createdAt: row.createdAt,
     }));
@@ -297,6 +361,18 @@ export class ClaimsService {
       data,
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
+  }
+
+  /** RN-3: administradores activos que pueden ser responsables. */
+  listAssignees(): Promise<ClaimAssigneeView[]> {
+    return this.prisma.user.findMany({
+      where: {
+        status: UserStatus.ACTIVO,
+        roles: { some: { role: RoleName.ADMINISTRADOR } },
+      },
+      select: { id: true, firstName: true, lastName: true },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+    });
   }
 
   /** Registros para los reportes (RF-52): reclamos presentados en el rango, con su estado actual. Sin datos personales. */
@@ -330,7 +406,113 @@ export class ClaimsService {
     if (!claim) {
       throw new NotFoundException('El reclamo no existe');
     }
-    return toClaimView(claim);
+    return toClaimView(claim, await dbClock(this.prisma));
+  }
+
+  /**
+   * Cambia la prioridad, el responsable y la fecha limite (RN-2 a RN-5, RN-7).
+   * Si no se envia dueAt: con otra prioridad se recalcula desde ahora; con la
+   * misma prioridad se conserva el plazo actual (reasignar no regala tiempo).
+   */
+  async updateAssignment(
+    adminId: string,
+    claimId: string,
+    dto: UpdateClaimAssignmentDto,
+  ): Promise<ClaimView> {
+    await this.prisma.$transaction(async (tx) => {
+      // Bloquea la fila del reclamo: dos administradores no se pisan.
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM claims WHERE id = ${claimId}::uuid FOR UPDATE`;
+      if (locked.length === 0) {
+        throw new NotFoundException('El reclamo no existe');
+      }
+      const claim = await tx.claim.findUniqueOrThrow({
+        where: { id: claimId },
+        select: {
+          orderId: true,
+          status: true,
+          priority: true,
+          assignedToId: true,
+          dueAt: true,
+        },
+      });
+
+      // RN-5: un reclamo resuelto ya no se gestiona.
+      if (claim.status === ClaimStatus.RESUELTO) {
+        throw new ConflictException(
+          'Un reclamo resuelto no se puede reasignar ni repriorizar.',
+        );
+      }
+
+      // RN-3: solo un administrador activo puede ser responsable.
+      const assignedToId = dto.assignedToId ?? null;
+      if (assignedToId) {
+        const isActiveAdmin = await tx.user.count({
+          where: {
+            id: assignedToId,
+            status: UserStatus.ACTIVO,
+            roles: { some: { role: RoleName.ADMINISTRADOR } },
+          },
+        });
+        if (!isActiveAdmin) {
+          throw new BadRequestException(
+            'El responsable debe ser un administrador activo.',
+          );
+        }
+      }
+
+      // RN-2 y RN-4: fecha limite manual o calculada por la prioridad.
+      const now = await dbClock(tx);
+      const priorityChanged = dto.priority !== claim.priority;
+      let dueAt = claim.dueAt;
+      if (dto.dueAt) {
+        dueAt = new Date(dto.dueAt);
+      } else if (priorityChanged) {
+        dueAt = defaultDueAt(dto.priority, now);
+      }
+      if (dto.dueAt || priorityChanged) {
+        const error = dueAtError(dueAt, now);
+        if (error) {
+          throw new BadRequestException(error);
+        }
+      }
+
+      const assigneeChanged = assignedToId !== claim.assignedToId;
+      await tx.claim.update({
+        where: { id: claimId },
+        data: {
+          priority: dto.priority,
+          assignedToId,
+          dueAt,
+          ...(assigneeChanged ? { assignedAt: assignedToId ? now : null } : {}),
+        },
+      });
+
+      // RN-7: bitacora con el antes y el despues, en la misma transaccion.
+      await this.audit.record(
+        {
+          actorId: adminId,
+          action: AuditAction.EDICION,
+          entityType: AuditEntityType.RECLAMO,
+          entityId: claimId,
+          details: {
+            orderId: claim.orderId,
+            before: {
+              priority: claim.priority,
+              assignedToId: claim.assignedToId,
+              dueAt: claim.dueAt.toISOString(),
+            },
+            after: {
+              priority: dto.priority,
+              assignedToId,
+              dueAt: dueAt.toISOString(),
+            },
+          },
+        },
+        tx,
+      );
+    });
+    return this.getForAdmin(claimId);
   }
 
   /** ABIERTO -> EN_REVISION (CU-38 A1: se requiere mas evidencia). */
@@ -464,7 +646,7 @@ function toImageData(image: StoredClaimImage, position: number) {
   return { position, ...image };
 }
 
-function toClaimView(claim: ClaimWithImages): ClaimView {
+function toClaimView(claim: ClaimWithImages, now: Date): ClaimView {
   return {
     id: claim.id,
     orderId: claim.orderId,
@@ -482,6 +664,11 @@ function toClaimView(claim: ClaimWithImages): ClaimView {
     justification: claim.justification,
     decidedAt: claim.decidedAt,
     createdAt: claim.createdAt,
+    priority: claim.priority,
+    dueAt: claim.dueAt,
+    assignedAt: claim.assignedAt,
+    assignee: claim.assignedTo,
+    overdue: isOverdue(claim, now),
   };
 }
 

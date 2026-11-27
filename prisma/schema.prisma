@@ -55,6 +55,7 @@ model User {
   reviewsAuthored      Review[]                     @relation("ReviewAuthor")
   reviewsReceived      Review[]                     @relation("ReviewTarget")
   reviewsHidden        Review[]                     @relation("ReviewHiddenBy")
+  claimsAssigned       Claim[]                      @relation("ClaimAssignee")
 
   @@index([status])
   @@map("users")
@@ -763,26 +764,38 @@ enum ClaimStatus {
   EN_REVISION
   RESUELTO
 }
-
+enum ClaimPriority {
+  URGENTE
+  ALTA
+  MEDIA
+  BAJA
+}
 /// Reclamo del cliente (RF-37) y decision del administrador (RF-38). Uno por
 /// pedido. La decision es texto: sin sanciones ni efectos economicos.
 model Claim {
-  id            String      @id @default(uuid()) @db.Uuid
-  orderId       String      @unique @map("order_id") @db.Uuid
-  clientId      String      @map("client_id") @db.Uuid
-  description   String      @db.VarChar(2000)
-  status        ClaimStatus @default(ABIERTO)
-  decision      String?     @db.VarChar(2000)
-  justification String?     @db.VarChar(2000)
-  decidedById   String?     @map("decided_by_id") @db.Uuid
-  decidedAt     DateTime?   @map("decided_at") @db.Timestamptz(3)
-  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id            String        @id @default(uuid()) @db.Uuid
+  orderId       String        @unique @map("order_id") @db.Uuid
+  clientId      String        @map("client_id") @db.Uuid
+  description   String        @db.VarChar(2000)
+  status        ClaimStatus   @default(ABIERTO)
+  decision      String?       @db.VarChar(2000)
+  justification String?       @db.VarChar(2000)
+  decidedById   String?       @map("decided_by_id") @db.Uuid
+  decidedAt     DateTime?     @map("decided_at") @db.Timestamptz(3)
+  priority      ClaimPriority @default(MEDIA)
+  assignedToId  String?       @map("assigned_to_id") @db.Uuid
+  assignedAt    DateTime?     @map("assigned_at") @db.Timestamptz(3)
+  dueAt         DateTime      @map("due_at") @db.Timestamptz(3)
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  order  Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  images ClaimImage[]
+  order      Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  assignedTo User?        @relation("ClaimAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  images     ClaimImage[]
 
   @@index([status, createdAt])
+  @@index([status, dueAt])
+  @@index([assignedToId])
   @@map("claims")
 }
 
