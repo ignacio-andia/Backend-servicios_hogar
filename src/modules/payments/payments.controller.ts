@@ -1,3 +1,10 @@
+//=========================================================
+// MODIFICADO: payments.controller.ts
+// Fase B4 (cancelacion): ruta GET orders/:orderId/cancellation-summary.
+// Necesaria para consultar la fotografia economica guardada al cancelar.
+// Regla: mismos accesos que la consulta de pagos (cliente dueno, trabajador
+// asignado o administrador); solo lectura.
+//=========================================================
 import {
   Body,
   Controller,
@@ -16,6 +23,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import type { PublicUser } from '../users/users.service.js';
 import { DeclarePaymentDto } from './dto/declare-payment.dto.js';
 import { ListPaymentDifferencesQueryDto } from './dto/list-differences-query.dto.js';
+import type { CancellationSummaryView } from './cancellation-summary-views.js';
 import type {
   DeclarationResult,
   PaymentDifferenceView,
@@ -41,6 +49,19 @@ export class PaymentsController {
     @Param('orderId', ParseUUIDPipe) orderId: string,
   ): Promise<PaymentsOverview> {
     return this.payments.getOverview(
+      { userId: user.id, roles: user.roles },
+      orderId,
+    );
+  }
+
+  /** Resumen economico historico de un pedido cancelado (solo lectura). */
+  @Auth(RoleName.CLIENTE, RoleName.TRABAJADOR, RoleName.ADMINISTRADOR)
+  @Get('orders/:orderId/cancellation-summary')
+  cancellationSummary(
+    @CurrentUser() user: PublicUser,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ): Promise<CancellationSummaryView> {
+    return this.payments.getCancellationSummary(
       { userId: user.id, roles: user.roles },
       orderId,
     );

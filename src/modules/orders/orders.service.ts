@@ -1,3 +1,21 @@
+//=========================================================
+// MODIFICADO: orders.service.ts
+// Fase B1 (cancelacion): cancel() (RF-18) y cancelAgreedWork() (RF-34) dejan
+// de repetir la logica y delegan en un unico metodo privado, cancelOrder().
+// Reglas centralizadas: motivo obligatorio (requireCancellationReason), solo
+// el cliente propietario (404 para el resto) y estados permitidos por forma de
+// cancelar (assertCancellable). Se mantienen las dos rutas y su diferencia:
+// sin acuerdo se limpian fotos y direccion; con acuerdo se conservan.
+//=========================================================
+//=========================================================
+// MODIFICADO: orders.service.ts
+// Fase B5 (cancelacion): cancelOrder() decide el vencimiento DESPUES de
+// bloquear el pedido y con clock_timestamp() (statusAfterLock). Corrige una
+// condicion de carrera: un pedido que vencia mientras la solicitud esperaba
+// el bloqueo se cancelaba, porque se comparaba con now() (inicio de la
+// transaccion). Regla: un pedido vencido ya no se cancela (409, sin cambios).
+// No cambia lockOrder() ni las demas operaciones que lo usan.
+//=========================================================
 import {
   BadRequestException,
   ConflictException,
@@ -73,6 +91,8 @@ import {
   ORDER_AGREED_STATUSES,
   ORDER_ASSIGNMENT_TARGET,
   ORDER_CANCELLABLE_STATUSES,
+  ORDER_STATUS_REASON_MAX_LENGTH,
+  type OrderCancellationKind,
   ORDER_EDITABLE_STATUSES,
   ORDER_EXPIRABLE_STATUSES,
   ORDER_EXPIRATION_DAYS,
@@ -696,46 +716,7 @@ export class OrdersService {
     orderId: string,
     dto: CancelOrderDto,
   ): Promise<OwnerOrderView> {
-    const actor = clientActor(clientId);
-    const reason = dto.reason ? dto.reason : null;
-    const { obsoleteKeys, events } = await this.prisma.$transaction(
-      async (tx) => {
-        const locked = await lockOrder(tx, orderId, clientId);
-        if (!locked) {
-          throw orderNotFound();
-        }
-        if (!ORDER_CANCELLABLE_STATUSES.includes(locked.effectiveStatus)) {
-          throw notModifiable(locked.effectiveStatus, 'cancelar');
-        }
-        await this.applyTransition(tx, {
-          orderId,
-          from: locked.status,
-          to: OrderStatus.CANCELADO,
-          actor,
-          reason,
-        });
-        const eventList: OrderLifecycleEvent[] = [
-          {
-            type: 'CANCELADO',
-            orderId,
-            fromStatus: locked.status,
-            actor,
-            reason,
-          },
-        ];
-        await this.lifecycle.runInTransaction(eventList, tx);
-        // Despues de los hooks (que aun ven los datos originales).
-        const keys = await this.retention.cleanupClosedOrder(
-          tx,
-          orderId,
-          OrderStatus.CANCELADO,
-        );
-        return { obsoleteKeys: keys, events: eventList };
-      },
-    );
-    await this.fileDeletion.processNow(obsoleteKeys);
-    await this.lifecycle.runAfterCommit(events);
-    return this.getOwn(clientId, orderId);
+    return this.cancelOrder('SIN_ACUERDO', clientId, orderId, dto.reason);
   }
 
   /**
@@ -836,39 +817,71 @@ export class OrdersService {
     orderId: string,
     reason: string,
   ): Promise<OwnerOrderView> {
+    return this.cancelOrder('CON_ACUERDO', clientId, orderId, reason);
+  }
+
+  /**
+   * Logica unica de cancelacion de las dos rutas. Reglas, en orden:
+   * 1. motivo obligatorio (tambien para llamadas internas, sin pasar por el DTO);
+   * 2. solo el cliente dueno: el pedido se busca y bloquea por su id y el del
+   *    cliente; para cualquier otro no existe (404);
+   * 3. el estado debe admitir esa forma de cancelar (409); el vencimiento se
+   *    decide con la hora real posterior al bloqueo (statusAfterLock), no con
+   *    la del inicio de la transaccion;
+   * 4. estado, fecha e historial, y los efectos de otros modulos, en una sola
+   *    transaccion. Repetir la llamada encuentra CANCELADO (409).
+   * La unica diferencia entre las rutas: SIN_ACUERDO limpia las fotos, la
+   * direccion y la descripcion (T5.4); CON_ACUERDO las conserva como evidencia.
+   * No decide nada economico.
+   */
+  private async cancelOrder(
+    kind: OrderCancellationKind,
+    clientId: string,
+    orderId: string,
+    reason: string,
+  ): Promise<OwnerOrderView> {
+    const motive = requireCancellationReason(reason);
     const actor = clientActor(clientId);
-    const events = await this.prisma.$transaction(async (tx) => {
-      const locked = await lockOrder(tx, orderId, clientId);
-      if (!locked) {
-        throw orderNotFound();
-      }
-      if (!ORDER_WORK_CANCELLABLE_STATUSES.includes(locked.status)) {
-        throw new ConflictException(
-          locked.status === OrderStatus.TERMINADO ||
-            locked.status === OrderStatus.EN_RECLAMO
-            ? 'El trabajo ya terminó: no se puede cancelar. Use el reclamo (RF-37).'
-            : `No se puede cancelar el trabajo de un pedido en estado ${locked.status}`,
-        );
-      }
-      await this.applyTransition(tx, {
-        orderId,
-        from: locked.status,
-        to: OrderStatus.CANCELADO,
-        actor,
-        reason,
-      });
-      const eventList: OrderLifecycleEvent[] = [
-        {
-          type: 'CANCELADO',
+    const { obsoleteKeys, events } = await this.prisma.$transaction(
+      async (tx) => {
+        const locked = await lockOrder(tx, orderId, clientId);
+        if (!locked) {
+          throw orderNotFound();
+        }
+        // Antes de cualquier escritura: un rechazo no deja nada a medias.
+        assertCancellable(kind, await statusAfterLock(tx, orderId, locked));
+        await this.applyTransition(tx, {
           orderId,
-          fromStatus: locked.status,
+          from: locked.status,
+          to: OrderStatus.CANCELADO,
           actor,
-          reason,
-        },
-      ];
-      await this.lifecycle.runInTransaction(eventList, tx);
-      return eventList;
-    });
+          reason: motive,
+        });
+        const eventList: OrderLifecycleEvent[] = [
+          {
+            type: 'CANCELADO',
+            orderId,
+            fromStatus: locked.status,
+            actor,
+            reason: motive,
+          },
+        ];
+        await this.lifecycle.runInTransaction(eventList, tx);
+        // Despues de los hooks (que aun ven los datos originales).
+        const keys =
+          kind === 'SIN_ACUERDO'
+            ? await this.retention.cleanupClosedOrder(
+                tx,
+                orderId,
+                OrderStatus.CANCELADO,
+              )
+            : [];
+        return { obsoleteKeys: keys, events: eventList };
+      },
+    );
+    if (kind === 'SIN_ACUERDO') {
+      await this.fileDeletion.processNow(obsoleteKeys);
+    }
     await this.lifecycle.runAfterCommit(events);
     return this.getOwn(clientId, orderId);
   }
@@ -1374,6 +1387,64 @@ function firstFreePosition(positions: number[]): number {
   let position = 1;
   while (positions.includes(position)) position += 1;
   return position;
+}
+
+/** Motivo de cancelacion: obligatorio, recortado y de hasta 500 caracteres. */
+export function requireCancellationReason(reason: string): string {
+  const motive = typeof reason === 'string' ? reason.trim() : '';
+  if (!motive) {
+    throw new BadRequestException('reason es obligatorio');
+  }
+  if (motive.length > ORDER_STATUS_REASON_MAX_LENGTH) {
+    throw new BadRequestException(
+      `reason no puede superar los ${ORDER_STATUS_REASON_MAX_LENGTH} caracteres`,
+    );
+  }
+  return motive;
+}
+
+/**
+ * Estado efectivo de un pedido YA BLOQUEADO, con la hora real de la BD en este
+ * instante. lockOrder() compara con now() (inicio de la transaccion), y un
+ * pedido puede vencer mientras la solicitud espera el bloqueo. La consulta va
+ * aparte y despues del bloqueo: en la misma consulta FOR UPDATE la hora se
+ * evaluaria antes de esperar. Solo vencen PUBLICADO y EN_NEGOCIACION; los
+ * demas estados se devuelven sin consultar.
+ */
+export async function statusAfterLock(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+  locked: Pick<LockedOrder, 'status'>,
+): Promise<OrderStatus> {
+  if (!ORDER_EXPIRABLE_STATUSES.includes(locked.status)) {
+    return locked.status;
+  }
+  const [row] = await tx.$queryRaw<{ expired: boolean }[]>`
+    SELECT "expires_at" <= clock_timestamp() AS "expired"
+    FROM "orders"
+    WHERE "id" = ${orderId}::uuid`;
+  return row.expired ? OrderStatus.VENCIDO : locked.status;
+}
+
+/** 409 si el estado (efectivo) no admite esa forma de cancelar. */
+export function assertCancellable(
+  kind: OrderCancellationKind,
+  status: OrderStatus,
+): void {
+  if (kind === 'SIN_ACUERDO') {
+    if (!ORDER_CANCELLABLE_STATUSES.includes(status)) {
+      throw notModifiable(status, 'cancelar');
+    }
+    return;
+  }
+  if (ORDER_WORK_CANCELLABLE_STATUSES.includes(status)) {
+    return;
+  }
+  throw new ConflictException(
+    status === OrderStatus.TERMINADO || status === OrderStatus.EN_RECLAMO
+      ? 'El trabajo ya terminó: no se puede cancelar. Use el reclamo (RF-37).'
+      : `No se puede cancelar el trabajo de un pedido en estado ${status}`,
+  );
 }
 
 /**

@@ -1,3 +1,8 @@
+//=========================================================
+// MODIFICADO: rf13-zone-change.e2e-spec.ts
+// Fase B1 (cancelacion): las llamadas que cancelan un pedido sin acuerdo
+// envian el motivo, ahora obligatorio (decision D1).
+//=========================================================
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -302,7 +307,9 @@ describe('RF-13: solicitud de cambio de zona pendiente (e2e)', () => {
     it('al cancelarse el pedido su oferta deja de bloquear', async () => {
       const worker = await newWorker('cancelled-order');
       const { orderId } = await openOffer(worker);
-      await post(client, `/orders/me/${orderId}/cancel`).expect(200);
+      await post(client, `/orders/me/${orderId}/cancel`, {
+        reason: 'Cancelacion de prueba',
+      }).expect(200);
 
       await requestChange(worker).expect(201);
     });

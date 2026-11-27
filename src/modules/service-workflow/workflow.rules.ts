@@ -1,3 +1,9 @@
+//=========================================================
+// MODIFICADO: workflow.rules.ts
+// Fase B1 (cancelacion): se elimina CANCEL_WORK_REASON_MAX_LENGTH, que
+// duplicaba ORDER_STATUS_REASON_MAX_LENGTH (500). El limite del motivo de
+// cancelacion queda definido una sola vez, en OrdersModule.
+//=========================================================
 // Reglas del ciclo de vida del trabajo (RF-25 a RF-28, RF-34, RF-36).
 // Las marcadas como PENDIENTE no deben cambiarse sin confirmacion del docente.
 
@@ -34,7 +40,6 @@ export function isConformityWindowOver(now: Date, deadline: Date): boolean {
 export const BUDGET_REASON_MAX_LENGTH = 1000;
 export const BUDGET_MATERIALS_MAX_LENGTH = 1000;
 export const NO_SHOW_DESCRIPTION_MAX_LENGTH = 1000;
-export const CANCEL_WORK_REASON_MAX_LENGTH = 500;
 
 /** Monto con hasta 8 enteros y 2 decimales (Decimal(10,2)); > 0 se valida aparte. */
 export const BUDGET_AMOUNT_PATTERN = /^\d{1,8}(\.\d{1,2})?$/;

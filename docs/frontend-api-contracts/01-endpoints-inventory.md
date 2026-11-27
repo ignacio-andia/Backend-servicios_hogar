@@ -1,9 +1,18 @@
+<!--
+//=========================================================
+// MODIFICADO: 01-endpoints-inventory.md
+// Fase B4 (cancelacion): agrega #116 y corrige los totales por modulo segun
+// el codigo. Necesario para que el inventario liste todas las rutas.
+// Regla: la consulta del resumen es de solo lectura.
+//=========================================================
+-->
+
 # 01. Inventario de endpoints existentes
 
 Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí no existe: ver [09](09-gaps-and-pending-contracts.md).
 
 - Base: `http://localhost:3000/api`. Todas las rutas siguientes incluyen el prefijo `/api`.
-- Total: **112 endpoints**. Los #82 a #112 tienen su detalle (entradas, respuestas, estados y errores) en [10](10-sprint1-endpoints.md).
+- Total: **116 endpoints**. Los #82 a #116 tienen su detalle (entradas, respuestas, estados y errores) en [10](10-sprint1-endpoints.md).
 
 | Módulo                | Endpoints |
 | --------------------- | --------- |
@@ -15,12 +24,13 @@ Solo se listan endpoints que **existen en el código**. Lo que no aparece aquí 
 | OrdersModule          | 17        |
 | OffersModule          | 11        |
 | NotificationsModule   | 4         |
-| ServiceWorkflowModule | 10        |
+| ServiceWorkflowModule | 11        |
 | ClaimsModule          | 7         |
-| PaymentsModule        | 4         |
-| ReviewsModule         | 7         |
+| PaymentsModule        | 5         |
+| ReviewsModule         | 8         |
 | AgendaModule          | 2         |
 | TimelineModule        | 1         |
+| ReportsModule         | 1         |
 
 ## Códigos comunes (no se repiten en cada fila)
 
@@ -231,6 +241,7 @@ Reglas completas, estados y ejemplos: [`src/modules/offers/README.md`](../../src
 | 100 | GET    | `/api/orders/:orderId/receipts`                       | ✅     | [10](10-sprint1-endpoints.md) |
 | 101 | POST   | `/api/orders/:orderId/payments/:concept/declarations` | ✅     | [10](10-sprint1-endpoints.md) |
 | 102 | GET    | `/api/admin/payments/differences`                     | ✅     | [10](10-sprint1-endpoints.md) |
+| 116 | GET    | `/api/orders/:orderId/cancellation-summary`           | ✅     | [10](10-sprint1-endpoints.md) |
 
 ## ReviewsModule
 

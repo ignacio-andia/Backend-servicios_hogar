@@ -1,3 +1,10 @@
+//=========================================================
+// MODIFICADO: orders-cleanup.ts
+// Fase B3 (cancelacion): la limpieza de datos de prueba borra tambien
+// order_cancellation_summaries antes que ofertas y pedidos. Necesario porque
+// cada cancelacion crea ahora una fotografia. Solo datos de prueba, con el
+// ajuste de mantenimiento (la tabla es de solo insercion).
+//=========================================================
 import type { PrismaService } from '../../src/prisma/prisma.service.js';
 
 /**
@@ -24,6 +31,8 @@ export async function deleteOrderData(
     // reclamos (con AppModule completo se crean, por ejemplo, al aceptar una
     // oferta) referencian al pedido y van antes que el.
     const byOrder = { orderId: { in: orderIds } };
+    // B3: la fotografia de cancelacion referencia al pedido y a la oferta.
+    await tx.orderCancellationSummary.deleteMany({ where: byOrder });
     await tx.paymentDeclaration.deleteMany({ where: { payment: byOrder } });
     await tx.payment.deleteMany({ where: byOrder });
     await tx.serviceReceipt.deleteMany({ where: byOrder });

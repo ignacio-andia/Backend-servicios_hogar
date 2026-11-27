@@ -1,3 +1,8 @@
+//=========================================================
+// MODIFICADO: hardening.e2e-spec.ts
+// Fase B1 (cancelacion): las llamadas que cancelan un pedido sin acuerdo
+// envian el motivo, ahora obligatorio (decision D1).
+//=========================================================
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -515,7 +520,9 @@ describe('Estabilizacion del backend (e2e)', () => {
     it('agrupa pedidos y cancelaciones por categoria, zona y estado', async () => {
       const before = await report(admin, 'pedidos', range()).expect(200);
       const cancelled = await newOrder();
-      await post(client, `/orders/me/${cancelled}/cancel`).expect(200);
+      await post(client, `/orders/me/${cancelled}/cancel`, {
+        reason: 'Cancelacion de prueba',
+      }).expect(200);
       await newOrder();
 
       const res = await report(admin, 'pedidos', range()).expect(200);
@@ -838,7 +845,9 @@ describe('Estabilizacion del backend (e2e)', () => {
           const winner = await openOffer(other, orderId);
           await post(client, `/offers/${winner.offerId}/accept`).expect(200);
         } else {
-          await post(client, `/orders/me/${orderId}/cancel`).expect(200);
+          await post(client, `/orders/me/${orderId}/cancel`, {
+            reason: 'Cancelacion de prueba',
+          }).expect(200);
         }
 
         const res = await contact(worker, offerId).expect(409);

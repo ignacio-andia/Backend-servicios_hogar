@@ -1,3 +1,11 @@
+//=========================================================
+// MODIFICADO: payments.service.ts
+// Fase B4 (cancelacion): nueva consulta getCancellationSummary() y saldo de
+// los pedidos cancelados en getOverview(). Necesario porque la consulta de
+// pagos restaba el 25 % esperado aunque nadie lo hubiera confirmado.
+// Regla: en un pedido cancelado manda la fotografia; solo se resta el anticipo
+// confirmado. Los demas estados no cambian.
+//=========================================================
 import {
   BadRequestException,
   ConflictException,
@@ -21,6 +29,11 @@ import { OrdersService, lockOrder } from '../orders/orders.service.js';
 import { WorkerProfileService } from '../worker-profile/worker-profile.service.js';
 import { WorkflowQueryService } from '../service-workflow/workflow-query.service.js';
 import { DeclarePaymentDto } from './dto/declare-payment.dto.js';
+import {
+  type CancellationSummaryView,
+  cancelledBalance,
+  toCancellationSummaryView,
+} from './cancellation-summary-views.js';
 import { computeExpectedBalance } from './expected-balance.js';
 import {
   summarizeDeclarations,
@@ -138,7 +151,11 @@ export class PaymentsService {
   // Consultas
   // ---------------------------------------------------------------------
 
-  /** Pagos del pedido y saldo esperado. Cliente, trabajador asignado o administrador. */
+  /**
+   * Pagos del pedido y saldo esperado. Cliente, trabajador asignado o
+   * administrador. En un pedido CANCELADO el saldo es el de la fotografia de
+   * la cancelacion: no resta un anticipo esperado que nadie confirmo.
+   */
   async getOverview(
     viewer: PaymentsViewer,
     orderId: string,
@@ -182,10 +199,50 @@ export class PaymentsService {
         agreement,
         advanceTransition: 'ACTIVA',
         payments: views,
-        balance: (await this.workflow.hasRejectedBudget(orderId, tx))
-          ? NO_BALANCE_AFTER_REJECTION
-          : this.balanceView(agreement),
+        balance: await this.balanceOf(tx, order, agreement),
       };
+    });
+  }
+
+  /**
+   * Resumen economico de cancelacion: la fotografia guardada, sin recalcular.
+   * Mismos permisos que la consulta de pagos (404 para quien no participa). 409
+   * si el pedido no esta cancelado y 404 si se cancelo sin fotografia.
+   */
+  async getCancellationSummary(
+    viewer: PaymentsViewer,
+    orderId: string,
+  ): Promise<CancellationSummaryView> {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await this.requireAccess(tx, viewer, orderId);
+      if (order.status !== OrderStatus.CANCELADO) {
+        throw new ConflictException(
+          'El pedido no está cancelado: no tiene resumen de cancelación.',
+        );
+      }
+      const summary = await tx.orderCancellationSummary.findUnique({
+        where: { orderId },
+      });
+      if (!summary) {
+        throw new NotFoundException(
+          'El pedido se canceló sin resumen económico registrado.',
+        );
+      }
+      const declarations = await tx.paymentDeclaration.findMany({
+        where: { payment: { orderId } },
+        select: {
+          ...DECLARATION_SELECT,
+          payment: { select: { concept: true } },
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
+      return toCancellationSummaryView(
+        summary,
+        declarations.map(({ payment, ...declaration }) => ({
+          concept: payment.concept,
+          ...toDeclarationView(declaration),
+        })),
+      );
     });
   }
 
@@ -801,6 +858,24 @@ export class PaymentsService {
       difference: money(summary.difference),
       methodsMatch: summary.methodsMatch,
     };
+  }
+
+  /** Saldo que informa la consulta de pagos segun el estado del pedido. */
+  private async balanceOf(
+    db: Db,
+    order: { orderId: string; status: OrderStatus },
+    agreement: { baseAmount: string; acceptedAdditional: string } | null,
+  ): Promise<BalanceView> {
+    if (order.status === OrderStatus.CANCELADO) {
+      return cancelledBalance(
+        await db.orderCancellationSummary.findUnique({
+          where: { orderId: order.orderId },
+        }),
+      );
+    }
+    return (await this.workflow.hasRejectedBudget(order.orderId, db))
+      ? NO_BALANCE_AFTER_REJECTION
+      : this.balanceView(agreement);
   }
 
   /**

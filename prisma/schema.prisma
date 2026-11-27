@@ -1,3 +1,12 @@
+//=========================================================
+// MODIFICADO: schema.prisma
+// Fase B3 (cancelacion): modelo OrderCancellationSummary (tabla
+// order_cancellation_summaries) y sus relaciones inversas en Order y Offer.
+// Necesario para conservar la fotografia economica al cancelar: las tablas
+// actuales son modificables o genericas.
+// Reglas: saldo = total actualizado - anticipos confirmados; la visita va
+// aparte; sin acuerdo los importes son NULL. No cambia modelos existentes.
+//=========================================================
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
@@ -374,26 +383,28 @@ model Order {
   createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  client            User                 @relation("OrderClient", fields: [clientId], references: [id], onDelete: Restrict)
-  category          ServiceCategory      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  zone              Zone                 @relation(fields: [zoneId], references: [id], onDelete: Restrict)
-  assignedWorker    User?                @relation("OrderAssignedWorker", fields: [assignedWorkerId], references: [id], onDelete: Restrict)
-  address           OrderAddress?
-  images            OrderImage[]
-  statusHistory     OrderStatusHistory[]
+  client              User                      @relation("OrderClient", fields: [clientId], references: [id], onDelete: Restrict)
+  category            ServiceCategory           @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  zone                Zone                      @relation(fields: [zoneId], references: [id], onDelete: Restrict)
+  assignedWorker      User?                     @relation("OrderAssignedWorker", fields: [assignedWorkerId], references: [id], onDelete: Restrict)
+  address             OrderAddress?
+  images              OrderImage[]
+  statusHistory       OrderStatusHistory[]
   /// T6.1: solo relaciones inversas (OffersModule); no cambian la tabla orders.
-  offers            Offer[]
-  offerEvents       OfferEvent[]
+  offers              Offer[]
+  offerEvents         OfferEvent[]
   /// ServiceWorkflow / Claims (Persona A): solo relaciones inversas.
-  visit             OrderVisit?
-  additionalBudgets AdditionalBudget[]
-  execution         OrderExecution?
-  noShowReport      NoShowReport?
-  claim             Claim?
+  visit               OrderVisit?
+  additionalBudgets   AdditionalBudget[]
+  execution           OrderExecution?
+  noShowReport        NoShowReport?
+  claim               Claim?
   /// Pagos, constancias y calificaciones (Persona B): solo relaciones inversas.
-  payments          Payment[]
-  serviceReceipt    ServiceReceipt?
-  reviews           Review[]
+  payments            Payment[]
+  serviceReceipt      ServiceReceipt?
+  reviews             Review[]
+  /// B3: fotografia economica de la cancelacion (solo relacion inversa).
+  cancellationSummary OrderCancellationSummary?
 
   @@index([zoneId, categoryId, status, expiresAt])
   @@index([clientId, createdAt])
@@ -514,11 +525,13 @@ model Offer {
   createdAt                DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt                DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  order         Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  worker        User         @relation("OfferWorker", fields: [workerId], references: [id], onDelete: Restrict)
-  events        OfferEvent[] @relation("OfferEvents")
+  order                 Order                      @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  worker                User                       @relation("OfferWorker", fields: [workerId], references: [id], onDelete: Restrict)
+  events                OfferEvent[]               @relation("OfferEvents")
   /// Inversa de la FK compuesta (mismos eventos que `events`).
-  eventsOfOrder OfferEvent[] @relation("OfferEventsSameOrder")
+  eventsOfOrder         OfferEvent[]               @relation("OfferEventsSameOrder")
+  /// B3: resumen de cancelacion que la tiene como oferta aceptada.
+  cancellationSummaries OrderCancellationSummary[]
 
   // Indices parciales en la migracion (Prisma no los modela):
   // - offers_order_worker_open_key: una sola VIGENTE por trabajador y pedido
@@ -887,6 +900,45 @@ model ServiceReceipt {
   worker User  @relation("ServiceReceiptWorker", fields: [workerId], references: [id], onDelete: Restrict)
 
   @@map("service_receipts")
+}
+
+/// B3: fotografia economica del pedido en el instante de su cancelacion. Una
+/// por pedido (order_id es la clave) y de solo insercion (triggers). Solo
+/// informa: la plataforma no procesa, devuelve ni retiene dinero.
+/// Sin acuerdo, todos los importes y datos del acuerdo son NULL (nunca 0).
+/// Formulas (CHECK en la migracion):
+///   updatedTotal = agreedAmount + acceptedAdditionalTotal
+///   pendingBalance = updatedTotal - confirmedAdvanceTotal
+/// El costo de visita es informativo y no entra en ningun total.
+model OrderCancellationSummary {
+  orderId                  String    @id @map("order_id") @db.Uuid
+  /// Instante real de la captura (reloj de la BD, no el inicio de la transaccion).
+  capturedAt               DateTime  @default(dbgenerated("clock_timestamp()")) @map("captured_at") @db.Timestamptz(3)
+  /// Oferta aceptada de ESTE pedido (FK compuesta); null sin acuerdo.
+  acceptedOfferId          String?   @map("accepted_offer_id") @db.Uuid
+  /// Fecha del acuerdo, si esta disponible.
+  agreedAt                 DateTime? @map("agreed_at") @db.Timestamptz(3)
+  agreedAmount             Decimal?  @map("agreed_amount") @db.Decimal(10, 2)
+  /// Suma de los presupuestos adicionales ACEPTADOS (0 si no hay ninguno).
+  acceptedAdditionalTotal  Decimal?  @map("accepted_additional_total") @db.Decimal(12, 2)
+  updatedTotal             Decimal?  @map("updated_total") @db.Decimal(12, 2)
+  /// Anticipo confirmado por el trabajador asignado (0 si no hay).
+  confirmedAdvanceTotal    Decimal?  @map("confirmed_advance_total") @db.Decimal(10, 2)
+  /// Anticipo declarado por el cliente y sin confirmar; null si no lo hay.
+  /// No reduce el saldo.
+  unconfirmedAdvanceAmount Decimal?  @map("unconfirmed_advance_amount") @db.Decimal(10, 2)
+  pendingBalance           Decimal?  @map("pending_balance") @db.Decimal(12, 2)
+  /// Costo de visita pactado en la oferta, por separado; null sin visita.
+  visitCost                Decimal?  @map("visit_cost") @db.Decimal(10, 2)
+  /// Copia de las declaraciones, la visita y los adicionales al cancelar.
+  details                  Json
+  /// Version del formato de `details`.
+  schemaVersion            Int       @default(1) @map("schema_version") @db.SmallInt
+
+  order         Order  @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  acceptedOffer Offer? @relation(fields: [acceptedOfferId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict, map: "order_cancellation_summaries_offer_order_fkey")
+
+  @@map("order_cancellation_summaries")
 }
 
 /// Calificacion mutua (RF-44, RF-45): una por autor y pedido, sin

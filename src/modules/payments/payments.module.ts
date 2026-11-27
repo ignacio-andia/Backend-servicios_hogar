@@ -1,3 +1,9 @@
+//=========================================================
+// MODIFICADO: payments.module.ts
+// Fase B3 (cancelacion): declara CancellationSummaryService, que captura la
+// fotografia economica de un pedido cancelado. No cambia dependencias ni
+// exportaciones. Regla: pagos solo registra; no procesa dinero.
+//=========================================================
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module.js';
 import { NotificationsModule } from '../notifications/notifications.module.js';
@@ -5,6 +11,7 @@ import { OffersModule } from '../offers/offers.module.js';
 import { OrdersModule } from '../orders/orders.module.js';
 import { ServiceWorkflowModule } from '../service-workflow/service-workflow.module.js';
 import { WorkerProfileModule } from '../worker-profile/worker-profile.module.js';
+import { CancellationSummaryService } from './cancellation-summary.service.js';
 import { PaymentsConfig } from './payments.config.js';
 import { PaymentsController } from './payments.controller.js';
 import { PaymentsIntegration } from './payments.integration.js';
@@ -28,7 +35,12 @@ import { PaymentsService } from './payments.service.js';
     NotificationsModule,
   ],
   controllers: [PaymentsController],
-  providers: [PaymentsConfig, PaymentsService, PaymentsIntegration],
+  providers: [
+    PaymentsConfig,
+    PaymentsService,
+    CancellationSummaryService,
+    PaymentsIntegration,
+  ],
   exports: [PaymentsService],
 })
 export class PaymentsModule {}

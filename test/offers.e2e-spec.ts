@@ -1,3 +1,8 @@
+//=========================================================
+// MODIFICADO: offers.e2e-spec.ts
+// Fase B1 (cancelacion): las llamadas que cancelan un pedido sin acuerdo
+// envian el motivo, ahora obligatorio (decision D1).
+//=========================================================
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -398,7 +403,7 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       await http()
         .post(`/api/orders/me/${cancelled}/cancel`)
         .set('Authorization', auth(client))
-        .send({})
+        .send({ reason: 'Cancelacion de prueba' })
         .expect(200);
       await offer(worker, cancelled).expect(404);
 
@@ -811,7 +816,7 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       await http()
         .post(`/api/orders/me/${cancelled.orderId}/cancel`)
         .set('Authorization', auth(client))
-        .send({})
+        .send({ reason: 'Cancelacion de prueba' })
         .expect(200);
       await counter(client, cancelled.offerId, { amount: '100' }).expect(409);
 
@@ -1125,7 +1130,7 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       await http()
         .post(`/api/orders/me/${cancelled}/cancel`)
         .set('Authorization', auth(client))
-        .send({})
+        .send({ reason: 'Cancelacion de prueba' })
         .expect(200);
       await reject(client, a).expect(409);
       await withdraw(worker, a).expect(409);
@@ -1390,7 +1395,7 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       await http()
         .post(`/api/orders/me/${cancelled}/cancel`)
         .set('Authorization', auth(client))
-        .send({})
+        .send({ reason: 'Cancelacion de prueba' })
         .expect(200);
       await accept(client, a).expect(409);
 
@@ -1766,7 +1771,9 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       const cancelled = await newOrder();
       const a = await offerId(worker, cancelled);
       await expireNow(a);
-      await post(`/api/orders/me/${cancelled}/cancel`, client).expect(200);
+      await post(`/api/orders/me/${cancelled}/cancel`, client, {
+        reason: 'Cancelacion de prueba',
+      }).expect(200);
 
       const expiredOrder = await newOrder();
       const b = await offerId(worker, expiredOrder);
@@ -2021,7 +2028,9 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
     it('cancelar el pedido deja SIN_EFECTO todas sus ofertas vigentes, sin tocar las ya cerradas', async () => {
       const single = await newOrder();
       const only = await offerId(worker, single);
-      await post(`/api/orders/me/${single}/cancel`, client).expect(200);
+      await post(`/api/orders/me/${single}/cancel`, client, {
+        reason: 'Cancelacion de prueba',
+      }).expect(200);
       await expectClosed(only, OfferStatus.SIN_EFECTO, 'PEDIDO_CANCELADO');
 
       const multi = await newOrder();
@@ -2035,7 +2044,9 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
       const withdrawnBefore = await row(b);
       const before = await orderRow(multi);
 
-      await post(`/api/orders/me/${multi}/cancel`, client).expect(200);
+      await post(`/api/orders/me/${multi}/cancel`, client, {
+        reason: 'Cancelacion de prueba',
+      }).expect(200);
 
       await expectClosed(a, OfferStatus.SIN_EFECTO, 'PEDIDO_CANCELADO');
       const untouched = await row(b);
@@ -2178,7 +2189,9 @@ describe('OffersModule: creacion y consultas (T6.2, e2e)', () => {
     it('el historial de los cierres sigue protegido', async () => {
       const orderId = await newOrder();
       const id = await offerId(worker, orderId);
-      await post(`/api/orders/me/${orderId}/cancel`, client).expect(200);
+      await post(`/api/orders/me/${orderId}/cancel`, client, {
+        reason: 'Cancelacion de prueba',
+      }).expect(200);
 
       await expect(
         prisma.offerEvent.updateMany({

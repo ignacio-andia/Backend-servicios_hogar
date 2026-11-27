@@ -1,3 +1,12 @@
+<!--
+//=========================================================
+// MODIFICADO: README.md
+// Fase B4 (cancelacion): documenta la consulta del resumen economico y el
+// saldo de un pedido cancelado. Regla: fotografia sin recalcular; solo se
+// resta el anticipo confirmado.
+//=========================================================
+-->
+
 # PaymentsModule (Persona B)
 
 Pagos y constancias (RF-39 a RF-43). **La plataforma no procesa, recibe,
@@ -67,20 +76,25 @@ está implementada**.
   `lockApprovedWorkerForAgreedWork`: sigue exigiendo perfil aprobado, cuenta
   activa y rol (403).
 - Pagos y constancias **no cierran el pedido**: `TERMINADO → CERRADO` es de A.
+- **Consulta de un pedido cancelado:** el saldo es el de la fotografía guardada
+  al cancelar y solo resta el anticipo confirmado; sin acuerdo o sin fotografía,
+  `NO_APLICA`.
 - **Pedido cancelado:** solo admite la **visita ya realizada** y con costo
   (`Pago confirmado` del trabajador y «Ya pagué» del cliente). Ni anticipo ni
-  saldo: el tratamiento del anticipo al cancelar está pendiente del docente.
+  saldo. La cancelación guarda una fotografía económica de solo inserción
+  (`order_cancellation_summaries`); la plataforma no devuelve ni retiene dinero.
 - **Cerrado por rechazo de un adicional (RF-27):** solo la visita; el saldo
   responde 409 y el resumen informa `balance.status: "NO_APLICA"`.
 
 ## Endpoints
 
-| Método y ruta                                          | Rol                                               | Respuesta                                                 |
-| ------------------------------------------------------ | ------------------------------------------------- | --------------------------------------------------------- |
-| `GET /orders/:orderId/payments`                        | cliente dueño, trabajador asignado, administrador | `PaymentsOverview`                                        |
-| `POST /orders/:orderId/payments/:concept/declarations` | cliente dueño o trabajador asignado               | 201 `DeclarationResult`                                   |
-| `GET /orders/:orderId/receipts`                        | cliente dueño, trabajador asignado, administrador | `ReceiptsView`                                            |
-| `GET /admin/payments/differences?page&limit`           | administrador                                     | pagos cuyas declaraciones difieren en el monto (RF-42 A1) |
+| Método y ruta                                          | Rol                                               | Respuesta                                                                   |
+| ------------------------------------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------- |
+| `GET /orders/:orderId/payments`                        | cliente dueño, trabajador asignado, administrador | `PaymentsOverview`                                                          |
+| `POST /orders/:orderId/payments/:concept/declarations` | cliente dueño o trabajador asignado               | 201 `DeclarationResult`                                                     |
+| `GET /orders/:orderId/receipts`                        | cliente dueño, trabajador asignado, administrador | `ReceiptsView`                                                              |
+| `GET /orders/:orderId/cancellation-summary`            | cliente dueño, trabajador asignado, administrador | `CancellationSummaryView` (solo lectura; 409 no cancelado, 404 sin resumen) |
+| `GET /admin/payments/differences?page&limit`           | administrador                                     | pagos cuyas declaraciones difieren en el monto (RF-42 A1)                   |
 
 `:concept` ∈ `VISITA | ANTICIPO | SALDO`. Body de la declaración:
 `{ "amount": "30.13", "method": "EFECTIVO" | "QR" }`. El monto es texto decimal

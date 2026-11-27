@@ -1,3 +1,9 @@
+//=========================================================
+// MODIFICADO: orders.controller.ts
+// Fase B1 (cancelacion): solo se actualiza la documentacion de la ruta
+// POST me/:orderId/cancel, cuyo cuerpo ahora exige el motivo (CancelOrderDto).
+// La ruta, el rol permitido (CLIENTE) y la respuesta no cambian.
+//=========================================================
 import {
   Body,
   Controller,
@@ -170,8 +176,8 @@ export class OrdersController {
     return this.orders.deleteImage(user.id, orderId, imageId);
   }
 
-  // RF-18: cancelar (solo PUBLICADO o EN_NEGOCIACION). Borra las fotos y
-  // conserva el pedido y su historial.
+  // RF-18: cancelar (solo PUBLICADO o EN_NEGOCIACION), con motivo obligatorio.
+  // Solo el cliente dueno. Borra las fotos y conserva el pedido y su historial.
   @Post('me/:orderId/cancel')
   @HttpCode(HttpStatus.OK)
   @Auth(RoleName.CLIENTE)

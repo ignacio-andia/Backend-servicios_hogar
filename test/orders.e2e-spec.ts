@@ -1,3 +1,10 @@
+//=========================================================
+// MODIFICADO: orders.e2e-spec.ts
+// Fase B1 (cancelacion): las llamadas que cancelan un pedido sin acuerdo
+// envian el motivo, ahora obligatorio (decision D1).
+// La prueba del motivo opcional se reemplaza por la del motivo obligatorio en
+// las dos rutas: 400 sin cambios en la base y, con motivo, historial real.
+//=========================================================
 import { randomUUID } from 'node:crypto';
 import { access, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -377,7 +384,7 @@ describe('OrdersModule (e2e)', () => {
       await http()
         .post(`${BASE}/me/${res.body.order.id}/cancel`)
         .set('Authorization', auth(client))
-        .send({})
+        .send({ reason: 'Cancelacion de prueba' })
         .expect(200);
       expect(
         await readdir(path.join(storageDir, 'order-images')).catch(() => []),
@@ -1289,7 +1296,11 @@ describe('OrdersModule (e2e)', () => {
   });
 
   describe('RF-18: cancelacion y transiciones', () => {
-    const cancel = (user: PublicUser, id: string, body: object = {}) =>
+    const cancel = (
+      user: PublicUser,
+      id: string,
+      body: object = { reason: 'Cancelacion de prueba' },
+    ) =>
       http()
         .post(`${BASE}/me/${id}/cancel`)
         .set('Authorization', auth(user))
@@ -1403,16 +1414,30 @@ describe('OrdersModule (e2e)', () => {
       expect(again.body.message).toContain('CANCELADO');
     });
 
-    it('cancela un pedido EN_NEGOCIACION y el motivo es opcional', async () => {
+    it('el motivo es obligatorio en las dos rutas (400 sin cambios)', async () => {
       const id = await newOrder('Cambiar el medidor de luz del patio');
       await setStatus(id, OrderStatus.EN_NEGOCIACION);
-      await cancel(client2, id).expect(200);
+      const history = () =>
+        prisma.orderStatusHistory.count({ where: { orderId: id } });
+      const before = await history();
+      for (const body of [{}, { reason: '' }, { reason: '   ' }]) {
+        await cancel(client2, id, body).expect(400);
+        await http()
+          .post(`${BASE}/${id}/cancel-work`)
+          .set('Authorization', auth(client2))
+          .send(body)
+          .expect(400);
+      }
+      expect(await history()).toBe(before);
+
+      await cancel(client2, id, { reason: '  Ya lo resolví  ' }).expect(200);
       const last = await prisma.orderStatusHistory.findFirstOrThrow({
         where: { orderId: id, toStatus: OrderStatus.CANCELADO },
       });
       expect(last).toMatchObject({
         fromStatus: OrderStatus.EN_NEGOCIACION,
-        reason: null,
+        reason: 'Ya lo resolví',
+        changedById: client2.id,
       });
     });
 
@@ -2236,7 +2261,7 @@ describe('OrdersModule (e2e)', () => {
         await http()
           .post(`${BASE}/me/${id}/cancel`)
           .set('Authorization', auth(client2))
-          .send({})
+          .send({ reason: 'Cancelacion de prueba' })
           .expect(409);
 
         await expiration.expireDue();
