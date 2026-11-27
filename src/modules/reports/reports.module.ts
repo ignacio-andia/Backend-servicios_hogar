@@ -2,8 +2,10 @@ import { Module } from '@nestjs/common';
 import { CatalogsModule } from '../catalogs/catalogs.module.js';
 import { ClaimsModule } from '../claims/claims.module.js';
 import { OrdersModule } from '../orders/orders.module.js';
+import { PaymentsModule } from '../payments/payments.module.js';
 import { ReviewsModule } from '../reviews/reviews.module.js';
 import { WorkerProfileModule } from '../worker-profile/worker-profile.module.js';
+import { FinancialReportConfig } from './financial-report.config.js';
 import { ReportsController } from './reports.controller.js';
 import { ReportsService } from './reports.service.js';
 
@@ -16,10 +18,11 @@ import { ReportsService } from './reports.service.js';
     CatalogsModule,
     ClaimsModule,
     OrdersModule,
+    PaymentsModule,
     ReviewsModule,
     WorkerProfileModule,
   ],
   controllers: [ReportsController],
-  providers: [ReportsService],
+  providers: [FinancialReportConfig, ReportsService],
 })
 export class ReportsModule {}

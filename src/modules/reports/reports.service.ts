@@ -1,9 +1,18 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import type { OrderStatus } from '../../generated/prisma/enums.js';
 import { CatalogKind, CatalogsService } from '../catalogs/catalogs.service.js';
 import { ClaimsService } from '../claims/claims.service.js';
 import { OrdersService } from '../orders/orders.service.js';
+import { PaymentsService } from '../payments/payments.service.js';
+import { DIRECT_PAYMENT_NOTICE } from '../payments/payments.rules.js';
 import { ReviewsService } from '../reviews/reviews.service.js';
 import { WorkerProfileService } from '../worker-profile/worker-profile.service.js';
+import { FinancialReportConfig } from './financial-report.config.js';
+import {
+  FINANCIAL_COLUMNS,
+  type FinancialTotals,
+  buildFinancialTable,
+} from './financial-report.js';
 import {
   countBy,
   type ReportCell,
@@ -43,6 +52,25 @@ interface Table {
 
 type Located = { categoryId: string; zoneId: string };
 
+export const FINANCIAL_REPORT_NOTICE = `${DIRECT_PAYMENT_NOTICE} Los ingresos son los pagos que confirmó el trabajador y la comisión es solo informativa: la plataforma no la cobra.`;
+
+/** Reporte financiero: una fila por pedido acordado y totales de dinero. */
+export interface FinancialReport {
+  report: 'financiero';
+  from: string;
+  to: string;
+  basis: string;
+  /** Estados actuales filtrados; vacio = todos. */
+  statuses: OrderStatus[];
+  /** Porcentaje de comision aplicado, con 2 decimales. */
+  commissionPercent: string;
+  notice: string;
+  columns: string[];
+  rows: ReportCell[][];
+  totals: FinancialTotals;
+  message: string | null;
+}
+
 /**
  * Reportes administrativos (RF-52). Solo lectura: cada modulo entrega sus
  * propios registros, sin datos personales, y aqui se agrupan y cuentan.
@@ -55,6 +83,8 @@ export class ReportsService {
     private readonly reviews: ReviewsService,
     private readonly claims: ClaimsService,
     private readonly catalogs: CatalogsService,
+    private readonly payments: PaymentsService,
+    private readonly financialConfig: FinancialReportConfig,
   ) {}
 
   async build(type: ReportType, from: string, to: string): Promise<Report> {
@@ -73,6 +103,44 @@ export class ReportsService {
       columns: [...columns, 'total'],
       rows: countBy(records),
       total: records.length,
+      message: records.length === 0 ? EMPTY_REPORT_MESSAGE : null,
+    };
+  }
+
+  /**
+   * Reporte financiero: pedidos que llegaron a un acuerdo en el rango (y, si
+   * se indican, que estan hoy en esos estados), con lo esperado, lo
+   * confirmado por el trabajador, lo pendiente y la comision informativa.
+   */
+  async buildFinancial(
+    from: string,
+    to: string,
+    statuses: readonly OrderStatus[],
+  ): Promise<FinancialReport> {
+    const range = toReportRange(from, to);
+    if (!range) {
+      throw new BadRequestException(
+        'Rango de fechas no válido: use fechas existentes con from anterior o igual a to.',
+      );
+    }
+    const records = await this.payments.listForFinancialReport(range, statuses);
+    const percent = this.financialConfig.commissionPercent;
+    const { rows, totals } = buildFinancialTable(
+      records,
+      percent,
+      await this.names(records),
+    );
+    return {
+      report: 'financiero',
+      from,
+      to,
+      basis: 'fecha del acuerdo (aceptación de la oferta)',
+      statuses: [...statuses],
+      commissionPercent: percent.toFixed(2),
+      notice: FINANCIAL_REPORT_NOTICE,
+      columns: [...FINANCIAL_COLUMNS],
+      rows,
+      totals,
       message: records.length === 0 ? EMPTY_REPORT_MESSAGE : null,
     };
   }
