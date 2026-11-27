@@ -1,3 +1,10 @@
+<!--
+//=========================================================
+// MODIFICADO: 07-angular-types.md
+// Fase B4 (cancelacion): #116 se documenta en 10, como el resto desde #82.
+//=========================================================
+-->
+
 # 07. Tipos TypeScript propuestos para Angular
 
 > **Propuesta.** Estos tipos reproducen **exactamente** los contratos documentados en 02 y 03: mismos nombres de campo, mismos tipos y misma nulabilidad. No agregan propiedades. Los nombres de las interfaces son sugerencias; los de los **campos** no se pueden cambiar.
@@ -11,7 +18,7 @@
   - `prop?: T`: se puede omitir, pero no enviar `null`.
   - `prop?: T | null`: se puede omitir o enviar `null`.
 - **`null` en la respuesta:** `prop: T | null`. Las propiedades de respuesta **siempre** están presentes; ninguna es opcional, salvo `OrderWarning.orderIds`.
-- Las interfaces de este archivo cubren los endpoints **#1–#81**. Para **#82–#115** (flujo del trabajo, reclamos, pagos, calificaciones, agenda y seguimiento) la fuente contractual es [10](10-sprint1-endpoints.md): sus entradas, modelos y valores no se repiten aquí, para no mantener dos definiciones. Si algo difiere, manda 10.
+- Las interfaces de este archivo cubren los endpoints **#1–#81**. Para **#82–#116** (flujo del trabajo, reclamos, pagos, calificaciones, agenda y seguimiento) la fuente contractual es [10](10-sprint1-endpoints.md): sus entradas, modelos y valores no se repiten aquí, para no mantener dos definiciones. Si algo difiere, manda 10.
 - Al escribir esos tipos, reutilice los de aquí: `CatalogRef` es el mismo; `ScheduleView` de 10 es `Schedule`; `OwnerOrderView` es `OwnerOrder`; `Paginated<T>` es `PaginatedResponse<T>`.
 - `NotificationType` y `NotificationResourceType` son compartidos por todos los endpoints y se listan completos (significado en [04](04-enums-and-states.md)).
 

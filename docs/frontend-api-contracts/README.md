@@ -1,3 +1,10 @@
+<!--
+//=========================================================
+// MODIFICADO: README.md
+// Fase B4 (cancelacion): el indice cuenta tambien la consulta #116.
+//=========================================================
+-->
+
 # Contratos API para el frontend (Angular 22)
 
 Documentación técnica de los contratos **reales** entre el backend NestJS de Servicios Hogar y el frontend Angular. Se obtuvo leyendo el código: controllers, services, DTOs, guards, filtros, configuración global y esquema Prisma. Cada respuesta se comprobó siguiendo el flujo controller → service → objeto devuelto, no a partir del esquema Prisma.
@@ -10,16 +17,16 @@ Documentación técnica de los contratos **reales** entre el backend NestJS de S
 
 | Archivo                                                              | Contenido                                                                                |
 | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| [01-endpoints-inventory.md](01-endpoints-inventory.md)               | Inventario completo de los 112 endpoints existentes                                      |
+| [01-endpoints-inventory.md](01-endpoints-inventory.md)               | Inventario completo de los 116 endpoints existentes                                      |
 | [02-request-dtos.md](02-request-dtos.md)                             | DTOs de entrada, validaciones y ejemplos                                                 |
 | [03-response-models.md](03-response-models.md)                       | Modelos de respuesta reales y ejemplos JSON                                              |
 | [04-enums-and-states.md](04-enums-and-states.md)                     | Enumeraciones, estados y transiciones comprobadas                                        |
 | [05-auth-and-permissions.md](05-auth-and-permissions.md)             | Autenticación, autorización y visibilidad de datos                                       |
 | [06-file-contracts.md](06-file-contracts.md)                         | Subida, descarga y procesamiento de archivos                                             |
-| [07-angular-types.md](07-angular-types.md)                           | Interfaces TypeScript propuestas para #1–#81 y enumeraciones compartidas; #82–#112 en 10 |
+| [07-angular-types.md](07-angular-types.md)                           | Interfaces TypeScript propuestas para #1–#81 y enumeraciones compartidas; #82–#116 en 10 |
 | [08-feature-mapping.md](08-feature-mapping.md)                       | Correspondencia con los 12 módulos funcionales (RF-01 a RF-56)                           |
 | [09-gaps-and-pending-contracts.md](09-gaps-and-pending-contracts.md) | Faltantes, inconsistencias y contratos pendientes                                        |
-| [10-sprint1-endpoints.md](10-sprint1-endpoints.md)                   | Flujo del trabajo, reclamos, pagos, calificaciones, agenda y seguimiento (#82–#112)      |
+| [10-sprint1-endpoints.md](10-sprint1-endpoints.md)                   | Flujo del trabajo, reclamos, pagos, calificaciones, agenda y seguimiento (#82–#116)      |
 
 ## Cómo usar esta documentación
 

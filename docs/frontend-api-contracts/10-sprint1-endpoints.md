@@ -1,8 +1,19 @@
+<!--
+//=========================================================
+// MODIFICADO: 10-sprint1-endpoints.md
+// Fase B4 (cancelacion): contrato de #116 (resumen economico de cancelacion)
+// y saldo de #99 en pedidos cancelados. Necesario porque el frontend necesita
+// la respuesta real. Regla: la fotografia no se recalcula y solo se resta el
+// anticipo confirmado.
+//=========================================================
+-->
+
 # 10. Flujo del trabajo, reclamos, pagos, calificaciones, agenda y seguimiento
 
-Contratos de los **34 endpoints** del Sprint 1 (#82 a #115). Los #113–#115
+Contratos de **35 endpoints** (#82 a #116): los del Sprint 1 y la consulta del
+resumen de cancelación (#116, en Payments). Los #113–#115
 (rechazo del adicional, búsqueda y reportes) están al final. ServiceWorkflow
-(10), Claims (7), Payments (4), Reviews (7), Agenda (2) y Timeline (1). Se
+(10), Claims (7), Payments (5), Reviews (7), Agenda (2) y Timeline (1). Se
 obtuvieron leyendo controllers, DTOs, services y vistas del código. Rigen las
 convenciones generales del [README](README.md) y los códigos comunes de
 [01](01-endpoints-inventory.md) (400, 401, 403, 500).
@@ -128,6 +139,7 @@ La plataforma **no procesa dinero**: solo registra declaraciones de las partes.
 | 100 | GET    | `/api/orders/:orderId/receipts`                       | igual que #99                                        | —                                          | `ReceiptsView`                     | 200   |
 | 101 | POST   | `/api/orders/:orderId/payments/:concept/declarations` | cliente dueño o trabajador asignado                  | `DeclarePaymentDto`                        | `DeclarationResult`                | 201   |
 | 102 | GET    | `/api/admin/payments/differences`                     | `ADMINISTRADOR`                                      | query `page?` (1), `limit?` (20, máx. 100) | `Paginated<PaymentDifferenceView>` | 200   |
+| 116 | GET    | `/api/orders/:orderId/cancellation-summary`           | igual que #99                                        | —                                          | `CancellationSummaryView`          | 200   |
 
 `:concept` = `VISITA`, `ANTICIPO` o `SALDO` (otro valor: 400).
 
@@ -159,18 +171,131 @@ declaración no se edita ni se repite."`.
 
 ### Modelos
 
-| Modelo                  | Campos                                                                                                                                                                                                                                                                      |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PaymentsOverview`      | `orderId`, `orderStatus`, `notice`, `agreement: { baseAmount, acceptedAdditional, totalAmount } \| null`, `advanceTransition: "ACTIVA"`, `payments: PaymentView[]`, `balance: BalanceView`                                                                                  |
-| `PaymentView`           | `concept`, `paymentId \| null`, `expectedAmount \| null` (null en el saldo), `requiredConfirmation: "TRABAJADOR"`, `declarations: DeclarationView[]`, `comparison`, `difference \| null`, `methodsMatch \| null`                                                            |
-| `DeclarationView`       | `id`, `declaredBy`, `userId`, `method`, `amount`, `createdAt`                                                                                                                                                                                                               |
-| `BalanceView`           | `status: "CALCULADO" \| "PENDIENTE_INTEGRACION" \| "NO_APLICA"` (`NO_APLICA`: cerrado por rechazo de un adicional, #113; no hay saldo) (este último hoy cuando no hay oferta aceptada), `amount \| null`, `advanceAmount \| null`, `additionalBudgetsTotal \| null`, `note` |
-| `DeclarationResult`     | `notice`, `payment: PaymentView`, `orderTransition: "ANTICIPO_REGISTRADO" \| "NO_APLICA"`                                                                                                                                                                                   |
-| `ReceiptsView`          | `orderId`, `notice`, `referenceNotice`, `service: { clientId, workerId, agreedAmount, issuedAt } \| null`, `payments: { concept, paymentId, declaration }[]`                                                                                                                |
-| `PaymentDifferenceView` | `paymentId`, `orderId`, `concept`, `clientAmount`, `workerAmount`, `difference` (trabajador − cliente), `createdAt`                                                                                                                                                         |
+| Modelo                  | Campos                                                                                                                                                                                                           |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PaymentsOverview`      | `orderId`, `orderStatus`, `notice`, `agreement: { baseAmount, acceptedAdditional, totalAmount } \| null`, `advanceTransition: "ACTIVA"`, `payments: PaymentView[]`, `balance: BalanceView`                       |
+| `PaymentView`           | `concept`, `paymentId \| null`, `expectedAmount \| null` (null en el saldo), `requiredConfirmation: "TRABAJADOR"`, `declarations: DeclarationView[]`, `comparison`, `difference \| null`, `methodsMatch \| null` |
+| `DeclarationView`       | `id`, `declaredBy`, `userId`, `method`, `amount`, `createdAt`                                                                                                                                                    |
+| `BalanceView`           | `status: "CALCULADO" \| "PENDIENTE_INTEGRACION" \| "NO_APLICA"`, `amount \| null`, `advanceAmount \| null`, `additionalBudgetsTotal \| null`, `note`. Ver «Saldo según el estado del pedido»                     |
+| `DeclarationResult`     | `notice`, `payment: PaymentView`, `orderTransition: "ANTICIPO_REGISTRADO" \| "NO_APLICA"`                                                                                                                        |
+| `ReceiptsView`          | `orderId`, `notice`, `referenceNotice`, `service: { clientId, workerId, agreedAmount, issuedAt } \| null`, `payments: { concept, paymentId, declaration }[]`                                                     |
+| `PaymentDifferenceView` | `paymentId`, `orderId`, `concept`, `clientAmount`, `workerAmount`, `difference` (trabajador − cliente), `createdAt`                                                                                              |
 
 `comparison`: `SIN_DECLARACIONES`, `SOLO_CLIENTE`, `SOLO_TRABAJADOR`,
 `MONTOS_COINCIDEN`, `MONTOS_DIFERENTES` (informativa).
+
+### Saldo según el estado del pedido (#99)
+
+| Pedido                                            | `balance.status`        | Qué significa                                                                                                                     |
+| ------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Con oferta aceptada, no cancelado                 | `CALCULADO`             | Saldo **esperado**: acordado + adicionales aceptados − anticipo esperado (25 %)                                                   |
+| Sin oferta aceptada                               | `PENDIENTE_INTEGRACION` | No hay saldo                                                                                                                      |
+| Cerrado por rechazo de un adicional (#113)        | `NO_APLICA`             | No hay saldo                                                                                                                      |
+| `CANCELADO` con acuerdo                           | `CALCULADO`             | El saldo **registrado al cancelar** (#116). `advanceAmount` es solo el anticipo confirmado por el trabajador (puede ser `"0.00"`) |
+| `CANCELADO` sin acuerdo, o sin resumen registrado | `NO_APLICA`             | Importes `null`; `note` indica el motivo                                                                                          |
+
+En un pedido cancelado `payments[].expectedAmount` sigue mostrando el monto
+esperado de cada concepto: es informativo y no significa que se haya pagado.
+
+### #116 Resumen económico de cancelación
+
+Solo lectura. Devuelve la **fotografía** guardada al cancelar el pedido (#51 o
+#90), **sin recalcular** sus importes. La plataforma no procesa, devuelve ni
+retiene dinero.
+
+**Acceso:** cliente dueño, trabajador asignado o `ADMINISTRADOR`. Un pedido
+cancelado sin acuerdo no tiene trabajador asignado: solo lo ven su dueño y un
+administrador. Quien ofertó sin ser elegido recibe 404.
+
+| Código | Cuándo                                                                                                   |
+| ------ | -------------------------------------------------------------------------------------------------------- |
+| 400    | `orderId` no es un UUID                                                                                  |
+| 401    | sin sesión válida                                                                                        |
+| 404    | `"El pedido no existe"` (inexistente o sin acceso)                                                       |
+| 404    | `"El pedido se canceló sin resumen económico registrado."` (cancelado antes de que existiera el resumen) |
+| 409    | `"El pedido no está cancelado: no tiene resumen de cancelación."`                                        |
+
+`CancellationSummaryView`:
+
+| Campo                           | Tipo y significado                                                                                                                                                                          |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `orderId`, `notice`             | pedido y aviso de pago directo                                                                                                                                                              |
+| `capturedAt`                    | fecha de la fotografía                                                                                                                                                                      |
+| `hasAgreement`                  | `false`: cancelado sin acuerdo                                                                                                                                                              |
+| `agreement`                     | `{ offerId, agreedAt \| null } \| null`                                                                                                                                                     |
+| `totals`                        | `agreedAmount`, `acceptedAdditionalTotal`, `updatedTotal`, `confirmedAdvanceTotal`, `unconfirmedAdvanceAmount`, `pendingBalance`: texto con 2 decimales o `null`. Sin acuerdo, todos `null` |
+| `advance`                       | `SummaryPayment \| null`: anticipo                                                                                                                                                          |
+| `additionalBudgets`             | adicionales **aceptados**: `{ id, amount, respondedAt, createdAt }[]`                                                                                                                       |
+| `visit`                         | `(SummaryPayment & { agreedCost, performedAt, registeredCost }) \| null`. Aparte: no entra en ningún total                                                                                  |
+| `otherPayments`                 | `(SummaryPayment & { concept })[]`; normalmente vacío                                                                                                                                       |
+| `declarationsAfterCancellation` | declaraciones registradas **después** de la fotografía (cobro de una visita): `DeclarationView & { concept }`. No cambian los importes                                                      |
+| `schemaVersion`                 | `1`                                                                                                                                                                                         |
+
+`SummaryPayment`: `paymentId \| null`, `expectedAmount \| null`,
+`status: "CONFIRMADO" \| "DECLARADO_SIN_CONFIRMAR" \| "SIN_DECLARACIONES"`,
+`declarations` (las originales de ambas partes: `id`, `declaredBy`, `userId`,
+`amount`, `method`, `createdAt`).
+
+Fórmulas aplicadas **al cancelar**: `updatedTotal = agreedAmount +
+acceptedAdditionalTotal`; `pendingBalance = updatedTotal −
+confirmedAdvanceTotal`. Solo confirma la declaración del trabajador asignado; una
+diferencia entre ambas declaraciones no es un pago pendiente.
+
+Ejemplo (el cliente declaró 150 y el trabajador confirmó 100):
+
+```json
+{
+  "orderId": "…",
+  "notice": "El pago se realiza directamente al trabajador…",
+  "capturedAt": "2026-11-27T04:00:00.000Z",
+  "hasAgreement": true,
+  "agreement": { "offerId": "…", "agreedAt": "2026-11-26T20:00:00.000Z" },
+  "totals": {
+    "agreedAmount": "400.00",
+    "acceptedAdditionalTotal": "0.00",
+    "updatedTotal": "400.00",
+    "confirmedAdvanceTotal": "100.00",
+    "unconfirmedAdvanceAmount": null,
+    "pendingBalance": "300.00"
+  },
+  "advance": {
+    "paymentId": "…",
+    "expectedAmount": "100.00",
+    "status": "CONFIRMADO",
+    "declarations": [
+      {
+        "id": "…",
+        "declaredBy": "CLIENTE",
+        "userId": "…",
+        "amount": "150.00",
+        "method": "QR",
+        "createdAt": "…"
+      },
+      {
+        "id": "…",
+        "declaredBy": "TRABAJADOR",
+        "userId": "…",
+        "amount": "100.00",
+        "method": "EFECTIVO",
+        "createdAt": "…"
+      }
+    ]
+  },
+  "additionalBudgets": [],
+  "visit": {
+    "paymentId": null,
+    "expectedAmount": null,
+    "status": "SIN_DECLARACIONES",
+    "declarations": [],
+    "agreedCost": null,
+    "performedAt": null,
+    "registeredCost": null
+  },
+  "otherPayments": [],
+  "declarationsAfterCancellation": [],
+  "schemaVersion": 1
+}
+```
 
 ## Reviews (calificaciones y perfil público)
 

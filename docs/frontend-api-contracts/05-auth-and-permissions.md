@@ -1,3 +1,11 @@
+<!--
+//=========================================================
+// MODIFICADO: 05-auth-and-permissions.md
+// Fase B4 (cancelacion): permisos de #116. Regla: los mismos de la consulta de
+// pagos; sin acuerdo no hay trabajador con acceso.
+//=========================================================
+-->
+
 # 05. Autenticación, autorización y visibilidad de datos
 
 ## Autenticación
@@ -104,7 +112,7 @@ acordados continúan.
 | Nuevas oportunidades   | #52–#54 de pedidos que no está negociando; #69 crear una oferta; asignación de un pedido sin oferta vigente suya (interna); `findApprovedWorkers` | Ocultos (404) o **409** |
 | Negociaciones abiertas | #74 contraofertar, #75 rechazar, #76 retirar, #77 aceptar                                                                                         | Normal                  |
 | Trabajos acordados     | #83–#87, #101 (anticipo y saldo) y las acciones del cliente (#88–#92, #101)                                                                       | Normal                  |
-| Consultas              | #70–#73, #78–#82, #93, #99, #100, #103–#112                                                                                                       | Normal                  |
+| Consultas              | #70–#73, #78–#82, #93, #99, #100, #103–#112, #116                                                                                                 | Normal                  |
 
 Mensaje del 409: `"Tiene una solicitud de cambio de zona pendiente: no puede
 ofertar ni tomar trabajos nuevos hasta que se resuelva o la retire."`.
@@ -182,17 +190,18 @@ Si no se cumple alguna condición, responde **404** (igual que un pedido inexist
 
 Detalle en [10](10-sprint1-endpoints.md). Un recurso ajeno responde 404.
 
-| Endpoints                                   | Público | Cliente dueño | Trabajador asignado                        | Administrador |
-| ------------------------------------------- | ------- | ------------- | ------------------------------------------ | ------------- |
-| #82, #93 (consulta del flujo y del reclamo) | ✘       | ✔             | ✔ (el reclamo, solo estado y decisión)     | ✘             |
-| #83–#87 (acciones del trabajador)           | ✘       | ✘             | ✔ con perfil aprobado                      | ✘             |
-| #88–#92 (acciones del cliente)              | ✘       | ✔             | ✘                                          | ✘             |
-| #94 foto del reclamo                        | ✘       | ✔             | ✘                                          | ✔             |
-| #95–#98, #102, #108, #109                   | ✘       | ✘             | ✘                                          | ✔             |
-| #99, #100, #112                             | ✘       | ✔             | ✔                                          | ✔             |
-| #101, #103, #104                            | ✘       | ✔             | ✔ (en #101, el trabajador además aprobado) | ✘             |
-| #105 (calificaciones recibidas)             | ✘       | las propias   | las propias                                | ✘             |
-| #106, #107 (perfil público)                 | ✔       | ✔             | ✔                                          | ✔             |
-| #110, #111 (agenda)                         | ✘       | ✘             | propia, con perfil aprobado                | ✘             |
+| Endpoints                                   | Público | Cliente dueño | Trabajador asignado                          | Administrador |
+| ------------------------------------------- | ------- | ------------- | -------------------------------------------- | ------------- |
+| #82, #93 (consulta del flujo y del reclamo) | ✘       | ✔             | ✔ (el reclamo, solo estado y decisión)       | ✘             |
+| #83–#87 (acciones del trabajador)           | ✘       | ✘             | ✔ con perfil aprobado                        | ✘             |
+| #88–#92 (acciones del cliente)              | ✘       | ✔             | ✘                                            | ✘             |
+| #94 foto del reclamo                        | ✘       | ✔             | ✘                                            | ✔             |
+| #95–#98, #102, #108, #109                   | ✘       | ✘             | ✘                                            | ✔             |
+| #99, #100, #112                             | ✘       | ✔             | ✔                                            | ✔             |
+| #116 resumen de cancelación                 | ✘       | ✔             | ✔ solo si hubo acuerdo (trabajador asignado) | ✔             |
+| #101, #103, #104                            | ✘       | ✔             | ✔ (en #101, el trabajador además aprobado)   | ✘             |
+| #105 (calificaciones recibidas)             | ✘       | las propias   | las propias                                  | ✘             |
+| #106, #107 (perfil público)                 | ✔       | ✔             | ✔                                            | ✔             |
+| #110, #111 (agenda)                         | ✘       | ✘             | propia, con perfil aprobado                  | ✘             |
 
 Una cuenta que solo es `ADMINISTRADOR` recibe 403 donde la tabla marca ✘.
