@@ -140,6 +140,16 @@ export interface SearchableWorker extends PublicWorkerProfile {
   schedules: { dayOfWeek: WeekDay; startTime: string; endTime: string }[];
 }
 
+/** Candidato a la recomendacion de trabajadores de un pedido. */
+export interface RecommendationCandidate {
+  workerId: string;
+  firstName: string;
+  lastName: string;
+  yearsOfExperience: number;
+  /** Minutos de atencion por semana (suma de los horarios activos). */
+  weeklyScheduleMinutes: number;
+}
+
 export interface PendingRequirement {
   field: 'phone' | 'specialties' | 'zone' | 'schedules';
   message: string;
@@ -838,6 +848,53 @@ export class WorkerProfileService {
       })),
       total,
     };
+  }
+
+  /**
+   * Candidatos a la recomendacion de trabajadores de un pedido: los mismos
+   * filtros que la busqueda (RF-16; aprobados, de la zona y la categoria, con
+   * cuenta activa y sin cambio de zona pendiente), sin paginar y con los
+   * minutos de atencion semanales. Una categoria o zona desactivada no tiene
+   * candidatos.
+   */
+  async findRecommendationCandidates(
+    db: Prisma.TransactionClient,
+    filter: { categoryId: string; zoneId: string },
+    excludeUserId: string,
+  ): Promise<RecommendationCandidate[]> {
+    const [category, zone] = await Promise.all([
+      this.catalogs.findById(CatalogKind.CATEGORY, filter.categoryId),
+      this.catalogs.findById(CatalogKind.ZONE, filter.zoneId),
+    ]);
+    if (!category.isActive || !zone.isActive) {
+      return [];
+    }
+    const profiles = await db.workerProfile.findMany({
+      where: {
+        ...candidateWhere(category.id, zone.id),
+        userId: { not: excludeUserId },
+      },
+      select: {
+        userId: true,
+        yearsOfExperience: true,
+        schedules: {
+          where: { isActive: true },
+          select: { startMinutes: true, endMinutes: true },
+        },
+        user: { select: { firstName: true, lastName: true } },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    return profiles.map((profile) => ({
+      workerId: profile.userId,
+      firstName: profile.user.firstName,
+      lastName: profile.user.lastName,
+      yearsOfExperience: profile.yearsOfExperience,
+      weeklyScheduleMinutes: profile.schedules.reduce(
+        (total, row) => total + (row.endMinutes - row.startMinutes),
+        0,
+      ),
+    }));
   }
 
   /**
