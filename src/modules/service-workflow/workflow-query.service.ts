@@ -30,6 +30,16 @@ export interface AgreedAmount {
   totalAmount: string;
 }
 
+/** Datos del flujo de un pedido para el reporte financiero. */
+export interface WorkflowFinancialFacts {
+  /** Suma de los presupuestos adicionales ACEPTADOS (0 si no hay). */
+  acceptedAdditional: Prisma.Decimal;
+  /** El trabajo se cerro por el rechazo de un adicional (RF-27). */
+  closedByRejection: boolean;
+  /** Costo de la visita registrada; null si no hubo visita o no tiene costo. */
+  visitCost: Prisma.Decimal | null;
+}
+
 export interface WorkflowView {
   orderId: string;
   status: OrderStatus;
@@ -78,6 +88,71 @@ export class WorkflowQueryService {
       acceptedAdditional: additional.toFixed(2),
       totalAmount: terms.amount.plus(additional).toFixed(2),
     };
+  }
+
+  /**
+   * Para el reporte financiero, en tres consultas para todos los pedidos:
+   * adicionales aceptados, rechazo de un adicional y costo de la visita
+   * registrada. Solo lectura. Todo pedido indicado aparece en el resultado.
+   */
+  async getFinancialFacts(
+    orderIds: readonly string[],
+  ): Promise<Map<string, WorkflowFinancialFacts>> {
+    const facts = new Map<string, WorkflowFinancialFacts>(
+      orderIds.map((id) => [
+        id,
+        {
+          acceptedAdditional: new Prisma.Decimal(0),
+          closedByRejection: false,
+          visitCost: null,
+        },
+      ]),
+    );
+    if (orderIds.length === 0) {
+      return facts;
+    }
+    const ids = [...orderIds];
+    const [accepted, rejected, visits] = await Promise.all([
+      this.prisma.additionalBudget.groupBy({
+        by: ['orderId'],
+        where: {
+          orderId: { in: ids },
+          status: AdditionalBudgetStatus.ACEPTADO,
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.additionalBudget.findMany({
+        where: {
+          orderId: { in: ids },
+          status: AdditionalBudgetStatus.RECHAZADO,
+        },
+        select: { orderId: true },
+        distinct: ['orderId'],
+      }),
+      this.prisma.orderVisit.findMany({
+        where: { orderId: { in: ids } },
+        select: { orderId: true, visitCost: true },
+      }),
+    ]);
+    for (const row of accepted) {
+      const fact = facts.get(row.orderId);
+      if (fact) {
+        fact.acceptedAdditional = row._sum.amount ?? new Prisma.Decimal(0);
+      }
+    }
+    for (const row of rejected) {
+      const fact = facts.get(row.orderId);
+      if (fact) {
+        fact.closedByRejection = true;
+      }
+    }
+    for (const row of visits) {
+      const fact = facts.get(row.orderId);
+      if (fact && row.visitCost && row.visitCost.gt(0)) {
+        fact.visitCost = row.visitCost;
+      }
+    }
+    return facts;
   }
 
   async getVisit(

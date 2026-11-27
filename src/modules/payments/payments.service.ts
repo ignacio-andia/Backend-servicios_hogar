@@ -64,6 +64,31 @@ export interface PaymentsViewer {
   roles: readonly RoleName[];
 }
 
+/** Un pedido acordado con sus montos, para el reporte financiero. */
+export interface FinancialReportRecord {
+  orderId: string;
+  status: OrderStatus;
+  categoryId: string;
+  zoneId: string;
+  agreedAt: Date;
+  /** Monto de la oferta aceptada; null si falta (no deberia ocurrir). */
+  baseAmount: Prisma.Decimal | null;
+  acceptedAdditional: Prisma.Decimal;
+  /** Costo de la visita registrada con costo; null en otro caso. */
+  visitCost: Prisma.Decimal | null;
+  closedByRejection: boolean;
+  /** Suma de lo que declaro (confirmo) el trabajador, por concepto. */
+  confirmed: Record<PaymentConcept, Prisma.Decimal>;
+}
+
+function emptyByConcept(): Record<PaymentConcept, Prisma.Decimal> {
+  return {
+    ANTICIPO: new Prisma.Decimal(0),
+    VISITA: new Prisma.Decimal(0),
+    SALDO: new Prisma.Decimal(0),
+  };
+}
+
 const DECLARATION_SELECT = {
   id: true,
   declaredBy: true,
@@ -263,6 +288,55 @@ export class PaymentsService {
       }),
       meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
+  }
+
+  /**
+   * Para el reporte financiero (ReportsModule): pedidos acordados en el rango
+   * con sus montos y lo que CONFIRMO el trabajador por concepto. Solo lectura
+   * y sin datos personales. Cada dato sale del modulo que lo administra; las
+   * consultas son en bloque, no una por pedido. No calcula pendientes ni
+   * comisiones: eso es del reporte.
+   */
+  async listForFinancialReport(
+    range: { start: Date; end: Date },
+    statuses: readonly OrderStatus[] = [],
+  ): Promise<FinancialReportRecord[]> {
+    const agreements = await this.orders.listAgreementsForReport(
+      range,
+      statuses,
+    );
+    const ids = agreements.map((agreement) => agreement.orderId);
+    if (ids.length === 0) {
+      return [];
+    }
+    const [amounts, facts, declarations] = await Promise.all([
+      this.offers.getAcceptedAmounts(ids),
+      this.workflow.getFinancialFacts(ids),
+      this.prisma.paymentDeclaration.findMany({
+        where: { declaredBy: 'TRABAJADOR', payment: { orderId: { in: ids } } },
+        select: {
+          amount: true,
+          payment: { select: { orderId: true, concept: true } },
+        },
+      }),
+    ]);
+    const confirmed = new Map<string, Record<PaymentConcept, Prisma.Decimal>>();
+    for (const { amount, payment } of declarations) {
+      const byConcept = confirmed.get(payment.orderId) ?? emptyByConcept();
+      byConcept[payment.concept] = byConcept[payment.concept].plus(amount);
+      confirmed.set(payment.orderId, byConcept);
+    }
+    return agreements.map((agreement) => {
+      const fact = facts.get(agreement.orderId);
+      return {
+        ...agreement,
+        baseAmount: amounts.get(agreement.orderId) ?? null,
+        acceptedAdditional: fact?.acceptedAdditional ?? new Prisma.Decimal(0),
+        visitCost: fact?.visitCost ?? null,
+        closedByRejection: fact?.closedByRejection ?? false,
+        confirmed: confirmed.get(agreement.orderId) ?? emptyByConcept(),
+      };
+    });
   }
 
   /**

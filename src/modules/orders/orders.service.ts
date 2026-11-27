@@ -1176,6 +1176,58 @@ export class OrdersService {
   }
 
   /**
+   * Registros para el reporte financiero: pedidos que llegaron a un acuerdo
+   * (paso a ACORDADO) dentro del rango, con su estado actual. Si se indican
+   * estados, solo los pedidos que estan hoy en alguno de ellos. Sin datos
+   * personales. Un pedido llega a ACORDADO una sola vez; se toma el primero.
+   */
+  async listAgreementsForReport(
+    { start, end }: { start: Date; end: Date },
+    statuses: readonly OrderStatus[] = [],
+  ): Promise<
+    {
+      orderId: string;
+      status: OrderStatus;
+      categoryId: string;
+      zoneId: string;
+      agreedAt: Date;
+    }[]
+  > {
+    const entries = await this.prisma.orderStatusHistory.findMany({
+      where: {
+        toStatus: OrderStatus.ACORDADO,
+        createdAt: { gte: start, lt: end },
+        ...(statuses.length > 0
+          ? { order: { status: { in: [...statuses] } } }
+          : {}),
+      },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        createdAt: true,
+        order: {
+          select: { id: true, status: true, categoryId: true, zoneId: true },
+        },
+      },
+    });
+    const seen = new Set<string>();
+    return entries.flatMap(({ createdAt, order }) => {
+      if (seen.has(order.id)) {
+        return [];
+      }
+      seen.add(order.id);
+      return [
+        {
+          orderId: order.id,
+          status: order.status,
+          categoryId: order.categoryId,
+          zoneId: order.zoneId,
+          agreedAt: createdAt,
+        },
+      ];
+    });
+  }
+
+  /**
    * Aplica una transicion ya bloqueada en una sola sentencia (estado,
    * asignacion y marcas de tiempo) y deja el historial en la misma
    * transaccion. Nunca cambia el vencimiento (T5.1): volver a PUBLICADO

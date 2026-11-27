@@ -547,6 +547,24 @@ export class OffersService {
   }
 
   /**
+   * Consulta publica de solo lectura para el reporte financiero: monto de la
+   * oferta aceptada de cada pedido indicado, en una sola consulta. Un pedido
+   * sin oferta aceptada no aparece en el resultado.
+   */
+  async getAcceptedAmounts(
+    orderIds: readonly string[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    if (orderIds.length === 0) {
+      return new Map();
+    }
+    const offers = await this.prisma.offer.findMany({
+      where: { orderId: { in: [...orderIds] }, status: OfferStatus.ACEPTADA },
+      select: { orderId: true, amount: true },
+    });
+    return new Map(offers.map((offer) => [offer.orderId, offer.amount]));
+  }
+
+  /**
    * Consulta publica de solo lectura para TimelineModule (RF-32): historial de
    * la negociacion del pedido, del mas antiguo al mas reciente. Incluye el
    * trabajador de cada oferta y el cliente del pedido para saber quien ofrecio
