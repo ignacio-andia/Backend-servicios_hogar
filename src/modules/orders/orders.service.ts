@@ -7,6 +7,15 @@
 // cancelar (assertCancellable). Se mantienen las dos rutas y su diferencia:
 // sin acuerdo se limpian fotos y direccion; con acuerdo se conservan.
 //=========================================================
+//=========================================================
+// MODIFICADO: orders.service.ts
+// Fase B5 (cancelacion): cancelOrder() decide el vencimiento DESPUES de
+// bloquear el pedido y con clock_timestamp() (statusAfterLock). Corrige una
+// condicion de carrera: un pedido que vencia mientras la solicitud esperaba
+// el bloqueo se cancelaba, porque se comparaba con now() (inicio de la
+// transaccion). Regla: un pedido vencido ya no se cancela (409, sin cambios).
+// No cambia lockOrder() ni las demas operaciones que lo usan.
+//=========================================================
 import {
   BadRequestException,
   ConflictException,
@@ -816,7 +825,9 @@ export class OrdersService {
    * 1. motivo obligatorio (tambien para llamadas internas, sin pasar por el DTO);
    * 2. solo el cliente dueno: el pedido se busca y bloquea por su id y el del
    *    cliente; para cualquier otro no existe (404);
-   * 3. el estado efectivo debe admitir esa forma de cancelar (409);
+   * 3. el estado debe admitir esa forma de cancelar (409); el vencimiento se
+   *    decide con la hora real posterior al bloqueo (statusAfterLock), no con
+   *    la del inicio de la transaccion;
    * 4. estado, fecha e historial, y los efectos de otros modulos, en una sola
    *    transaccion. Repetir la llamada encuentra CANCELADO (409).
    * La unica diferencia entre las rutas: SIN_ACUERDO limpia las fotos, la
@@ -837,7 +848,8 @@ export class OrdersService {
         if (!locked) {
           throw orderNotFound();
         }
-        assertCancellable(kind, locked.effectiveStatus);
+        // Antes de cualquier escritura: un rechazo no deja nada a medias.
+        assertCancellable(kind, await statusAfterLock(tx, orderId, locked));
         await this.applyTransition(tx, {
           orderId,
           from: locked.status,
@@ -1337,6 +1349,29 @@ export function requireCancellationReason(reason: string): string {
     );
   }
   return motive;
+}
+
+/**
+ * Estado efectivo de un pedido YA BLOQUEADO, con la hora real de la BD en este
+ * instante. lockOrder() compara con now() (inicio de la transaccion), y un
+ * pedido puede vencer mientras la solicitud espera el bloqueo. La consulta va
+ * aparte y despues del bloqueo: en la misma consulta FOR UPDATE la hora se
+ * evaluaria antes de esperar. Solo vencen PUBLICADO y EN_NEGOCIACION; los
+ * demas estados se devuelven sin consultar.
+ */
+export async function statusAfterLock(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+  locked: Pick<LockedOrder, 'status'>,
+): Promise<OrderStatus> {
+  if (!ORDER_EXPIRABLE_STATUSES.includes(locked.status)) {
+    return locked.status;
+  }
+  const [row] = await tx.$queryRaw<{ expired: boolean }[]>`
+    SELECT "expires_at" <= clock_timestamp() AS "expired"
+    FROM "orders"
+    WHERE "id" = ${orderId}::uuid`;
+  return row.expired ? OrderStatus.VENCIDO : locked.status;
 }
 
 /** 409 si el estado (efectivo) no admite esa forma de cancelar. */

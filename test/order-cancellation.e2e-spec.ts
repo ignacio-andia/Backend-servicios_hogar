@@ -16,10 +16,9 @@
 // Corre SIEMPRE en un esquema temporal con todas las migraciones: los
 // triggers de fallo y los datos de prueba nunca tocan el esquema public.
 //
-// PENDIENTE TECNICO (fase posterior, no implementado): la cancelacion de un
-// pedido sin acuerdo debe evaluar el vencimiento con la hora real posterior a
-// la adquisicion del bloqueo. Hoy lockOrder() usa now() (inicio de la
-// transaccion); registrado como it.todo al final de este archivo.
+// MODIFICADO en la fase B5: se retira el it.todo del pendiente tecnico del
+// vencimiento durante la espera del bloqueo, ya implementado y probado en
+// order-cancellation-expiry.e2e-spec.ts.
 //=========================================================
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -605,9 +604,4 @@ describe('Registro y persistencia de cancelaciones (B2, e2e)', () => {
     expect(order.assignedWorkerId).toBe(won ? null : worker.id);
     expect(await cancellationsOf(orderId)).toHaveLength(won ? 1 : 0);
   });
-
-  // PENDIENTE TECNICO para una fase posterior (ver el encabezado).
-  it.todo(
-    'cancelar un pedido sin acuerdo evalua el vencimiento con la hora posterior al bloqueo',
-  );
 });
