@@ -82,6 +82,7 @@ function buildWhere({
   entityType,
   action,
   actorId,
+  actorSearch,
   entityId,
   from,
   to,
@@ -104,7 +105,17 @@ function buildWhere({
     );
   }
 
+  const search = actorSearch?.trim();
   return {
+    ...(search ? {
+      actor: { is: { AND: search.split(/\s+/).map((word) => ({
+        OR: [
+          { firstName: { contains: word, mode: 'insensitive' as const } },
+          { lastName: { contains: word, mode: 'insensitive' as const } },
+          { email: { contains: word, mode: 'insensitive' as const } },
+        ],
+      })) } },
+    } : {}),
     entityType,
     action,
     actorId,
