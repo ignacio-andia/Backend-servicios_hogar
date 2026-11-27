@@ -47,6 +47,7 @@ describe('CatalogsService', () => {
     serviceCategory: TableMock;
     zone: TableMock;
     $transaction: ReturnType<typeof vi.fn>;
+    $queryRaw: ReturnType<typeof vi.fn>;
   };
   let audit: { record: ReturnType<typeof vi.fn> };
   let service: CatalogsService;
@@ -55,6 +56,7 @@ describe('CatalogsService', () => {
     prisma = {
       serviceCategory: tableMock(),
       zone: tableMock(),
+      $queryRaw: vi.fn().mockResolvedValue([]),
       $transaction: vi.fn((work: (tx: unknown) => Promise<unknown>) =>
         work(prisma),
       ),
@@ -189,7 +191,7 @@ describe('CatalogsService', () => {
           action: AuditAction.CREACION,
           entityType: AuditEntityType.CATEGORIA_SERVICIO,
           entityId: ITEM_ID,
-          details: { name: 'Pintura de interiores', description: null },
+          details: { name: 'Pintura de interiores', description: null, before: null, after: { name: 'Pintura de interiores', description: null, isActive: true } },
         },
         prisma,
       );
@@ -345,7 +347,7 @@ describe('CatalogsService', () => {
         action: AuditAction.DESACTIVACION,
         entityType: AuditEntityType.ZONA,
         entityId: ITEM_ID,
-        details: { name: 'Zona A' },
+        details: { name: 'Zona A', before: { isActive: true }, after: { isActive: false } },
       });
       expect(result.isActive).toBe(false);
     });

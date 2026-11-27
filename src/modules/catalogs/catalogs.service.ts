@@ -235,7 +235,11 @@ export class CatalogsService {
           action: AuditAction.CREACION,
           entityType: CATALOGS[kind].entityType,
           entityId: item.id,
-          details: { name, description },
+          details: {
+            name, description,
+            before: null,
+            after: { name, description, isActive: item.isActive },
+          },
         },
         tx,
       );
@@ -256,6 +260,11 @@ export class CatalogsService {
     }
 
     return this.inTransaction(kind, async (tx) => {
+      // Bloqueamos la fila antes de obtener los valores anteriores.
+      if (!isUUID(id)) throw notFound(kind);
+      await tx.$queryRaw`
+        SELECT "id" FROM ${Prisma.raw(`"${CATALOGS[kind].tableName}"`)}
+        WHERE "id" = ${id}::uuid FOR UPDATE`;
       const current = await this.findItem(tx, kind, id);
       if (!current) {
         throw notFound(kind);
@@ -311,6 +320,11 @@ export class CatalogsService {
     const { noun } = CATALOGS[kind];
 
     return this.inTransaction(kind, async (tx) => {
+      // Bloqueamos la fila antes de obtener los valores anteriores.
+      if (!isUUID(id)) throw notFound(kind);
+      await tx.$queryRaw`
+        SELECT "id" FROM ${Prisma.raw(`"${CATALOGS[kind].tableName}"`)}
+        WHERE "id" = ${id}::uuid FOR UPDATE`;
       const current = await this.findItem(tx, kind, id);
       if (!current) {
         throw notFound(kind);
@@ -328,7 +342,11 @@ export class CatalogsService {
           action: AuditAction.DESACTIVACION,
           entityType: CATALOGS[kind].entityType,
           entityId: id,
-          details: { name: current.name },
+          details: {
+            name: current.name,
+            before: { isActive: current.isActive },
+            after: { isActive: updated.isActive },
+          },
         },
         tx,
       );

@@ -242,10 +242,21 @@ describe('UsersService', () => {
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
+    it('audita la edicion administrativa de una cuenta en su transaccion', async () => {
+      prisma.user.findUnique
+        .mockResolvedValueOnce(actorRecord(ADMIN_ID, [RoleName.ADMINISTRADOR]))
+        .mockResolvedValueOnce(userRecord(OTHER_ID));
+      prisma.user.update.mockResolvedValue({ ...userRecord(OTHER_ID), firstName: 'Maria' });
+      await service.update(ADMIN_ID, OTHER_ID, { firstName: 'Maria' });
+      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+        actorId: ADMIN_ID, entityId: OTHER_ID,
+        details: { operation: 'EDICION_CUENTA', before: { firstName: 'Ana' }, after: { firstName: 'Maria' } },
+      }), prisma);
+    });
     it('traduce P2025 a NotFoundException', async () => {
-      prisma.user.findUnique.mockResolvedValue(
-        actorRecord(ADMIN_ID, [RoleName.ADMINISTRADOR]),
-      );
+      prisma.user.findUnique
+        .mockResolvedValueOnce(actorRecord(ADMIN_ID, [RoleName.ADMINISTRADOR]))
+        .mockResolvedValueOnce(userRecord(OTHER_ID));
       prisma.user.update.mockRejectedValue(knownError('P2025'));
 
       await expect(
@@ -522,8 +533,21 @@ describe('UsersService', () => {
         assignedById: ADMIN_ID,
       });
       expect(user.roles).toEqual([RoleName.CLIENTE, RoleName.TRABAJADOR]);
+      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+        details: { operation: 'ASIGNACION_ROL', before: { roles: [RoleName.CLIENTE] }, after: { roles: [RoleName.CLIENTE, RoleName.TRABAJADOR] } },
+      }), prisma);
     });
 
+    it('audita la revocacion de un rol', async () => {
+      prisma.user.findUnique
+        .mockResolvedValueOnce(actorRecord(ADMIN_ID, [RoleName.ADMINISTRADOR]))
+        .mockResolvedValueOnce(userRecord(CLIENT_ID, [RoleName.CLIENTE, RoleName.TRABAJADOR]))
+        .mockResolvedValueOnce(userRecord(CLIENT_ID));
+      await service.revokeRole(ADMIN_ID, CLIENT_ID, RoleName.TRABAJADOR);
+      expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+        details: { operation: 'REVOCACION_ROL', before: { roles: [RoleName.CLIENTE, RoleName.TRABAJADOR] }, after: { roles: [RoleName.CLIENTE] } },
+      }), prisma);
+    });
     it('no permite retirar el último rol de un usuario', async () => {
       prisma.user.findUnique
         .mockResolvedValueOnce(actorRecord(ADMIN_ID, [RoleName.ADMINISTRADOR]))

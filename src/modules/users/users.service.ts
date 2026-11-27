@@ -215,14 +215,18 @@ export class UsersService {
   ): Promise<PublicUser> {
     const actor = await this.getActor(actorId);
     assertCanManageRoles(actor, userId);
-    await this.findById(userId);
-
-    await this.prisma.userRole.upsert({
+    return this.prisma.$transaction(async (tx) => {
+      const before = await this.lockAuditUser(tx, userId);
+      if (before.roles.includes(role)) return before;
+      await tx.userRole.upsert({
       where: { userId_role: { userId, role } },
       create: { userId, role, assignedById: actor.id },
       update: {},
     });
-    return this.findById(userId);
+      const after = await this.readAuditUser(tx, userId);
+      await this.recordRoleChange(tx, actor.id, userId, 'ASIGNACION_ROL', before, after);
+      return after;
+    });
   }
 
   async revokeRole(
@@ -232,8 +236,8 @@ export class UsersService {
   ): Promise<PublicUser> {
     const actor = await this.getActor(actorId);
     assertCanManageRoles(actor, userId);
-    const user = await this.findById(userId);
-
+    return this.prisma.$transaction(async (tx) => {
+    const user = await this.lockAuditUser(tx, userId);
     if (!user.roles.includes(role)) {
       return user;
     }
@@ -243,10 +247,36 @@ export class UsersService {
       );
     }
 
-    await this.prisma.userRole.delete({
+    await tx.userRole.delete({
       where: { userId_role: { userId, role } },
     });
-    return this.findById(userId);
+    const after = await this.readAuditUser(tx, userId);
+    await this.recordRoleChange(tx, actor.id, userId, 'REVOCACION_ROL', user, after);
+    return after;
+    });
+  }
+
+  private async readAuditUser(tx: Prisma.TransactionClient, id: string): Promise<PublicUser> {
+    const row = await tx.user.findUnique({ where: { id }, select: PUBLIC_USER_SELECT });
+    if (!row) throw new NotFoundException('Usuario no encontrado');
+    return toPublicUser(row);
+  }
+
+  private async lockAuditUser(tx: Prisma.TransactionClient, id: string): Promise<PublicUser> {
+    if (!isUUID(id)) throw new NotFoundException('Usuario no encontrado');
+    await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${id}::uuid FOR UPDATE`;
+    return this.readAuditUser(tx, id);
+  }
+
+  private async recordRoleChange(
+    tx: Prisma.TransactionClient, actorId: string, userId: string,
+    operation: string, before: PublicUser, after: PublicUser,
+  ): Promise<void> {
+    await this.audit.record({
+      actorId, entityId: userId, entityType: AuditEntityType.USUARIO,
+      action: AuditAction.EDICION,
+      details: { operation, before: { roles: before.roles }, after: { roles: after.roles } },
+    }, tx);
   }
 
   async findAll(
@@ -281,7 +311,8 @@ export class UsersService {
     id: string,
     dto: UpdateUserDto,
   ): Promise<PublicUser> {
-    assertSelfOrAdmin(await this.getActor(actorId), id);
+    const actor = await this.getActor(actorId);
+    assertSelfOrAdmin(actor, id);
 
     const data: Prisma.UserUpdateInput = {};
     if (dto.firstName !== undefined) data.firstName = dto.firstName;
@@ -295,6 +326,31 @@ export class UsersService {
     }
 
     try {
+      if (isAdmin(actor) && actor.id !== id) {
+        return await this.prisma.$transaction(async (tx) => {
+          const current = await this.lockAuditUser(tx, id);
+          const before: Record<string, string | null> = {};
+          const after: Record<string, string | null> = {};
+          for (const field of ['firstName', 'lastName', 'phone'] as const) {
+            const value = dto[field];
+            if (value !== undefined && value !== current[field]) {
+              before[field] = current[field];
+              after[field] = value;
+            }
+          }
+          if (Object.keys(after).length === 0) return current;
+          const updated = await tx.user.update({ where: { id }, data, select: PUBLIC_USER_SELECT });
+          for (const field of ['firstName', 'lastName', 'phone'] as const) {
+            if (field in after) after[field] = updated[field];
+          }
+          await this.audit.record({
+            actorId: actor.id, action: AuditAction.EDICION,
+            entityType: AuditEntityType.USUARIO, entityId: id,
+            details: { operation: 'EDICION_CUENTA', before, after },
+          }, tx);
+          return toPublicUser(updated);
+        });
+      }
       const user = await this.prisma.user.update({
         where: { id },
         data,

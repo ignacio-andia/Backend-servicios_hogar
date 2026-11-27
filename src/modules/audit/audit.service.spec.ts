@@ -76,6 +76,17 @@ describe('AuditService', () => {
     });
   });
 
+  it('busca al responsable y combina el filtro con la accion', async () => {
+    await service.findAll({ actorSearch: 'Ana Perez', action: AuditAction.EDICION, page: 1, limit: 20 });
+    expect(whereOf()).toMatchObject({
+      action: AuditAction.EDICION,
+      actor: { is: { AND: [
+        { OR: expect.arrayContaining([{ firstName: { contains: 'Ana', mode: 'insensitive' } }]) },
+        { OR: expect.arrayContaining([{ lastName: { contains: 'Perez', mode: 'insensitive' } }]) },
+      ] } },
+    });
+    expect(prisma.adminAuditLog.count).toHaveBeenCalledWith({ where: whereOf() });
+  });
   it('no selecciona datos sensibles del administrador', async () => {
     await service.findAll({ page: 1, limit: 20 });
 

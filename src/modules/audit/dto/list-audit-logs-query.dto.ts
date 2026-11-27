@@ -4,6 +4,8 @@ import {
   IsInt,
   IsISO8601,
   IsOptional,
+  IsString,
+  MaxLength,
   IsUUID,
   Max,
   Min,
@@ -29,6 +31,11 @@ export class ListAuditLogsQueryDto {
   @IsOptional()
   @IsUUID()
   actorId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  actorSearch?: string;
 
   /** Registro afectado (por ejemplo, el id de una categoría). */
   @IsOptional()
